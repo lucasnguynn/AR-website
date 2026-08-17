@@ -64,10 +64,6 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
       minDetectionConfidence = detConf;
       minTrackingConfidence = trackConf;
 
-      // Import MediaPipe Tasks Vision dynamically from CDN
-      // This is legal inside a real module worker
-      const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm');
-
       // Initialize Hand Landmarker
       const filesetResolver = await FilesetResolver.forVisionTasks(wasmPath);
       handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
