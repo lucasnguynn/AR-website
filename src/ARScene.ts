@@ -9,13 +9,13 @@
  */
 
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader';
-import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader';
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 // @fix BUG-05: PMREMGenerator is in Three.js core since r130. Import from 'three' instead of examples path.
 import { PMREMGenerator } from 'three';
 // @fix BUG-11: Import RoomEnvironment for fallback environment when HDRI fails
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { RingPose } from './RingPoseEstimator';
 
 /**
@@ -52,7 +52,7 @@ const DEFAULT_CONFIG: ARSceneConfig = {
  * Loaded ring model with its mesh reference
  */
 interface LoadedRingModel {
-  mesh: THREE.Mesh;
+  mesh: THREE.Object3D;  // Supports both Mesh and Group for multi-mesh models
   geometry: THREE.BufferGeometry;
   material: THREE.Material | THREE.Material[];
   texture?: THREE.Texture;
@@ -250,78 +250,44 @@ export class ARScene {
       
       this.gltfLoader.load(
         url,
-        (gltf: THREE.GLTF) => {
+        (gltf: GLTF) => {
           try {
-            // Extract the first mesh from the GLTF scene graph.
-            //
-            // WHY rawMesh + const mesh:
-            // TypeScript 5.x treats `traverse`'s callback as opaque — it
-            // cannot prove the callback is ever invoked. A `let` initialised
-            // to `null` whose only write is inside that closure is therefore
-            // considered "possibly-never-assigned". Consequently, after the
-            // `if (rawMesh === null) throw` guard, the post-throw branch is
-            // unreachable from TypeScript's view and the type narrows to
-            // `never`, making every subsequent `.material` access an error.
-            //
-            // The fix has two parts:
-            //   1. `rawMesh = child as THREE.Mesh` — explicit cast inside
-            //      the closure so the write is unambiguous.
-            //   2. `const mesh: THREE.Mesh = rawMesh` — re-binding to a
-            //      `const` after the null-guard gives the compiler a fresh
-            //      non-nullable anchor that it cannot later widen to `never`.
-            let rawMesh: THREE.Mesh | null = null;
-
-            gltf.scene.traverse((child: THREE.Object3D) => {
+            // Clone the entire GLTF scene to allow independent disposal
+            // Using gltf.scene directly preserves all meshes (band, gemstone, etc.)
+            const modelGroup = gltf.scene.clone(true)  // deep clone
+            
+            // Apply initial scale to the group
+            modelGroup.scale.setScalar(scale)
+            
+            // Enable shadows on all meshes within the group
+            modelGroup.traverse((child: THREE.Object3D) => {
               if (child instanceof THREE.Mesh) {
-                rawMesh = child as THREE.Mesh;
+                child.castShadow = true
+                child.receiveShadow = true
+                // Apply environment map to all standard materials
+                if (child.material instanceof THREE.MeshStandardMaterial) {
+                  child.material.envMapIntensity = 1.0
+                  child.material.needsUpdate = true
+                }
               }
-            });
-
-            if (rawMesh === null) {
-              throw new Error('No mesh found in GLTF model');
-            }
-
-            // const gives TypeScript an unambiguous THREE.Mesh — no closure
-            // mutation can widen or narrow it to `never` from here on.
-            const mesh: THREE.Mesh = rawMesh;
-
-            // Clone geometry and material for safe, independent disposal.
-            const geometry: THREE.BufferGeometry = mesh.geometry.clone();
-
-            // Array.isArray narrows mesh.material to THREE.Material[] in the
-            // true branch, so (m: THREE.Material) is the correct explicit type.
-            const material: THREE.Material | THREE.Material[] =
-              Array.isArray(mesh.material)
-                ? mesh.material.map((m: THREE.Material): THREE.Material => m.clone())
-                : mesh.material.clone();
+            })
             
-            // Create new mesh with cloned resources
-            const newMesh = new THREE.Mesh(geometry, material);
-            newMesh.castShadow = true;
-            newMesh.receiveShadow = true;
-            
-            // Apply initial scale
-            newMesh.scale.setScalar(scale);
-            
-            // Store model reference
+            // Store reference as a special "group model"
+            // We repurpose LoadedRingModel by storing the group as the mesh property
+            // TypeScript: store as THREE.Object3D cast, we only use .position/.quaternion/.scale
             this.ringModel = {
-              mesh: newMesh,
-              geometry,
-              material,
-              texture: material instanceof THREE.MeshStandardMaterial
-                ? material.map ?? undefined
-                : undefined,
-            };
+              mesh: modelGroup as unknown as THREE.Mesh,
+              geometry: new THREE.BufferGeometry(),  // placeholder, not used for groups
+              material: new THREE.MeshBasicMaterial(), // placeholder, not used for groups
+            }
             
-            // Add to scene
-            this.ringGroup.add(newMesh);
-            
-            resolve();
+            this.ringGroup.add(modelGroup)
+            resolve()
           } catch (error) {
-            reject(error);
+            reject(error)
           }
         },
-        (progress: THREE.ProgressEvent) => {
+        (progress: ProgressEvent) => {
           // Loading progress callback
           if (progress.total > 0 && onProgress) {
             const percent = (progress.loaded / progress.total) * 100;
@@ -343,24 +309,22 @@ export class ARScene {
       // Remove from scene
       this.ringGroup.remove(this.ringModel.mesh);
       
-      // Dispose geometry
-      this.ringModel.geometry.dispose();
+      // Traverse and dispose all child geometries and materials
+      this.ringModel.mesh.traverse((child: THREE.Object3D) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose()
+          const mats = Array.isArray(child.material) 
+            ? child.material 
+            : [child.material]
+          mats.forEach((m: THREE.Material) => m.dispose())
+        }
+      })
       
-      // Dispose materials.
-      // Array.isArray narrows to THREE.Material[] in the true branch;
-      // explicit (mat: THREE.Material) satisfies strict noImplicitAny.
-      if (Array.isArray(this.ringModel.material)) {
-        this.ringModel.material.forEach((mat: THREE.Material) => { mat.dispose(); });
-      } else {
-        this.ringModel.material.dispose();
-      }
+      // Dispose the placeholder geometry/material
+      this.ringModel.geometry.dispose()
+      this.ringModel.material instanceof THREE.Material && this.ringModel.material.dispose()
       
-      // Dispose texture if exists
-      if (this.ringModel.texture) {
-        this.ringModel.texture.dispose();
-      }
-      
-      this.ringModel = null;
+      this.ringModel = null
     }
   }
 

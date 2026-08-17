@@ -56,7 +56,7 @@ export interface ARSessionConfig {
  * Default session configuration
  */
 const DEFAULT_CONFIG: ARSessionConfig = {
-  mediaPipeWasmPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm',
+  mediaPipeWasmPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
   ringModelUrl: '/models/ring.glb',
   ringScale: 1.0,
   trackingFPS: 20,
@@ -381,6 +381,8 @@ export class ARSessionManager {
       const blob = createWorkerBlob();
       const workerUrl = URL.createObjectURL(blob);
       this.worker = new Worker(workerUrl);
+      // Revoke immediately after worker is created — the worker holds its own reference
+      URL.revokeObjectURL(workerUrl)
 
       // @fix BUG-04: Store timeoutId so we can clear it when READY fires
       let timeoutId: ReturnType<typeof setTimeout>;
@@ -696,7 +698,7 @@ export class ARSessionManager {
       return null;
     }
 
-    const scene = this.scene as unknown as { renderer: THREE.WebGLRenderer };
+    const scene = this.scene as unknown as { renderer: import('three').WebGLRenderer };
     const renderer = scene.renderer;
     
     // Get dimensions from video

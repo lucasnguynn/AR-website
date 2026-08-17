@@ -36,7 +36,8 @@ export const ARControls: React.FC = () => {
   };
 
   const showLostTrackingGuide = arState === ARSessionState.TRACKING_LOST;
-  const showLoading = isLoading && arState === ARSessionState.INITIALIZING;
+  // @fix NEW-10: Show loading indicator for ALL loading phases, not just INITIALIZING
+  const showLoading = isLoading
 
   return (
     <div className="absolute inset-0 pointer-events-none z-10">
