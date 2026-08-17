@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState } from 'react';
 import ARTryOnModal from './components/ARTryOnModal';
-import { DEFAULT_CATALOG } from './components/RingCatalog'
+import { DEFAULT_CATALOG } from './components/RingCatalog';
 
 /**
  * Public glTF-Binary ring model from the official Khronos sample repo.
