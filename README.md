@@ -1,2 +1,2 @@
 # AR-website
-Riết sắp khùng mà Github còn lỗi.
+Riết sắp khùng mà Github còn lỗi
