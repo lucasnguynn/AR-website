@@ -237,6 +237,7 @@ export class ARSessionManager {
 
       // Load ring model with progress callback
       const setModelLoadingProgress = useARStore.getState().setModelLoadingProgress;
+      const setSnapshotRef = useARStore.getState().setSnapshotRef;
       await this.scene.loadRing(
         this.config.ringModelUrl,
         this.config.ringScale,
@@ -244,6 +245,9 @@ export class ARSessionManager {
           setModelLoadingProgress(progress);
         }
       );
+
+      // Inject the takeSnapshot function reference into Zustand store
+      setSnapshotRef(this.takeSnapshot.bind(this));
 
       this.setState(ARSessionState.CAMERA_READY);
 

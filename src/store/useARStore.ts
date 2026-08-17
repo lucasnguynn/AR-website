@@ -38,8 +38,8 @@ interface ARUIState {
   /** Error message if any */
   errorMessage: string | null;
   
-  /** Function to take a snapshot from the AR session */
-  takeSnapshotFn: (() => string | null) | null;
+  /** Ref to store the takeSnapshot function safely without breaking Zustand devtools */
+  snapshotRef: { current: (() => string | null) | null };
   
   /** Ring scale for size adjustment (range: 0.5 - 2.0) */
   ringScale: number;
@@ -79,8 +79,8 @@ interface ARUIActions {
   /** Reset store to initial state */
   reset: () => void;
   
-  /** Set the takeSnapshot function from ARSessionManager */
-  setTakeSnapshotFn: (fn: (() => string | null) | null) => void;
+  /** Set the takeSnapshot function ref from ARSessionManager */
+  setSnapshotRef: (fn: (() => string | null) | null) => void;
   
   /** Set ring scale for size adjustment */
   setRingScale: (scale: number) => void;
@@ -95,7 +95,7 @@ const initialState: ARUIState = {
   isLoading: false,
   modelLoadingProgress: 0,
   errorMessage: null,
-  takeSnapshotFn: null,
+  snapshotRef: { current: null },
   ringScale: 1.0,
 };
 
@@ -180,8 +180,8 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
     set(initialState);
   },
   
-  setTakeSnapshotFn: (fn: (() => string | null) | null) => {
-    set({ takeSnapshotFn: fn });
+  setSnapshotRef: (fn: (() => string | null) | null) => {
+    set({ snapshotRef: { current: fn } });
   },
   
   setRingScale: (scale: number) => {
@@ -204,5 +204,5 @@ export const selectModelLoadingProgress = (state: ARUIState & ARUIActions) => st
 export const selectErrorMessage = (state: ARUIState & ARUIActions) => state.errorMessage;
 export const selectShouldShowFallback = (state: ARUIState & ARUIActions) => 
   state.activeFallbackMode !== 'NONE';
-export const selectTakeSnapshotFn = (state: ARUIState & ARUIActions) => state.takeSnapshotFn;
+export const selectSnapshotRef = (state: ARUIState & ARUIActions) => state.snapshotRef;
 export const selectRingScale = (state: ARUIState & ARUIActions) => state.ringScale;
