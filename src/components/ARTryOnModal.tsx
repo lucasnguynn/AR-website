@@ -211,4 +211,4 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
   }
 };
 
-export default {} as Record<string, never>;
+export default ARTryOnModal;
