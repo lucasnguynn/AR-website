@@ -21,6 +21,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   const setARState = useARStore((state) => state.setARState);
   const setError   = useARStore((state) => state.setError);
   const setLoading = useARStore((state) => state.setLoading);
+  const setTakeSnapshotFn = useARStore((state) => state.setTakeSnapshotFn);
 
   // Initialize AR Session
   useEffect(() => {
@@ -57,6 +58,9 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     const sessionManager = new ARSessionManager(config);
     sessionManagerRef.current = sessionManager;
 
+    // Register the takeSnapshot function in the store for ARControls to access
+    setTakeSnapshotFn(() => sessionManager.takeSnapshot());
+
     // State change callback
     sessionManager.onStateChange((state) => {
       setARState(state);
@@ -90,6 +94,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     return () => {
       sessionManager.stop();
       sessionManagerRef.current = null;
+      setTakeSnapshotFn(null);
     };
   }, [ringModelUrl]);
 

@@ -249,8 +249,9 @@ export class ARSessionManager {
   private animationFrameId: number | null = null;
   
   // Callbacks
-  private onStateChange: SessionStateCallback | null = null;
+  public onStateChange: SessionStateCallback | null = null;
   private onPoseUpdate: PoseUpdateCallback | null = null;
+  public onError: ((error: Error) => void) | null = null;
 
   constructor(config: Partial<ARSessionConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -261,6 +262,13 @@ export class ARSessionManager {
    */
   setStateCallback(callback: SessionStateCallback): void {
     this.onStateChange = callback;
+  }
+
+  /**
+   * Set error callback
+   */
+  setErrorCallback(callback: (error: Error) => void): void {
+    this.onError = callback;
   }
 
   /**
@@ -519,11 +527,27 @@ export class ARSessionManager {
   /**
    * Start the AR session
    * Begins both tracking and rendering loops
+   * 
+   * @param video - The video element for camera feed
+   * @param canvas - The canvas element for Three.js rendering
    */
-  start(): void {
+  start(video: HTMLVideoElement, canvas: HTMLCanvasElement): void {
     if (this.state !== ARSessionState.CAMERA_READY && this.state !== ARSessionState.TRACKING_LOST) {
       console.warn('Cannot start session in current state:', this.state);
       return;
+    }
+
+    // Set video element in scene
+    if (this.scene) {
+      this.scene.setVideoElement(video);
+    }
+
+    // Setup renderer canvas
+    if (this.scene) {
+      const container = canvas.parentElement;
+      if (container) {
+        container.appendChild(this.scene.getDomElement());
+      }
     }
 
     this.startTrackingLoop();
@@ -610,6 +634,52 @@ export class ARSessionManager {
    */
   isActivelyTracking(): boolean {
     return this.isTracking && this.state === ARSessionState.TRACKING_ACTIVE;
+  }
+
+  /**
+   * Take a snapshot of the current AR frame
+   * Composites the video feed and Three.js canvas onto an in-memory 2D canvas
+   * 
+   * @returns Base64 PNG data URL, or null if not ready
+   */
+  takeSnapshot(): string | null {
+    if (!this.videoElement || !this.scene) {
+      return null;
+    }
+
+    const scene = this.scene as unknown as { renderer: THREE.WebGLRenderer };
+    const renderer = scene.renderer;
+    
+    // Get dimensions from video
+    const videoWidth = this.videoElement.videoWidth;
+    const videoHeight = this.videoElement.videoHeight;
+    
+    if (videoWidth === 0 || videoHeight === 0) {
+      return null;
+    }
+
+    // Create an in-memory canvas for compositing
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = videoWidth;
+    compositeCanvas.height = videoHeight;
+    const ctx = compositeCanvas.getContext('2d');
+    
+    if (!ctx) {
+      return null;
+    }
+
+    // Draw the current video frame
+    ctx.drawImage(this.videoElement, 0, 0, videoWidth, videoHeight);
+
+    // Draw the Three.js canvas on top
+    // First, force a render to ensure we have the latest frame
+    this.scene.render();
+    
+    const threeCanvas = renderer.domElement;
+    ctx.drawImage(threeCanvas, 0, 0, videoWidth, videoHeight);
+
+    // Return as base64 PNG data URL
+    return compositeCanvas.toDataURL('image/png');
   }
 }
 
