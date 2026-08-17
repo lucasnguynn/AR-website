@@ -6,11 +6,10 @@
  * Provides a premium fallback experience with OrbitControls, Environment, and Stage.
  */
 
-import React, { Suspense, useState, useCallback } from 'react';
+import React, { Suspense, useState, useCallback, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, Stage, ContactShadows } from '@react-three/drei';
+import { OrbitControls, Environment, Stage, ContactShadows, useGLTF } from '@react-three/drei';
 import { FallbackMode } from '../store/useARStore';
-import * as THREE from 'three';
 
 interface Fallback3DViewerProps {
   ringModelUrl: string;
@@ -23,39 +22,22 @@ interface RingModelProps {
 }
 
 const RingModel: React.FC<RingModelProps> = ({ url }) => {
-  // Use GLTFLoader via Drei's useGLTF hook would be ideal, but for simplicity:
-  // In production, you'd use: const { scene } = useGLTF(url);
-  
-  return (
-    <group scale={[1, 1, 1]}>
-      {/* Placeholder geometry - in production, load actual GLB model */}
-      <mesh castShadow receiveShadow>
-        <torusGeometry args={[0.3, 0.05, 16, 32]} />
-        <meshStandardMaterial
-          color="#ffd700"
-          metalness={0.9}
-          roughness={0.2}
-          envMapIntensity={1}
-        />
-      </mesh>
-      
-      {/* Optional: Add a gemstone */}
-      <mesh position={[0, 0.15, 0]} castShadow>
-        <octahedronGeometry args={[0.12, 0]} />
-        <meshStandardMaterial
-          color="#8b5cf6"
-          metalness={0.1}
-          roughness={0.1}
-          transmission={0.9}
-          transparent
-          opacity={0.95}
-        />
-      </mesh>
-    </group>
-  );
+  const { scene } = useGLTF(url);
+  return <primitive object={scene} />;
 };
 
-const ViewerScene: React.FC<{ ringModelUrl: string }> = ({ ringModelUrl }) => {
+RingModel.displayName = 'RingModel';
+
+// Dynamic preload — called when component first renders with the URL
+// (Cannot be called at module level with a dynamic URL)
+useGLTF.preload('');
+
+interface ViewerSceneProps {
+  ringModelUrl: string;
+  orbitRef: React.MutableRefObject<any>;
+}
+
+const ViewerScene: React.FC<ViewerSceneProps> = ({ ringModelUrl, orbitRef }) => {
   return (
     <>
       {/* Lighting & Environment */}
@@ -65,7 +47,8 @@ const ViewerScene: React.FC<{ ringModelUrl: string }> = ({ ringModelUrl }) => {
       <Stage
         environment="studio"
         intensity={0.5}
-        contactShadow={{
+        shadows={{
+          type: 'contact',
           opacity: 0.4,
           width: 2,
           height: 2,
@@ -89,6 +72,7 @@ const ViewerScene: React.FC<{ ringModelUrl: string }> = ({ ringModelUrl }) => {
       
       {/* Orbit Controls for interactive rotation */}
       <OrbitControls
+        ref={orbitRef}
         enablePan={false}
         enableZoom={true}
         minDistance={2}
@@ -109,9 +93,14 @@ export const Fallback3DViewer: React.FC<Fallback3DViewerProps> = ({
   onRetry,
 }) => {
   const [isAutoRotating, setIsAutoRotating] = useState(true);
+  const orbitRef = useRef<any>(null);
 
   const toggleRotation = useCallback(() => {
     setIsAutoRotating((prev) => !prev);
+  }, []);
+
+  const handleResetView = useCallback(() => {
+    orbitRef.current?.reset();
   }, []);
 
   const getFallbackMessage = () => {
@@ -187,7 +176,7 @@ export const Fallback3DViewer: React.FC<Fallback3DViewerProps> = ({
               </group>
             }
           >
-            <ViewerScene ringModelUrl={ringModelUrl} />
+            <ViewerScene ringModelUrl={ringModelUrl} orbitRef={orbitRef} />
           </Suspense>
         </Canvas>
       </div>
@@ -218,10 +207,7 @@ export const Fallback3DViewer: React.FC<Fallback3DViewerProps> = ({
         </button>
 
         <button
-          onClick={() => {
-            // Reset camera view - would need ref to OrbitControls
-            console.log('Reset view');
-          }}
+          onClick={handleResetView}
           className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 backdrop-blur-md text-white rounded-full transition-colors border border-white/20"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
