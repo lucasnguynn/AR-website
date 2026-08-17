@@ -6,7 +6,7 @@
  * Provides a premium fallback experience with OrbitControls, Environment, and Stage.
  */
 
-import React, { Suspense, useState, useCallback, useRef } from 'react';
+import React, { Suspense, useState, useCallback, useRef, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Environment, Stage, ContactShadows, useGLTF } from '@react-three/drei';
 import { FallbackMode } from '../store/useARStore';
@@ -95,6 +95,12 @@ export const Fallback3DViewer: React.FC<Fallback3DViewerProps> = ({
 }) => {
   const [isAutoRotating, setIsAutoRotating] = useState(true);
   const orbitRef = useRef<any>(null);
+
+  // Preload the GLB model into useGLTF's cache as soon as this component mounts.
+  // This avoids the grey-cube Suspense fallback showing after the <Canvas> initializes.
+  useEffect(() => {
+    useGLTF.preload(ringModelUrl);
+  }, [ringModelUrl]);
 
   const toggleRotation = useCallback(() => {
     setIsAutoRotating((prev) => !prev);
