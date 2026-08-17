@@ -11,6 +11,7 @@
 import { RingPoseEstimator, HandTrackingResult, RingPose } from './RingPoseEstimator';
 import { ARScene } from './ARScene';
 import { useARStore } from './store/useARStore';
+import MediaPipeWorker from './workers/mediapipe.worker?worker';
 
 /**
  * AR Session State Enum
@@ -246,6 +247,7 @@ export class ARSessionManager {
   
   // Loop control
   private animationFrameId: number | null = null;
+  private trackingIntervalId: ReturnType<typeof setInterval> | null = null;
   
   // Callbacks
   public onStateChange: SessionStateCallback | null = null;
@@ -378,11 +380,7 @@ export class ARSessionManager {
    */
   private async setupWorker(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const blob = createWorkerBlob();
-      const workerUrl = URL.createObjectURL(blob);
-      this.worker = new Worker(workerUrl);
-      // Revoke immediately after worker is created — the worker holds its own reference
-      URL.revokeObjectURL(workerUrl)
+      this.worker = new MediaPipeWorker();
 
       // @fix BUG-04: Store timeoutId so we can clear it when READY fires
       let timeoutId: ReturnType<typeof setTimeout>;
@@ -512,13 +510,13 @@ export class ARSessionManager {
     this.isTracking = true;
 
     // @fix BUG-09: Firefox doesn't support requestVideoFrameCallback, use setInterval fallback
+    const intervalMs = 1000 / this.config.trackingFPS;
     if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
       this.videoElement?.requestVideoFrameCallback(processFrame);
     } else {
       // Firefox fallback: poll at configured trackingFPS
-      const intervalMs = 1000 / this.config.trackingFPS;
-      const intervalId = setInterval(() => {
-        if (!this.isTracking) { clearInterval(intervalId); return; }
+      this.trackingIntervalId = setInterval(() => {
+        if (!this.isTracking) { return; }
         processFrame();
       }, intervalMs);
     }
@@ -645,6 +643,12 @@ export class ARSessionManager {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
+    }
+
+    // Clear tracking interval (Firefox fallback)
+    if (this.trackingIntervalId !== null) {
+      clearInterval(this.trackingIntervalId);
+      this.trackingIntervalId = null;
     }
 
     this.setState(ARSessionState.STOPPED);
