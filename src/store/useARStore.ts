@@ -128,8 +128,10 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
   setDeviceClass: (deviceClass: DeviceClass) => {
     set({ deviceClass });
     
-    if (deviceClass === 'UNSUPPORTED') {
-      // Auto-activate fallback if device unsupported
+    // @fix BUG-12-STORE: Treat both LOW and UNSUPPORTED as requiring fallback.
+    // LOW devices have WebGL2 but insufficient CPU/memory for real-time AR at 15+ fps.
+    // Centralising this check here prevents consumers from needing to duplicate the condition.
+    if (deviceClass === 'UNSUPPORTED' || deviceClass === 'LOW') {
       get().activateFallback('DEVICE_UNSUPPORTED');
     }
   },
