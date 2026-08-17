@@ -59,18 +59,38 @@ export class DeviceProfiler {
     }
 
     // HIGH: 6+ cores AND 4GB+ memory
-    if ((logicalCores ?? 0) >= 6 && (deviceMemory ?? 0) >= 4) {
+    // On Safari, deviceMemory is undefined, so rely on logicalCores alone for Apple devices
+    const isAppleDevice = /iPad|iPhone|iPod|Mac/.test(navigator.userAgent);
+    const effectiveMemory = deviceMemory ?? (isAppleDevice ? 4 : 0);
+    const effectiveCores = logicalCores ?? 0;
+
+    if (effectiveCores >= 6 && effectiveMemory >= 4) {
       return 'HIGH';
     }
 
     // MEDIUM: 4+ cores OR 2GB+ memory (but not HIGH tier)
-    if ((logicalCores ?? 0) >= 4 || (deviceMemory ?? 0) >= 2) {
+    // For Safari devices without deviceMemory, use logicalCores as primary classifier
+    if (isAppleDevice && deviceMemory === null) {
+      // Safari doesn't support deviceMemory - classify based on cores alone
+      if (effectiveCores >= 6) {
+        return 'HIGH';
+      }
+      if (effectiveCores >= 4) {
+        return 'MEDIUM';
+      }
+      if (effectiveCores >= 2) {
+        return 'LOW';
+      }
+      return 'UNSUPPORTED';
+    }
+
+    if (effectiveCores >= 4 || effectiveMemory >= 2) {
       return 'MEDIUM';
     }
 
     // LOW: Meets WebGL2 but below medium performance — force fallback
     // @fix BUG-12: Keep LOW classification for diagnostics, but ARTryOnModal will treat it as unsupported
-    if ((logicalCores ?? 0) >= 2 || (deviceMemory ?? 0) >= 1) {
+    if (effectiveCores >= 2 || effectiveMemory >= 1) {
       return 'LOW';
     }
 

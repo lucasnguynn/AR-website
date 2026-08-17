@@ -52,7 +52,8 @@ interface ErrorResponse {
   error: string;
 }
 
-type OutgoingMessage = ReadyResponse | HandResultResponse | ErrorResponse;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type WorkerResponse = ReadyResponse | HandResultResponse | ErrorResponse;
 
 self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
   const { type } = event.data;
@@ -64,21 +65,40 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
       minDetectionConfidence = detConf;
       minTrackingConfidence = trackConf;
 
-      // Initialize Hand Landmarker
+      // Initialize Hand Landmarker with GPU delegate, fallback to CPU on failure (iOS Safari)
       const filesetResolver = await FilesetResolver.forVisionTasks(wasmPath);
-      handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
-        baseOptions: {
-          // Use direct CDN URL for hand_landmarker.task
-          modelAssetPath:
-            'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-          delegate: 'GPU',
-        },
-        runningMode: 'VIDEO',
-        numHands: 1,
-        minHandDetectionConfidence: minDetectionConfidence,
-        minHandPresenceConfidence: minTrackingConfidence,
-        minTrackingConfidence: minTrackingConfidence,
-      });
+      
+      try {
+        handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: {
+            // Use direct CDN URL for hand_landmarker.task
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 1,
+          minHandDetectionConfidence: minDetectionConfidence,
+          minHandPresenceConfidence: minTrackingConfidence,
+          minTrackingConfidence: minTrackingConfidence,
+        });
+      } catch (gpuError) {
+        console.warn('GPU delegate initialization failed, falling back to CPU:', gpuError);
+        // Fallback to CPU delegate for iOS Safari and other devices without GPU support
+        handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: {
+            // Use direct CDN URL for hand_landmarker.task
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            delegate: 'CPU',
+          },
+          runningMode: 'VIDEO',
+          numHands: 1,
+          minHandDetectionConfidence: minDetectionConfidence,
+          minHandPresenceConfidence: minTrackingConfidence,
+          minTrackingConfidence: minTrackingConfidence,
+        });
+      }
 
       self.postMessage({ type: 'READY' } as ReadyResponse);
     } catch (error) {
@@ -134,7 +154,9 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
       }
 
       // IMPORTANT: Clear results to free memory (zero-upload privacy)
+      // @ts-ignore - Safe to nullify for GC purposes
       results.landmarks = null;
+      // @ts-ignore - Safe to nullify for GC purposes
       results.handednesses = null;
     } catch (error) {
       self.postMessage({

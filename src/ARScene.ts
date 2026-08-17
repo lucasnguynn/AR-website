@@ -147,10 +147,31 @@ export class ARScene {
     // Load HDRI environment map for realistic metallic/refractive materials
     // @fix BUG-11: Add error handler and fallback to RoomEnvironment when HDRI fails
     // @fix BUG-HDR-01: Use Poly Haven CDN (CC0, rate-limit-free) instead of GitHub raw URL
-    const hdriUrl = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/royal_esplanade_1k.hdr';
-    new RGBELoader()
-      .load(
-        hdriUrl,
+    // Provide array of HDRI sources for redundancy
+    const hdriSources = [
+      'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/royal_esplanade_1k.hdr',
+      '/hdri/royal_esplanade_1k.hdr',  // Local fallback
+    ];
+    
+    const loadHDRI = async (sources: string[], index: number): Promise<void> => {
+      if (index >= sources.length) {
+        // All sources failed, use procedural RoomEnvironment fallback
+        console.warn('All HDRI sources failed, using procedural RoomEnvironment fallback');
+        if (this.pmremGenerator) {
+          const fallbackEnv = this.pmremGenerator.fromScene(
+            new RoomEnvironment()
+          ).texture;
+          this.scene.environment = fallbackEnv;
+          this.environmentTexture = fallbackEnv;
+        }
+        return;
+      }
+      
+      const currentSource = sources[index];
+      console.log(`Attempting to load HDRI from: ${currentSource}`);
+      
+      new RGBELoader().load(
+        currentSource,
         (texture: THREE.DataTexture) => {
           texture.mapping = THREE.EquirectangularReflectionMapping;
           this.environmentTexture = this.pmremGenerator!.fromEquirectangular(texture).texture;
@@ -159,20 +180,18 @@ export class ARScene {
             this.scene.background = this.environmentTexture;
           }
           texture.dispose();
+          console.log(`HDRI loaded successfully from: ${currentSource}`);
         },
         undefined, // onProgress not needed
-        (_error: unknown) => {
-          // Fallback: procedural environment using PMREMGenerator
-          console.warn('HDRI load failed, using procedural fallback environment');
-          if (this.pmremGenerator) {
-            const fallbackEnv = this.pmremGenerator.fromScene(
-              new RoomEnvironment()
-            ).texture;
-            this.scene.environment = fallbackEnv;
-            this.environmentTexture = fallbackEnv;
-          }
+        (error: unknown) => {
+          console.warn(`HDRI load failed from ${currentSource}:`, error);
+          // Try next source
+          loadHDRI(sources, index + 1);
         }
       );
+    };
+    
+    loadHDRI(hdriSources, 0);
     
     // Initialize ring group
     this.ringGroup = new THREE.Group();
