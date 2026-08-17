@@ -83,9 +83,9 @@ async function main() {
 
   // Find all .glb files in the raw models directory
   if (!fs.existsSync(RAW_MODELS_DIR)) {
-    console.error(`❌ Error: Raw models directory not found: ${RAW_MODELS_DIR}`);
-    console.log('   Please create the directory and add your .glb files there.');
-    process.exit(1);
+    console.warn(`⚠️  Warning: Raw models directory not found: ${RAW_MODELS_DIR}`);
+    console.log('   Skipping compression - no raw models to process.');
+    process.exit(0);
   }
 
   const glbFiles = fs

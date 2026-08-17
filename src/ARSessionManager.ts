@@ -66,7 +66,7 @@ const DEFAULT_CONFIG: ARSessionConfig = {
   minDetectionConfidence: 0.5,
   minTrackingConfidence: 0.5,
   videoConstraints: {
-    facingMode: 'environment',
+    // facingMode will be set dynamically based on available cameras
     width: { ideal: 1280 },
     height: { ideal: 720 },
   },
@@ -116,6 +116,7 @@ interface WorkerErrorResponse {
   error: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type WorkerResponse = WorkerReadyResponse | WorkerHandResultResponse | WorkerErrorResponse;
 
 /**
@@ -249,7 +250,7 @@ export class ARSessionManager {
   }
 
   /**
-   * Setup camera stream using getUserMedia
+   * Setup camera stream using getUserMedia with dynamic facing mode detection
    */
   private async setupCamera(): Promise<void> {
     if (!this.videoElement) {
@@ -257,8 +258,11 @@ export class ARSessionManager {
     }
 
     try {
+      // Dynamically detect facing mode based on available cameras
+      const videoConstraints = await this.getDynamicVideoConstraints();
+      
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: this.config.videoConstraints,
+        video: videoConstraints,
       });
 
       this.videoElement.srcObject = this.mediaStream;
@@ -275,6 +279,46 @@ export class ARSessionManager {
   }
 
   /**
+   * Dynamically determine video constraints based on available cameras.
+   * If multiple video inputs exist (e.g., front and rear cameras), use 'environment' (rear).
+   * Otherwise, default to 'user' (front) for devices with only one camera (e.g., desktop webcams).
+   */
+  private async getDynamicVideoConstraints(): Promise<MediaStreamConstraints['video']> {
+    const baseConstraints: MediaStreamConstraints['video'] = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    };
+
+    try {
+      // Enumerate available video input devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter(device => device.kind === 'videoinput');
+
+      // If multiple cameras exist, prefer the rear/environment camera
+      if (videoInputs.length > 1) {
+        return {
+          ...baseConstraints,
+          facingMode: 'environment',
+        };
+      }
+
+      // Single camera or no enumeration support - default to 'user'
+      // This handles desktop browsers (no rear camera) gracefully
+      return {
+        ...baseConstraints,
+        facingMode: 'user',
+      };
+    } catch (error) {
+      console.warn('Could not enumerate devices, using default constraints:', error);
+      // Fallback to 'user' mode if enumeration fails
+      return {
+        ...baseConstraints,
+        facingMode: 'user',
+      };
+    }
+  }
+
+  /**
    * Setup MediaPipe Web Worker for non-blocking CV processing
    */
   private async setupWorker(): Promise<void> {
@@ -284,7 +328,7 @@ export class ARSessionManager {
       // @fix BUG-04: Store timeoutId so we can clear it when READY fires
       let timeoutId: ReturnType<typeof setTimeout>;
 
-      this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      this.worker.onmessage = (event: MessageEvent<{ type: string; result?: unknown; timestamp?: number; error?: string }>) => {
         const { type } = event.data;
 
         if (type === 'READY') {
@@ -292,7 +336,7 @@ export class ARSessionManager {
           clearTimeout(timeoutId);
           resolve();
         } else if (type === 'HAND_RESULT') {
-          this.handleHandResult(event.data.result, event.data.timestamp);
+          this.handleHandResult(event.data.result as HandTrackingResult | null, event.data.timestamp ?? 0);
         } else if (type === 'ERROR') {
           console.error('Worker error:', event.data.error);
         }
@@ -443,41 +487,6 @@ export class ARSessionManager {
 
     this.isRendering = true;
     render();
-  }
-
-  /**
-   * Start the AR session
-   * Begins both tracking and rendering loops
-   * 
-   * @param video - The video element for camera feed
-   * @param canvas - The canvas element for Three.js rendering
-   * @deprecated Use initialize() followed by startLoops() instead
-   */
-  start(video: HTMLVideoElement, canvas: HTMLCanvasElement): void {
-    if (this.state !== ARSessionState.CAMERA_READY && this.state !== ARSessionState.TRACKING_LOST) {
-      console.warn('Cannot start session in current state:', this.state);
-      return;
-    }
-
-    // Set video element in scene
-    if (this.scene) {
-      this.scene.setVideoElement(video);
-    }
-
-    // Setup renderer canvas
-    if (this.scene) {
-      const container = canvas.parentElement;
-      if (container) {
-        container.appendChild(this.scene.getDomElement());
-        
-        // Initial resize with object-cover compensation
-        const rect = container.getBoundingClientRect();
-        this.scene.resize(rect.width, rect.height, video.videoWidth, video.videoHeight);
-      }
-    }
-
-    this.startTrackingLoop();
-    this.startRenderLoop();
   }
 
   /**

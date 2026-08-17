@@ -9,12 +9,51 @@
 import React, { useEffect, useCallback, useRef } from 'react';
 import { useARStore, selectShouldShowFallback, selectIsLoading, selectErrorMessage, selectFallbackMode, selectModelLoadingProgress } from '../store/useARStore';
 import { DeviceProfiler } from '../utils/DeviceProfiler';
-// Note: ARSessionState import removed as it was unused (TS6133)
 
 // Lazy load heavy components
 const ARVideoCanvas = React.lazy(() => import('./ARVideoCanvas'));
 const Fallback3DViewer = React.lazy(() => import('./Fallback3DViewer'));
 const ARControls = React.lazy(() => import('./ARControls'));
+
+/**
+ * Dynamically determine video constraints based on available cameras.
+ * If multiple video inputs exist (e.g., front and rear cameras), use 'environment' (rear).
+ * Otherwise, default to 'user' (front) for devices with only one camera (e.g., desktop webcams).
+ */
+async function getDynamicVideoConstraints(): Promise<MediaStreamConstraints['video']> {
+  const baseConstraints: MediaStreamConstraints['video'] = {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+  };
+
+  try {
+    // Enumerate available video input devices
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter(device => device.kind === 'videoinput');
+
+    // If multiple cameras exist, prefer the rear/environment camera
+    if (videoInputs.length > 1) {
+      return {
+        ...baseConstraints,
+        facingMode: 'environment',
+      };
+    }
+
+    // Single camera or no enumeration support - default to 'user'
+    // This handles desktop browsers (no rear camera) gracefully
+    return {
+      ...baseConstraints,
+      facingMode: 'user',
+    };
+  } catch (error) {
+    console.warn('Could not enumerate devices, using default constraints:', error);
+    // Fallback to 'user' mode if enumeration fails
+    return {
+      ...baseConstraints,
+      facingMode: 'user',
+    };
+  }
+}
 
 interface ARTryOnModalProps {
   isOpen: boolean;
@@ -86,10 +125,11 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
           return; // setDeviceClass already called activateFallback — nothing left to do here
         }
 
-        // Request camera permission
+        // Request camera permission with dynamic facing mode detection
         try {
+          const videoConstraints = await getDynamicVideoConstraints();
           const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment' },
+            video: videoConstraints,
           });
           
           // Stop the stream immediately after getting permission
