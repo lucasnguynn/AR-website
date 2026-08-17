@@ -1,1 +1,1 @@
-(src/ARSessionManager.ts)
+Nothing should be ignored in this case, as only a TypeScript source file (`src/ARScene.ts`) was modified and there are no build artifacts, dependencies, or temporary files in the changes.

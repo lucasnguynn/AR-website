@@ -146,7 +146,8 @@ export class ARScene {
     
     // Load HDRI environment map for realistic metallic/refractive materials
     // @fix BUG-11: Add error handler and fallback to RoomEnvironment when HDRI fails
-    const hdriUrl = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/equirectangular/royal_esplanade_1k.hdr';
+    // @fix BUG-HDR-01: Use Poly Haven CDN (CC0, rate-limit-free) instead of GitHub raw URL
+    const hdriUrl = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/royal_esplanade_1k.hdr';
     new RGBELoader()
       .load(
         hdriUrl,
