@@ -58,7 +58,9 @@ export interface ARSessionConfig {
  */
 const DEFAULT_CONFIG: ARSessionConfig = {
   mediaPipeWasmPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
-  ringModelUrl: '/models/ring.glb',
+  // NOTE: This default is overridden by every call site that passes ringModelUrl explicitly.
+  // Fallback points to the first catalog entry for self-contained testing.
+  ringModelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/MetalRoughSpheres/glTF-Binary/MetalRoughSpheres.glb',
   ringScale: 1.0,
   trackingFPS: 20,
   minDetectionConfidence: 0.5,
