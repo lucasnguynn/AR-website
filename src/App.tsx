@@ -1,52 +1,54 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import ARTryOnModal from './components/ARTryOnModal'
 
-// Mock ARTryOnModal component for testing purposes
-// In production, this would be imported from your components directory
-function ARTryOnModal({ isOpen }: { isOpen: boolean }) {
-  const [loading, setLoading] = useState(true)
+/**
+ * Public glTF-Binary ring model from the official Khronos sample repo.
+ * Swap this for your own CDN-hosted .glb when you have one.
+ */
+const RING_MODEL_URL =
+  'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Ring/glTF-Binary/Ring.glb'
 
-  useEffect(() => {
-    // Simulate loading complete
-    const timer = setTimeout(() => setLoading(false), 2000)
-    return () => clearTimeout(timer)
-  }, [])
-
-  if (!isOpen) return null
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-90 z-40 flex items-center justify-center">
-      <div className="relative w-full h-full max-w-4xl max-h-[80vh] mx-auto p-4">
-        {/* Header with custom hex color #D5FD50 */}
-        <h1 className="text-[#D5FD50] text-3xl font-bold mb-4 text-center">
-          WebAR Jewelry Try-On Experience
-        </h1>
-        
-        {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <p className="text-[#D5FD50] text-xl animate-pulse">Initializing AR Engine...</p>
-          </div>
-        ) : (
-          <div className="bg-gray-900 rounded-lg p-6 h-full overflow-auto">
-            <div className="text-white space-y-4">
-              <p>Camera access initialized.</p>
-              <p>Ready for jewelry overlay rendering.</p>
-              <div className="mt-8 p-4 border border-[#D5FD50] rounded">
-                <p className="text-[#D5FD50]">AR System Active - Waiting for jewelry selection</p>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// Main App component
 function App() {
+  const [isOpen, setIsOpen] = useState(false)
+
   return (
-    <div className="w-full h-full bg-black">
-      {/* ARTryOnModal set to isOpen={true} for testing purposes */}
-      <ARTryOnModal isOpen={true} />
+    <div className="flex flex-col items-center justify-center w-full min-h-screen bg-black gap-6">
+      {/* Hero label */}
+      <h1 className="text-brand-neon text-4xl font-bold tracking-tight text-center px-4">
+        WebAR Jewelry Try-On
+      </h1>
+
+      <p className="text-white/60 text-sm text-center max-w-xs px-4">
+        Point your camera at your hand and see how the ring looks in real time.
+      </p>
+
+      {/* Primary CTA — opens the real ARTryOnModal */}
+      <button
+        onClick={() => setIsOpen(true)}
+        className="
+          mt-4 px-10 py-4
+          bg-brand-neon text-black
+          text-lg font-bold rounded-full
+          hover:opacity-90 active:scale-95
+          transition-all duration-150
+          shadow-[0_0_24px_rgba(213,253,80,0.35)]
+        "
+      >
+        Try On Ring
+      </button>
+
+      {/*
+        Real ARTryOnModal — previously this was an inline mock that:
+          • lacked the required `onClose` and `ringModelUrl` props,
+          • duplicated component logic already defined in ARTryOnModal.tsx,
+          • and used hardcoded arbitrary Tailwind colour values.
+        All three issues are resolved here.
+      */}
+      <ARTryOnModal
+        isOpen={isOpen}
+        onClose={() => setIsOpen(false)}
+        ringModelUrl={RING_MODEL_URL}
+      />
     </div>
   )
 }
