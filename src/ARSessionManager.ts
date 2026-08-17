@@ -466,36 +466,36 @@ export class ARSessionManager {
    * @fix BUG-09: Add graceful fallback to setInterval for Firefox which doesn't support requestVideoFrameCallback
    */
   private startTrackingLoop(): void {
+    // Create reusable offscreen canvas ONCE — avoids 900+ allocations/minute
+    const offscreenCanvas = document.createElement('canvas');
+    let offscreenCtx: CanvasRenderingContext2D | null = null;
+
     const processFrame = async () => {
       if (!this.isTracking || !this.worker || !this.videoElement) {
         return;
       }
 
       try {
-        // Create offscreen canvas for frame extraction
-        const canvas = document.createElement('canvas');
-        canvas.width = this.videoElement.videoWidth;
-        canvas.height = this.videoElement.videoHeight;
-        const ctx = canvas.getContext('2d');
+        const vw = this.videoElement.videoWidth;
+        const vh = this.videoElement.videoHeight;
 
-        if (!ctx) {
-          throw new Error('Could not get 2D context');
+        // Resize canvas only if video dimensions changed (avoids re-allocation)
+        if (offscreenCanvas.width !== vw || offscreenCanvas.height !== vh) {
+          offscreenCanvas.width = vw;
+          offscreenCanvas.height = vh;
+          offscreenCtx = offscreenCanvas.getContext('2d');
         }
 
-        // Draw current video frame
-        ctx.drawImage(this.videoElement, 0, 0, canvas.width, canvas.height);
-        
-        // Get image data for worker
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        if (!offscreenCtx) return;
+
+        offscreenCtx.drawImage(this.videoElement, 0, 0, vw, vh);
+        const imageData = offscreenCtx.getImageData(0, 0, vw, vh);
         const timestamp = performance.now();
 
-        // Send to worker for processing
-        this.worker.postMessage({
-          type: 'PROCESS',
-          imageData,
-          timestamp,
-        } as WorkerProcessMessage, [imageData.data.buffer]);
-
+        this.worker.postMessage(
+          { type: 'PROCESS', imageData, timestamp } as WorkerProcessMessage,
+          [imageData.data.buffer]
+        );
       } catch (error) {
         console.error('Frame processing error:', error);
       }
@@ -518,10 +518,7 @@ export class ARSessionManager {
       // Firefox fallback: poll at configured trackingFPS
       const intervalMs = 1000 / this.config.trackingFPS;
       const intervalId = setInterval(() => {
-        if (!this.isTracking) {
-          clearInterval(intervalId);
-          return;
-        }
+        if (!this.isTracking) { clearInterval(intervalId); return; }
         processFrame();
       }, intervalMs);
     }
@@ -612,6 +609,31 @@ export class ARSessionManager {
   }
 
   /**
+   * Set ring scale for pose estimation metadata.
+   * Called when user adjusts ring size via UI slider.
+   */
+  public setRingScale(scale: number): void {
+    if (this.poseEstimator) {
+      this.poseEstimator.setMetadata({ scale });
+    }
+  }
+
+  /**
+   * Swap the ring model at runtime without leaving the AR session.
+   * Handles debouncing by checking if a previous swap is in progress.
+   */
+  public async swapRingModel(url: string): Promise<void> {
+    if (!this.scene) return;
+    
+    const setModelLoadingProgress = useARStore.getState().setModelLoadingProgress;
+    setModelLoadingProgress(0);
+    
+    await this.scene.loadRing(url, this.config.ringScale, (progress: number) => {
+      setModelLoadingProgress(progress);
+    });
+  }
+
+  /**
    * Stop the AR session
    * Halts all loops but preserves resources
    */
@@ -693,7 +715,7 @@ export class ARSessionManager {
    * 
    * @returns Base64 PNG data URL, or null if not ready
    */
-  takeSnapshot(): string | null {
+  public takeSnapshot(): string | null {
     if (!this.videoElement || !this.scene) {
       return null;
     }

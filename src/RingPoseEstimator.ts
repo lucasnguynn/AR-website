@@ -376,24 +376,30 @@ export class RingPoseEstimator {
     
     // Calculate basis vectors for rotation
     const forward = this.calculateForwardVector(worldMCP, worldPIP);
-    const right = this.calculateRightVector(worldIndexMCP, worldPinkyMCP);
+    let right = this.calculateRightVector(worldIndexMCP, worldPinkyMCP);
+    
+    // FEAT-02: Handedness Compensation
+    // If it's the user's LEFT hand (which appears on the right side of a mirrored camera),
+    // the Index→Pinky direction must be negated to maintain correct ring orientation.
+    const isLeftHand = trackingResult.handedness === 'Left';
+    if (isLeftHand) {
+      right.negate(); // flip the right vector for left hand
+    }
     
     // Calculate rotation quaternion
     let rotation = this.calculateRotation(forward, right);
     
     // Apply temporal smoothing
     const euler = new THREE.Euler().setFromQuaternion(rotation);
-    const smoothed = {
-      position: this.positionFilter.apply(worldPosition, timestamp),
-      rotation: this.rotationFilter.apply(euler, timestamp),
-    };
+    const smoothedEuler = this.rotationFilter.apply(euler, timestamp);
+    const smoothedPosition = this.positionFilter.apply(worldPosition, timestamp);
     
     // Convert smoothed euler back to quaternion
-    rotation.copy(smoothed.rotation);
+    rotation.setFromEuler(smoothedEuler);
     
     // Create pose object
     const pose: RingPose = {
-      position: smoothed.position.clone(),
+      position: smoothedPosition.clone(),
       rotation: rotation.clone(),
       scale: this.metadata.scale,
       confidence: trackingResult.confidence,
