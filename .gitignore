@@ -1,41 +1,5 @@
-```
-# Dependencies
-node_modules/
+(index.html is a source file, so no need to add anything to .gitignore)
 
-# Build outputs
-dist/
-build/
-*.js.map
-*.ts.map
+```gitignore
 
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment
-.env
-.env.local
-.env.*
-
-# Editors
-.vscode/
-.idea/
-*.swp
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-
-# Coverage reports
-coverage/
-htmlcov/
-
-# MyPy cache
-.mypy_cache/
 ```
