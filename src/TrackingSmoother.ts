@@ -142,8 +142,8 @@ export class QuaternionEMAFilter {
       this.last.w * q.w;
 
     // If quaternions are in opposite hemispheres, negate one to force shortest arc
-    const target = dot < 0 ? q.clone().negate() : q;
-
+const target = dot < 0 ? q.clone().set(-q.x, -q.y, -q.z, -q.w) : q;
+    
     r.copy(this.last).slerp(target, this.alpha);
     this.last.copy(r);
     return r;
