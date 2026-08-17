@@ -23,6 +23,10 @@ export interface RingItem {
 //   - Y-axis pointing "up" through the bore (perpendicular to the ring plane)
 //   - Scale: 1 unit = 1 mm (standard jewellery CAD convention)
 // TODO [PRODUCTION]: Add real thumbnail images (400×400 WebP, transparent bg) for each ring.
+
+// FIX: Use import.meta.env.BASE_URL for GitHub Pages subpath resolution
+const BASE_PATH = import.meta.env.BASE_URL;
+
 export const DEFAULT_CATALOG: RingItem[] = [
   {
     id: 'diamond-solitaire',
@@ -51,6 +55,15 @@ export const DEFAULT_CATALOG: RingItem[] = [
     material: 'Platinum',
     price: '15.200.000 ₫',
   },
+  // EXAMPLE: How to reference LOCAL models from /public/models/ folder:
+  // {
+  //   id: 'custom-ring-1',
+  //   name: 'Custom Ring 1',
+  //   modelUrl: `${BASE_PATH}models/custom-ring-1.glb`,
+  //   thumbnailUrl: `${BASE_PATH}thumbnails/custom-ring-1.webp`,
+  //   material: '18K Gold',
+  //   price: '10.000.000 ₫',
+  // },
 ];
 
 interface RingCatalogProps {
