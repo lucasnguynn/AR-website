@@ -2,13 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="./vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WebAR Jewelry Try-On</title>
   </head>
   <body>
     <div id="root"></div>
-    <div id="loading">Loading WebAR Experience...</div>
-    <script type="module" src="./src/main.tsx"></script>
+    <!-- Bẫy Loading đã được setup để mờ dần -->
+    <div id="loading" class="fixed inset-0 flex items-center justify-center bg-black z-50 transition-opacity duration-500">
+      <h1 class="text-[#D5FD50] text-2xl font-bold animate-pulse">Loading WebAR Experience...</h1>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
