@@ -1,11 +1,14 @@
 /**
- * ARSessionManager.ts
- * 
- * Orchestrator class that manages the complete AR session lifecycle.
- * Implements decoupled tracking and rendering loops, MediaPipe Web Worker integration,
- * state management, and zero-upload privacy architecture.
- * 
- * @module ARSessionManager
+ * ARSessionManager.ts — UPGRADED
+ *
+ * Changes vs original:
+ *  1. minDetectionConfidence / minTrackingConfidence defaults raised to 0.7.
+ *  2. getDynamicVideoConstraints: mobile-first environment facing, resolution ladder,
+ *     robust device enumeration.
+ *  3. NEW public method: switchCamera(facingMode) — stops tracks, re-acquires stream,
+ *     reconnects VideoTexture to Three.js scene without tearing down the full session.
+ *  4. ARSessionConfig exposes currentFacingMode for UI sync.
+ *  5. setupCamera respects config.videoConstraints if explicitly provided by caller.
  */
 
 import { RingPoseEstimator, HandTrackingResult, RingPose } from './RingPoseEstimator';
@@ -13,148 +16,128 @@ import { ARScene } from './ARScene';
 import { useARStore } from './store/useARStore';
 import MediaPipeWorker from './workers/mediapipe.worker?worker';
 
-/**
- * AR Session State Enum
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
 export enum ARSessionState {
-  /** Initial state before any setup */
-  IDLE = 'IDLE',
-  /** Initializing camera and MediaPipe */
+  IDLE         = 'IDLE',
   INITIALIZING = 'INITIALIZING',
-  /** Camera ready, waiting for hand detection */
   CAMERA_READY = 'CAMERA_READY',
-  /** Hand detected, tracking active */
   TRACKING_ACTIVE = 'TRACKING_ACTIVE',
-  /** Hand lost, maintaining last known pose */
-  TRACKING_LOST = 'TRACKING_LOST',
-  /** Error occurred */
-  ERROR = 'ERROR',
-  /** Session stopped */
+  TRACKING_LOST   = 'TRACKING_LOST',
+  ERROR  = 'ERROR',
   STOPPED = 'STOPPED',
 }
 
-/**
- * Session configuration
- */
+export type FacingMode = 'environment' | 'user';
+
 export interface ARSessionConfig {
-  /** Path to MediaPipe Hand Landmarker WASM files */
   mediaPipeWasmPath: string;
-  /** Path to the ring model GLB file */
   ringModelUrl: string;
-  /** Initial ring scale */
   ringScale: number;
-  /** Target FPS for tracking loop (10-30 recommended) */
   trackingFPS: number;
-  /** Minimum confidence for hand detection */
   minDetectionConfidence: number;
-  /** Minimum confidence for landmark tracking */
   minTrackingConfidence: number;
-  /** Video constraints for getUserMedia */
-  videoConstraints: MediaStreamConstraints['video'];
+  videoConstraints?: MediaStreamConstraints['video'];
 }
 
-/**
- * Default session configuration
- */
 const DEFAULT_CONFIG: ARSessionConfig = {
   mediaPipeWasmPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
-  // NOTE: This default is overridden by every call site that passes ringModelUrl explicitly.
-  // Fallback points to the first catalog entry for self-contained testing.
-  ringModelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/MetalRoughSpheres/glTF-Binary/MetalRoughSpheres.glb',
+  ringModelUrl: '',
   ringScale: 1.0,
   trackingFPS: 20,
-  minDetectionConfidence: 0.5,
-  minTrackingConfidence: 0.5,
-  videoConstraints: {
-    // facingMode will be set dynamically based on available cameras
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
-  },
+  // ── UPGRADED: 0.7 prevents jittery detections in poor lighting ──
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence:  0.7,
 };
 
-/**
- * Callback types for session events
- */
+/** Resolution ladder: tried in order, first success wins */
+const RESOLUTION_LADDER = [
+  { width: 1920, height: 1080 },
+  { width: 1280, height:  720 },
+  { width:  640, height:  480 },
+];
+
 export type SessionStateCallback = (state: ARSessionState, error?: string) => void;
-export type PoseUpdateCallback = (pose: RingPose | null) => void;
+export type PoseUpdateCallback   = (pose: RingPose | null) => void;
 
-/**
- * Message types for Web Worker communication
- */
-interface WorkerInitMessage {
-  type: 'INIT';
-  wasmPath: string;
-  minDetectionConfidence: number;
-  minTrackingConfidence: number;
+// Worker message types (internal)
+interface WorkerInitMessage    { type: 'INIT'; wasmPath: string; minDetectionConfidence: number; minTrackingConfidence: number; }
+interface WorkerProcessMessage { type: 'PROCESS'; buffer: ArrayBuffer; width: number; height: number; timestamp: number; }
+interface WorkerStopMessage    { type: 'STOP'; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function isMobile(): boolean {
+  return (
+    window.matchMedia('(pointer: coarse)').matches ||
+    /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)
+  );
 }
 
-interface WorkerProcessMessage {
-  type: 'PROCESS';
-  buffer: ArrayBuffer;
-  width: number;
-  height: number;
-  timestamp: number;
+async function preferredFacingMode(): Promise<FacingMode> {
+  if (!isMobile()) return 'user'; // desktop always front
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+    return videoInputs.length > 1 ? 'environment' : 'user';
+  } catch {
+    return 'environment'; // safe default on mobile
+  }
 }
 
-interface WorkerStopMessage {
-  type: 'STOP';
+async function acquireStreamWithFallback(facingMode: FacingMode): Promise<MediaStream> {
+  let lastError: unknown;
+  for (const { width, height } of RESOLUTION_LADDER) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: facingMode },
+          width:  { ideal: width },
+          height: { ideal: height },
+          frameRate: { ideal: 30, max: 60 },
+        },
+        audio: false,
+      });
+    } catch (err) {
+      lastError = err;
+      if (err instanceof DOMException &&
+          (err.name === 'NotAllowedError' || err.name === 'NotFoundError')) {
+        throw err; // won't be fixed by resolution change
+      }
+    }
+  }
+  throw lastError;
 }
 
-/**
- * Response types from Web Worker
- */
-interface WorkerReadyResponse {
-  type: 'READY';
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// ARSessionManager
+// ─────────────────────────────────────────────────────────────────────────────
 
-interface WorkerHandResultResponse {
-  type: 'HAND_RESULT';
-  result: HandTrackingResult | null;
-  timestamp: number;
-}
-
-interface WorkerErrorResponse {
-  type: 'ERROR';
-  error: string;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-type WorkerResponse = WorkerReadyResponse | WorkerHandResultResponse | WorkerErrorResponse;
-
-/**
- * AR Session Manager
- * 
- * Main orchestrator for the Virtual Ring Try-On experience:
- * - Manages camera stream lifecycle
- * - Spawns MediaPipe Web Worker for non-blocking CV
- * - Runs decoupled tracking (async) and rendering (requestAnimationFrame) loops
- * - Handles state transitions and error recovery
- * - Ensures zero-upload privacy by processing everything locally
- */
 export class ARSessionManager {
   private config: ARSessionConfig;
   private scene: ARScene | null = null;
   private poseEstimator: RingPoseEstimator | null = null;
-  
-  // Media
+
   private videoElement: HTMLVideoElement | null = null;
   private mediaStream: MediaStream | null = null;
   private worker: Worker | null = null;
-  
-  // State
+
   private state: ARSessionState = ARSessionState.IDLE;
   private lastPose: RingPose | null = null;
   private isTracking: boolean = false;
   private isRendering: boolean = false;
-  
-  // Loop control
+
   private animationFrameId: number | null = null;
   private trackingIntervalId: ReturnType<typeof setInterval> | null = null;
-  
-  // Back-pressure flag to prevent frame queue flooding
   private workerBusy = false;
-  
-  // Callbacks
+
+  /** Current facing mode — readable by UI to update camera flip button icon */
+  public currentFacingMode: FacingMode = 'environment';
+
   public onStateChange: SessionStateCallback | null = null;
   private onPoseUpdate: PoseUpdateCallback | null = null;
   public onError: ((error: Error) => void) | null = null;
@@ -163,241 +146,200 @@ export class ARSessionManager {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  /**
-   * Set state change callback
-   */
-  setStateCallback(callback: SessionStateCallback): void {
-    this.onStateChange = callback;
-  }
+  // ── Callback setters (unchanged) ─────────────────────────────────────────
 
-  /**
-   * Set error callback
-   */
-  setErrorCallback(callback: (error: Error) => void): void {
-    this.onError = callback;
-  }
+  setStateCallback(callback: SessionStateCallback): void  { this.onStateChange = callback; }
+  setErrorCallback(callback: (e: Error) => void): void    { this.onError = callback; }
+  setPoseCallback(callback: PoseUpdateCallback): void     { this.onPoseUpdate = callback; }
+  getState(): ARSessionState                              { return this.state; }
 
-  /**
-   * Set pose update callback
-   */
-  setPoseCallback(callback: PoseUpdateCallback): void {
-    this.onPoseUpdate = callback;
-  }
-
-  /**
-   * Get current session state
-   */
-  getState(): ARSessionState {
-    return this.state;
-  }
-
-  /**
-   * Update internal state and notify callback
-   */
   private setState(newState: ARSessionState, error?: string): void {
     this.state = newState;
-    if (this.onStateChange) {
-      this.onStateChange(newState, error);
-    }
+    this.onStateChange?.(newState, error);
   }
 
-  /**
-   * Initialize the AR session
-   * Sets up camera, worker, and scene
-   */
+  // ── Initialize ───────────────────────────────────────────────────────────
+
   async initialize(containerElement: HTMLElement): Promise<void> {
     try {
       this.setState(ARSessionState.INITIALIZING);
 
-      // Create video element
       this.videoElement = document.createElement('video');
       this.videoElement.setAttribute('playsinline', 'true');
       this.videoElement.setAttribute('muted', 'true');
       this.videoElement.style.display = 'none';
 
-      // Setup camera
       await this.setupCamera();
 
-      // Initialize scene
       const rect = containerElement.getBoundingClientRect();
-      this.scene = new ARScene({
-        width: rect.width,
-        height: rect.height,
-      });
+      this.scene = new ARScene({ width: rect.width, height: rect.height });
       this.scene.setVideoElement(this.videoElement);
-
-      // Append canvas to container
       containerElement.appendChild(this.scene.getDomElement());
 
-      // Initialize pose estimator
       this.poseEstimator = new RingPoseEstimator();
-
-      // Setup Web Worker
       await this.setupWorker();
 
-      // Load ring model with progress callback
-      const setModelLoadingProgress = useARStore.getState().setModelLoadingProgress;
-      const setSnapshotRef = useARStore.getState().setSnapshotRef;
+      const { setModelLoadingProgress, setSnapshotRef } = useARStore.getState();
       await this.scene.loadRing(
         this.config.ringModelUrl,
         this.config.ringScale,
-        (progress: number) => {
-          setModelLoadingProgress(progress);
-        }
+        (p: number) => setModelLoadingProgress(p),
       );
-
-      // Inject the takeSnapshot function reference into Zustand store
       setSnapshotRef(this.takeSnapshot.bind(this));
 
       this.setState(ARSessionState.CAMERA_READY);
-
     } catch (error) {
-      console.error('AR Session initialization failed:', error);
-      this.setState(ARSessionState.ERROR, error instanceof Error ? error.message : 'Unknown error');
+      console.error('[ARSessionManager] Initialization failed:', error);
+      this.setState(
+        ARSessionState.ERROR,
+        error instanceof Error ? error.message : 'Unknown error',
+      );
       throw error;
     }
   }
 
-  /**
-   * Setup camera stream using getUserMedia with dynamic facing mode detection
-   */
+  // ── Camera setup (mobile-first) ──────────────────────────────────────────
+
   private async setupCamera(): Promise<void> {
-    if (!this.videoElement) {
-      throw new Error('Video element not created');
-    }
+    if (!this.videoElement) throw new Error('Video element not created');
 
     try {
-      // Dynamically detect facing mode based on available cameras
-      const videoConstraints = await this.getDynamicVideoConstraints();
-      
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: videoConstraints,
-      });
-
-      this.videoElement.srcObject = this.mediaStream;
-      
-      return new Promise((resolve, reject) => {
-        this.videoElement!.onloadedmetadata = () => {
-          this.videoElement!.play().then(resolve).catch(reject);
-        };
-        this.videoElement!.onerror = () => reject(new Error('Video loading failed'));
-      });
-    } catch (error) {
-      throw new Error(`Camera access denied: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  /**
-   * Dynamically determine video constraints based on available cameras.
-   * If multiple video inputs exist (e.g., front and rear cameras), use 'environment' (rear).
-   * Otherwise, default to 'user' (front) for devices with only one camera (e.g., desktop webcams).
-   */
-  private async getDynamicVideoConstraints(): Promise<MediaStreamConstraints['video']> {
-    const baseConstraints: MediaStreamConstraints['video'] = {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    };
-
-    try {
-      // Enumerate available video input devices
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoInputs = devices.filter(device => device.kind === 'videoinput');
-
-      // If multiple cameras exist, prefer the rear/environment camera
-      if (videoInputs.length > 1) {
-        return {
-          ...baseConstraints,
-          facingMode: 'environment',
-        };
+      // If the caller passed explicit constraints, respect them.
+      // Otherwise run the mobile-first, resolution-fallback logic.
+      if (this.config.videoConstraints) {
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: this.config.videoConstraints,
+          audio: false,
+        });
+        // Detect actual facing mode from the track settings
+        const track = this.mediaStream.getVideoTracks()[0];
+        const settings = track?.getSettings();
+        this.currentFacingMode =
+          (settings?.facingMode as FacingMode) ??
+          (isMobile() ? 'environment' : 'user');
+      } else {
+        const facing = await preferredFacingMode();
+        this.currentFacingMode = facing;
+        this.mediaStream = await acquireStreamWithFallback(facing);
       }
 
-      // Single camera or no enumeration support - default to 'user'
-      // This handles desktop browsers (no rear camera) gracefully
-      return {
-        ...baseConstraints,
-        facingMode: 'user',
-      };
+      this.videoElement.srcObject = this.mediaStream;
+
+      return new Promise((resolve, reject) => {
+        this.videoElement!.onloadedmetadata = () =>
+          this.videoElement!.play().then(resolve).catch(reject);
+        this.videoElement!.onerror = () =>
+          reject(new Error('Video element failed to load'));
+      });
     } catch (error) {
-      console.warn('Could not enumerate devices, using default constraints:', error);
-      // Fallback to 'user' mode if enumeration fails
-      return {
-        ...baseConstraints,
-        facingMode: 'user',
-      };
+      throw new Error(
+        `Camera access failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
+  // ── PUBLIC: Camera switching ─────────────────────────────────────────────
   /**
-   * Setup MediaPipe Web Worker for non-blocking CV processing
+   * Switch between front ('user') and rear ('environment') cameras WITHOUT
+   * tearing down the MediaPipe worker or the Three.js scene.
+   *
+   * Steps:
+   *   1. Stop current video tracks.
+   *   2. Acquire new stream with requested facingMode.
+   *   3. Reconnect video element srcObject.
+   *   4. Reconnect Three.js VideoTexture (scene.setVideoElement).
+   *   5. Reset pose estimator smoother (prevents position pop artefact).
    */
+  public async switchCamera(targetFacing?: FacingMode): Promise<void> {
+    const nextFacing: FacingMode =
+      targetFacing ?? (this.currentFacingMode === 'environment' ? 'user' : 'environment');
+
+    try {
+      // 1. Stop current tracks
+      this.mediaStream?.getTracks().forEach((t) => t.stop());
+      this.mediaStream = null;
+
+      // 2. Acquire with resolution fallback
+      this.mediaStream = await acquireStreamWithFallback(nextFacing);
+      this.currentFacingMode = nextFacing;
+
+      // 3. Reconnect video element
+      if (this.videoElement) {
+        this.videoElement.srcObject = this.mediaStream;
+        await new Promise<void>((resolve, reject) => {
+          this.videoElement!.onloadedmetadata = () =>
+            this.videoElement!.play().then(resolve).catch(reject);
+          this.videoElement!.onerror = () =>
+            reject(new Error('Video reload failed after camera switch'));
+        });
+      }
+
+      // 4. Reconnect VideoTexture in Three.js scene
+      if (this.scene && this.videoElement) {
+        this.scene.setVideoElement(this.videoElement);
+      }
+
+      // 5. Reset filters to avoid pose pop from stale position/rotation state
+      this.poseEstimator?.reset();
+      this.lastPose = null;
+
+    } catch (error) {
+      console.error('[ARSessionManager] Camera switch failed:', error);
+      throw error;
+    }
+  }
+
+  // ── Worker setup (unchanged logic, tidied) ───────────────────────────────
+
   private async setupWorker(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.worker = new MediaPipeWorker();
-
-      // @fix BUG-04: Store timeoutId so we can clear it when READY fires
       let timeoutId: ReturnType<typeof setTimeout>;
 
-      this.worker.onmessage = (event: MessageEvent<{ type: string; result?: unknown; timestamp?: number; error?: string }>) => {
-        const { type } = event.data;
-
-        if (type === 'READY') {
-          // @fix BUG-04: Clear timeout to prevent reject() on already-resolved Promise
+      this.worker.onmessage = (
+        event: MessageEvent<{ type: string; result?: unknown; timestamp?: number; error?: string }>,
+      ) => {
+        if (event.data.type === 'READY') {
           clearTimeout(timeoutId);
           resolve();
-        } else if (type === 'HAND_RESULT') {
-          this.handleHandResult(event.data.result as HandTrackingResult | null, event.data.timestamp ?? 0);
-        } else if (type === 'ERROR') {
-          console.error('Worker error:', event.data.error);
+        } else if (event.data.type === 'HAND_RESULT') {
+          this.handleHandResult(
+            event.data.result as HandTrackingResult | null,
+            event.data.timestamp ?? 0,
+          );
+        } else if (event.data.type === 'ERROR') {
+          console.error('[Worker] Error:', event.data.error);
         }
       };
 
-      this.worker.onerror = (error) => {
-        console.error('Worker error:', error);
-        reject(error);
-      };
+      this.worker.onerror = (err) => { clearTimeout(timeoutId); reject(err); };
 
-      // Initialize worker - worker is guaranteed non-null here since we just created it
       this.worker.postMessage({
         type: 'INIT',
-        wasmPath: this.config.mediaPipeWasmPath,
+        wasmPath:               this.config.mediaPipeWasmPath,
         minDetectionConfidence: this.config.minDetectionConfidence,
-        minTrackingConfidence: this.config.minTrackingConfidence,
+        minTrackingConfidence:  this.config.minTrackingConfidence,
       } as WorkerInitMessage);
 
-      // Timeout for worker initialization
-      timeoutId = setTimeout(() => {
-        reject(new Error('Worker initialization timeout'));
-      }, 10000);
+      timeoutId = setTimeout(() => reject(new Error('Worker initialization timed out')), 10000);
     });
   }
 
-  /**
-   * Handle hand tracking result from worker
-   */
+  // ── Hand result handler (unchanged) ─────────────────────────────────────
+
   private handleHandResult(result: HandTrackingResult | null, timestamp: number): void {
-    // Release back-pressure lock
     this.workerBusy = false;
-    
-    if (!this.poseEstimator || !this.scene) {
-      return;
-    }
+    if (!this.poseEstimator || !this.scene) return;
 
-    if (result && result.landmarks) {
-      // Estimate 3D pose
+    if (result?.landmarks) {
       const pose = this.poseEstimator.estimatePose(result, this.scene.camera, timestamp);
-
       if (pose) {
         this.lastPose = pose;
         this.isTracking = true;
-        
         if (this.state !== ARSessionState.TRACKING_ACTIVE) {
           this.setState(ARSessionState.TRACKING_ACTIVE);
         }
-
-        // Notify pose update
-        if (this.onPoseUpdate) {
-          this.onPoseUpdate(pose);
-        }
+        this.onPoseUpdate?.(pose);
       } else {
         this.isTracking = false;
         if (this.state === ARSessionState.TRACKING_ACTIVE) {
@@ -412,33 +354,20 @@ export class ARSessionManager {
     }
   }
 
-  /**
-   * Start the tracking loop using requestVideoFrameCallback
-   * This ensures MediaPipe only processes when a new physical frame is available,
-   * eliminating CPU waste from setTimeout-based polling.
-   * @fix BUG-09: Add graceful fallback to setInterval for Firefox which doesn't support requestVideoFrameCallback
-   * @fix BUG-02: Add back-pressure via workerBusy flag and transfer buffer correctly
-   */
+  // ── Tracking loop ────────────────────────────────────────────────────────
+
   private startTrackingLoop(): void {
-    // Create reusable offscreen canvas ONCE — avoids 900+ allocations/minute
     const offscreenCanvas = document.createElement('canvas');
     let offscreenCtx: CanvasRenderingContext2D | null = null;
 
     const processFrame = async () => {
-      if (!this.isTracking || !this.worker || !this.videoElement) {
-        return;
-      }
-
-      // Back-pressure: skip frame if worker is still busy
-      if (this.workerBusy) {
-        return;
-      }
+      if (!this.isTracking || !this.worker || !this.videoElement) return;
+      if (this.workerBusy) return;
 
       try {
         const vw = this.videoElement.videoWidth;
         const vh = this.videoElement.videoHeight;
 
-        // Resize canvas only if video dimensions changed (avoids re-allocation)
         if (offscreenCanvas.width !== vw || offscreenCanvas.height !== vh) {
           offscreenCanvas.width = vw;
           offscreenCanvas.height = vh;
@@ -451,248 +380,156 @@ export class ARSessionManager {
         const imageData = offscreenCtx.getImageData(0, 0, vw, vh);
         const timestamp = performance.now();
 
-        // Set back-pressure flag before posting message
         this.workerBusy = true;
-
-        // Transfer buffer to worker with explicit reconstruction data
         this.worker.postMessage(
           {
             type: 'PROCESS',
             buffer: imageData.data.buffer,
             width: vw,
             height: vh,
-            timestamp
+            timestamp,
           } as WorkerProcessMessage,
-          [imageData.data.buffer]
+          [imageData.data.buffer],
         );
-      } catch (error) {
-        console.error('Frame processing error:', error);
+      } catch (err) {
+        console.error('[ARSessionManager] Frame processing error:', err);
         this.workerBusy = false;
       }
 
-      // Re-register callback for next frame only if still tracking
       if (this.isTracking && this.videoElement) {
         if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
           this.videoElement.requestVideoFrameCallback(processFrame);
         }
-        // setTimeout fallback handled below
       }
     };
 
     this.isTracking = true;
 
-    // @fix BUG-09: Firefox doesn't support requestVideoFrameCallback, use setInterval fallback
     const intervalMs = 1000 / this.config.trackingFPS;
     if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
       this.videoElement?.requestVideoFrameCallback(processFrame);
     } else {
-      // Firefox fallback: poll at configured trackingFPS
+      // Firefox fallback
       this.trackingIntervalId = setInterval(() => {
-        if (!this.isTracking) { return; }
+        if (!this.isTracking) return;
         processFrame();
       }, intervalMs);
     }
   }
 
-  /**
-   * Start the rendering loop (requestAnimationFrame, 60 FPS)
-   */
+  // ── Render loop ──────────────────────────────────────────────────────────
+
   private startRenderLoop(): void {
     const render = () => {
-      if (!this.isRendering || !this.scene) {
-        return;
-      }
-
-      // Update ring pose if available
-      if (this.lastPose) {
-        this.scene.updatePose(this.lastPose);
-      }
-
-      // Render scene
+      if (!this.isRendering || !this.scene) return;
+      if (this.lastPose) this.scene.updatePose(this.lastPose);
       this.scene.render();
-
       this.animationFrameId = requestAnimationFrame(render);
     };
-
     this.isRendering = true;
     render();
   }
 
-  /**
-   * Start the tracking and render loops after initialize() has been called.
-   * This is the preferred method for starting the AR session after calling initialize().
-   * @fix NEW-02: New method to support the correct architecture where initialize() sets up
-   * the camera stream and Three.js canvas internally, then startLoops() begins the cycles.
-   */
+  // ── Public start/stop/resize ─────────────────────────────────────────────
+
   public startLoops(): void {
-    if (this.state !== ARSessionState.CAMERA_READY &&
-        this.state !== ARSessionState.TRACKING_LOST) {
-      console.warn('Cannot start loops in current state:', this.state);
+    if (
+      this.state !== ARSessionState.CAMERA_READY &&
+      this.state !== ARSessionState.TRACKING_LOST
+    ) {
+      console.warn('[ARSessionManager] Cannot start loops in state:', this.state);
       return;
     }
     this.startTrackingLoop();
     this.startRenderLoop();
   }
 
-  /**
-   * Resize the AR scene to match new container dimensions.
-   * @fix NEW-02: Public method to allow ARVideoCanvas to resize without accessing private scene property.
-   */
   public resize(width: number, height: number): void {
     if (!this.videoElement || !this.scene) return;
     this.scene.resize(width, height, this.videoElement.videoWidth, this.videoElement.videoHeight);
   }
 
-  /**
-   * Set ring scale for pose estimation metadata.
-   * Called when user adjusts ring size via UI slider.
-   */
   public setRingScale(scale: number): void {
-    if (this.poseEstimator) {
-      this.poseEstimator.setMetadata({ scale });
-    }
+    this.poseEstimator?.setMetadata({ scale });
   }
 
-  /**
-   * Swap the ring model at runtime without leaving the AR session.
-   * Handles debouncing by checking if a previous swap is in progress.
-   */
   public async swapRingModel(url: string): Promise<void> {
     if (!this.scene) return;
-    
-    const setModelLoadingProgress = useARStore.getState().setModelLoadingProgress;
+    const { setModelLoadingProgress } = useARStore.getState();
     setModelLoadingProgress(0);
-    
-    await this.scene.loadRing(url, this.config.ringScale, (progress: number) => {
-      setModelLoadingProgress(progress);
-    });
+    await this.scene.loadRing(url, this.config.ringScale, (p) => setModelLoadingProgress(p));
   }
 
-  /**
-   * Stop the AR session
-   * Halts all loops but preserves resources
-   */
+  // ── Lifecycle ────────────────────────────────────────────────────────────
+
   stop(): void {
     this.isTracking = false;
     this.isRendering = false;
-
-    // Cancel animation frame
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
     }
-
-    // Clear tracking interval (Firefox fallback)
     if (this.trackingIntervalId !== null) {
       clearInterval(this.trackingIntervalId);
       this.trackingIntervalId = null;
     }
-
     this.setState(ARSessionState.STOPPED);
   }
 
-  /**
-   * Dispose all resources and cleanup
-   * Must be called when component unmounts or session ends
-   */
   dispose(): void {
-    // Stop session
     this.stop();
 
-    // Terminate worker
     if (this.worker) {
       this.worker.postMessage({ type: 'STOP' } as WorkerStopMessage);
       this.worker.terminate();
       this.worker = null;
     }
 
-    // Stop media stream
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
-      this.mediaStream = null;
-    }
+    this.mediaStream?.getTracks().forEach((t) => t.stop());
+    this.mediaStream = null;
 
-    // Cleanup video element
     if (this.videoElement) {
       this.videoElement.srcObject = null;
       this.videoElement.remove();
       this.videoElement = null;
     }
 
-    // Dispose scene
-    if (this.scene) {
-      this.scene.dispose();
-      this.scene = null;
-    }
+    this.scene?.dispose();
+    this.scene = null;
 
-    // Dispose pose estimator
-    if (this.poseEstimator) {
-      this.poseEstimator.dispose();
-      this.poseEstimator = null;
-    }
+    this.poseEstimator?.dispose();
+    this.poseEstimator = null;
 
-    // Reset state
     this.lastPose = null;
     this.setState(ARSessionState.IDLE);
   }
 
-  /**
-   * Get current pose (for debugging or external use)
-   */
-  getCurrentPose(): RingPose | null {
-    return this.lastPose;
-  }
-
-  /**
-   * Check if session is actively tracking a hand
-   */
+  getCurrentPose(): RingPose | null { return this.lastPose; }
   isActivelyTracking(): boolean {
     return this.isTracking && this.state === ARSessionState.TRACKING_ACTIVE;
   }
 
-  /**
-   * Take a snapshot of the current AR frame
-   * Composites the video feed and Three.js canvas onto an in-memory 2D canvas
-   * 
-   * @returns Base64 JPEG data URL (quality 0.92), or null if not ready
-   */
+  // ── Snapshot ─────────────────────────────────────────────────────────────
+
   public takeSnapshot(): string | null {
-    if (!this.videoElement || !this.scene) {
-      return null;
-    }
+    if (!this.videoElement || !this.scene) return null;
 
     const scene = this.scene as unknown as { renderer: import('three').WebGLRenderer };
     const renderer = scene.renderer;
-    
-    // Get dimensions from video
-    const videoWidth = this.videoElement.videoWidth;
-    const videoHeight = this.videoElement.videoHeight;
-    
-    if (videoWidth === 0 || videoHeight === 0) {
-      return null;
-    }
+    const vw = this.videoElement.videoWidth;
+    const vh = this.videoElement.videoHeight;
+    if (!vw || !vh) return null;
 
-    // Create an in-memory canvas for compositing
     const compositeCanvas = document.createElement('canvas');
-    compositeCanvas.width = videoWidth;
-    compositeCanvas.height = videoHeight;
+    compositeCanvas.width = vw;
+    compositeCanvas.height = vh;
     const ctx = compositeCanvas.getContext('2d');
-    
-    if (!ctx) {
-      return null;
-    }
+    if (!ctx) return null;
 
-    // Draw the current video frame
-    ctx.drawImage(this.videoElement, 0, 0, videoWidth, videoHeight);
-
-    // Draw the Three.js canvas on top
-    // First, force a render to ensure we have the latest frame
+    ctx.drawImage(this.videoElement, 0, 0, vw, vh);
     this.scene.render();
-    
-    const threeCanvas = renderer.domElement;
-    ctx.drawImage(threeCanvas, 0, 0, videoWidth, videoHeight);
+    ctx.drawImage(renderer.domElement, 0, 0, vw, vh);
 
-    // Return as base64 JPEG data URL (0.92 quality = ~85% smaller than PNG, imperceptible loss for photos)
     return compositeCanvas.toDataURL('image/jpeg', 0.92);
   }
 }
