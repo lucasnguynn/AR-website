@@ -204,24 +204,48 @@ export class ARScene {
         url,
         (gltf) => {
           try {
-            // Extract the main mesh from GLTF
-            let mesh: THREE.Mesh | null = null;
-            
-            gltf.scene.traverse((child) => {
-              if (child instanceof THREE.Mesh && !mesh) {
-                mesh = child;
+            // Extract the first mesh from the GLTF scene graph.
+            //
+            // WHY rawMesh + const mesh:
+            // TypeScript 5.x treats `traverse`'s callback as opaque — it
+            // cannot prove the callback is ever invoked. A `let` initialised
+            // to `null` whose only write is inside that closure is therefore
+            // considered "possibly-never-assigned". Consequently, after the
+            // `if (rawMesh === null) throw` guard, the post-throw branch is
+            // unreachable from TypeScript's view and the type narrows to
+            // `never`, making every subsequent `.material` access an error.
+            //
+            // The fix has two parts:
+            //   1. `rawMesh = child as THREE.Mesh` — explicit cast inside
+            //      the closure so the write is unambiguous.
+            //   2. `const mesh: THREE.Mesh = rawMesh` — re-binding to a
+            //      `const` after the null-guard gives the compiler a fresh
+            //      non-nullable anchor that it cannot later widen to `never`.
+            let rawMesh: THREE.Mesh | null = null;
+
+            gltf.scene.traverse((child: THREE.Object3D) => {
+              if (rawMesh === null && child instanceof THREE.Mesh) {
+                rawMesh = child as THREE.Mesh;
               }
             });
-            
-            if (!mesh) {
+
+            if (rawMesh === null) {
               throw new Error('No mesh found in GLTF model');
             }
-            
-            // Clone geometry and material for safe disposal
-            const geometry = mesh.geometry.clone();
-            const material = Array.isArray(mesh.material)
-              ? mesh.material.map(m => m.clone())
-              : mesh.material.clone();
+
+            // const gives TypeScript an unambiguous THREE.Mesh — no closure
+            // mutation can widen or narrow it to `never` from here on.
+            const mesh: THREE.Mesh = rawMesh;
+
+            // Clone geometry and material for safe, independent disposal.
+            const geometry: THREE.BufferGeometry = mesh.geometry.clone();
+
+            // Array.isArray narrows mesh.material to THREE.Material[] in the
+            // true branch, so (m: THREE.Material) is the correct explicit type.
+            const material: THREE.Material | THREE.Material[] =
+              Array.isArray(mesh.material)
+                ? mesh.material.map((m: THREE.Material): THREE.Material => m.clone())
+                : mesh.material.clone();
             
             // Create new mesh with cloned resources
             const newMesh = new THREE.Mesh(geometry, material);
@@ -274,9 +298,11 @@ export class ARScene {
       // Dispose geometry
       this.ringModel.geometry.dispose();
       
-      // Dispose materials
+      // Dispose materials.
+      // Array.isArray narrows to THREE.Material[] in the true branch;
+      // explicit (mat: THREE.Material) satisfies strict noImplicitAny.
       if (Array.isArray(this.ringModel.material)) {
-        this.ringModel.material.forEach(mat => mat.dispose());
+        this.ringModel.material.forEach((mat: THREE.Material) => { mat.dispose(); });
       } else {
         this.ringModel.material.dispose();
       }
@@ -375,6 +401,26 @@ export class ARScene {
     // Dispose DRACO loader
     this.dracoLoader.dispose();
     
+    // Traverse and dispose every Mesh still in the scene before wiping it.
+    // This catches any geometry / material that is not tracked by ringModel
+    // (e.g. additional GLTF children, debug helpers added at runtime).
+    // instanceof THREE.Mesh is the required type guard — accessing .material
+    // on a bare THREE.Object3D is illegal; the guard narrows to THREE.Mesh
+    // whose .material is typed as THREE.Material | THREE.Material[].
+    this.scene.traverse((child: THREE.Object3D) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+
+        // Normalise Material | Material[] to a flat array so every material
+        // is disposed with a single, type-safe forEach.
+        const mats: THREE.Material[] = Array.isArray(child.material)
+          ? child.material
+          : [child.material];
+
+        mats.forEach((mat: THREE.Material) => { mat.dispose(); });
+      }
+    });
+
     // Clear scene
     this.scene.clear();
     
