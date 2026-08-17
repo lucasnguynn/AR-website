@@ -1,1 +1,53 @@
-Nothing should be ignored based on the provided file changes. The added files are all source code files (.tsx, .ts) and there are no build artifacts, dependencies, or temporary files in the changes that need to be ignored.
+```
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+coverage/
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+*.tmp
+*.temp
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Testing
+.nyc_output/
+coverage/
+htmlcov/
+
+# Bundler
+vendor/bundle/
+
+# TypeScript/JavaScript
+*.tsbuildinfo
+*.js.map
+*.ts.map
+
+# Vite
+.vite/
+```
