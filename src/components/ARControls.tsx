@@ -6,7 +6,8 @@
 
 import React from 'react';
 import { useARStore, selectARState, selectIsLoading, selectTakeSnapshotFn } from '../store/useARStore';
-import { ARSessionState } from './ARSessionManager';
+// @fix BUG-03: Fixed import path for ARSessionState (was './ARSessionManager', should be '../ARSessionManager')
+import { ARSessionState } from '../ARSessionManager';
 
 export const ARControls: React.FC = () => {
   const arState = useARStore(selectARState);

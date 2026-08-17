@@ -135,13 +135,15 @@ const createWorkerBlob = (): Blob => {
           minTrackingConfidence = trackConf;
 
           // Import MediaPipe Tasks Vision
-          const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm');
+          // @fix BUG-04: Updated version from 0.10.3 to 0.10.14 to match package.json
+          const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm');
           
           // Initialize Hand Landmarker
           const filesetResolver = await vision.FilesetResolver.forVisionTasks(wasmPath);
           handLandmarker = await vision.HandLandmarker.createFromOptions(filesetResolver, {
             baseOptions: {
-              modelAssetPath: wasmPath + '/hand_landmarker.task',
+              // @fix BUG-04: Use direct CDN URL for hand_landmarker.task instead of wasmPath + '/hand_landmarker.task'
+              modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
               delegate: 'GPU',
             },
             runningMode: 'VIDEO',
@@ -380,10 +382,15 @@ export class ARSessionManager {
       const workerUrl = URL.createObjectURL(blob);
       this.worker = new Worker(workerUrl);
 
+      // @fix BUG-04: Store timeoutId so we can clear it when READY fires
+      let timeoutId: ReturnType<typeof setTimeout>;
+
       this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
         const { type } = event.data;
 
         if (type === 'READY') {
+          // @fix BUG-04: Clear timeout to prevent reject() on already-resolved Promise
+          clearTimeout(timeoutId);
           resolve();
         } else if (type === 'HAND_RESULT') {
           this.handleHandResult(event.data.result, event.data.timestamp);
@@ -406,7 +413,7 @@ export class ARSessionManager {
       } as WorkerInitMessage);
 
       // Timeout for worker initialization
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         reject(new Error('Worker initialization timeout'));
       }, 10000);
     });

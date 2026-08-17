@@ -9,7 +9,7 @@
 import React, { useEffect, useCallback, useRef } from 'react';
 import { useARStore, selectShouldShowFallback, selectIsLoading, selectErrorMessage, selectFallbackMode, selectModelLoadingProgress } from '../store/useARStore';
 import { DeviceProfiler } from '../utils/DeviceProfiler';
-import { ARSessionState } from './ARSessionManager';
+// Note: ARSessionState import removed as it was unused (TS6133)
 
 // Lazy load heavy components
 const ARVideoCanvas = React.lazy(() => import('./ARVideoCanvas'));
