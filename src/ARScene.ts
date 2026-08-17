@@ -14,6 +14,8 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader';
 // @fix BUG-05: PMREMGenerator is in Three.js core since r130. Import from 'three' instead of examples path.
 import { PMREMGenerator } from 'three';
+// @fix BUG-11: Import RoomEnvironment for fallback environment when HDRI fails
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment';
 import { RingPose } from './RingPoseEstimator';
 
 /**
@@ -108,12 +110,14 @@ export class ARScene {
       this.config.far
     );
     
-    // Configure renderer with enterprise-grade settings
+    // Initialize renderer with preserveDrawingBuffer: true for snapshot support
+    // @fix BUG-08: preserveDrawingBuffer must be true to prevent black snapshots
+    // NOTE: This has a ~10-15% performance cost but is acceptable for jewelry try-on UX
     this.renderer = new THREE.WebGLRenderer({
       alpha: true,
       antialias: true,
       powerPreference: 'high-performance',
-      preserveDrawingBuffer: false,
+      preserveDrawingBuffer: true,
     });
     
     // Set renderer properties for high-fidelity rendering
@@ -141,18 +145,33 @@ export class ARScene {
     this.pmremGenerator.compileEquirectangularShader();
     
     // Load HDRI environment map for realistic metallic/refractive materials
+    // @fix BUG-11: Add error handler and fallback to RoomEnvironment when HDRI fails
     const hdriUrl = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/equirectangular/royal_esplanade_1k.hdr';
     new RGBELoader()
-      .load(hdriUrl, (texture: THREE.DataTexture) => {
-        texture.mapping = THREE.EquirectangularReflectionMapping;
-        this.environmentTexture = this.pmremGenerator.fromEquirectangular(texture).texture;
-        this.scene.environment = this.environmentTexture;
-        // Keep the HDRI as background only if no video texture is set
-        if (!this.videoTexture) {
-          this.scene.background = this.environmentTexture;
+      .load(
+        hdriUrl,
+        (texture: THREE.DataTexture) => {
+          texture.mapping = THREE.EquirectangularReflectionMapping;
+          this.environmentTexture = this.pmremGenerator!.fromEquirectangular(texture).texture;
+          this.scene.environment = this.environmentTexture;
+          if (!this.videoTexture) {
+            this.scene.background = this.environmentTexture;
+          }
+          texture.dispose();
+        },
+        undefined, // onProgress not needed
+        (_error: unknown) => {
+          // Fallback: procedural environment using PMREMGenerator
+          console.warn('HDRI load failed, using procedural fallback environment');
+          if (this.pmremGenerator) {
+            const fallbackEnv = this.pmremGenerator.fromScene(
+              new RoomEnvironment()
+            ).texture;
+            this.scene.environment = fallbackEnv;
+            this.environmentTexture = fallbackEnv;
+          }
         }
-        texture.dispose();
-      });
+      );
     
     // Initialize ring group
     this.ringGroup = new THREE.Group();

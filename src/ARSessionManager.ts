@@ -461,6 +461,7 @@ export class ARSessionManager {
    * Start the tracking loop using requestVideoFrameCallback
    * This ensures MediaPipe only processes when a new physical frame is available,
    * eliminating CPU waste from setTimeout-based polling.
+   * @fix BUG-09: Add graceful fallback to setInterval for Firefox which doesn't support requestVideoFrameCallback
    */
   private startTrackingLoop(): void {
     const processFrame = async () => {
@@ -499,13 +500,28 @@ export class ARSessionManager {
 
       // Re-register callback for next frame only if still tracking
       if (this.isTracking && this.videoElement) {
-        this.videoElement.requestVideoFrameCallback(processFrame);
+        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+          this.videoElement.requestVideoFrameCallback(processFrame);
+        }
+        // setTimeout fallback handled below
       }
     };
 
     this.isTracking = true;
-    if (this.videoElement) {
-      this.videoElement.requestVideoFrameCallback(processFrame);
+
+    // @fix BUG-09: Firefox doesn't support requestVideoFrameCallback, use setInterval fallback
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      this.videoElement?.requestVideoFrameCallback(processFrame);
+    } else {
+      // Firefox fallback: poll at configured trackingFPS
+      const intervalMs = 1000 / this.config.trackingFPS;
+      const intervalId = setInterval(() => {
+        if (!this.isTracking) {
+          clearInterval(intervalId);
+          return;
+        }
+        processFrame();
+      }, intervalMs);
     }
   }
 

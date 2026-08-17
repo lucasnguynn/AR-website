@@ -68,7 +68,8 @@ export class DeviceProfiler {
       return 'MEDIUM';
     }
 
-    // LOW: Meets minimum requirements but below medium
+    // LOW: Meets WebGL2 but below medium performance — force fallback
+    // @fix BUG-12: Keep LOW classification for diagnostics, but ARTryOnModal will treat it as unsupported
     if ((logicalCores ?? 0) >= 2 || (deviceMemory ?? 0) >= 1) {
       return 'LOW';
     }

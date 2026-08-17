@@ -80,8 +80,8 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
         const profile = await DeviceProfiler.profile();
         setDeviceClass(profile.deviceClass);
 
-        // Check if device is unsupported
-        if (profile.deviceClass === 'UNSUPPORTED') {
+        // @fix BUG-12: Treat LOW and UNSUPPORTED as requiring fallback
+        if (profile.deviceClass === 'UNSUPPORTED' || profile.deviceClass === 'LOW') {
           activateFallback('DEVICE_UNSUPPORTED');
           return;
         }
