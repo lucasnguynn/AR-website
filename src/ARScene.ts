@@ -9,11 +9,11 @@
  */
 
 import * as THREE from 'three';
-import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader';
-import { PMREMGenerator } from 'three/examples/jsm/pmrem/PMREMGenerator';
-import type { LoadingManager } from 'three';
+// @fix BUG-05: PMREMGenerator is in Three.js core since r130. Import from 'three' instead of examples path.
+import { PMREMGenerator } from 'three';
 import { RingPose } from './RingPoseEstimator';
 
 /**
@@ -83,7 +83,6 @@ export class ARScene {
   private environmentTexture: THREE.Texture | null = null;
   
   // Background video
-  private videoElement: HTMLVideoElement | null = null;
   private videoTexture: THREE.VideoTexture | null = null;
   
   // Ring model
@@ -187,7 +186,6 @@ export class ARScene {
       this.videoTexture.dispose();
     }
     
-    this.videoElement = video;
     this.videoTexture = new THREE.VideoTexture(video);
     this.videoTexture.colorSpace = THREE.SRGBColorSpace;
     this.videoTexture.minFilter = THREE.LinearFilter;
@@ -510,9 +508,6 @@ export class ARScene {
 
     // Clear scene
     this.scene.clear();
-    
-    // Nullify references
-    this.videoElement = null;
   }
 }
 

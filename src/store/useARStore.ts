@@ -8,7 +8,8 @@
 
 import { create } from 'zustand';
 import { DeviceClass } from '../utils/DeviceProfiler';
-import { ARSessionState } from './ARSessionManager';
+// @fix BUG-03: Fixed import path for ARSessionState (was './ARSessionManager', should be '../ARSessionManager')
+import { ARSessionState } from '../ARSessionManager';
 
 export type FallbackMode = 'NONE' | 'PERMISSION_DENIED' | 'DEVICE_UNSUPPORTED' | 'CAMERA_ERROR';
 

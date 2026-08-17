@@ -16,6 +16,7 @@ interface ARVideoCanvasProps {
 export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const sessionManagerRef = useRef<ARSessionManager | null>(null);
 
   const setARState = useARStore((state) => state.setARState);
@@ -25,16 +26,14 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
 
   // Initialize AR Session
   useEffect(() => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || !containerRef.current) return;
 
     const video  = videoRef.current;
     const canvas = canvasRef.current;
-    const ctx    = canvas.getContext('2d');
+    const container = containerRef.current;
 
-    if (!ctx) {
-      setError('Failed to initialize canvas context');
-      return;
-    }
+    // @fix BUG-01 & BUG-02: Removed unused ctx variable (Three.js renders to its own WebGL canvas).
+    // Corrected session initialization flow: create manager, assign callbacks, call initialize(), then start().
 
     // Configure AR Session
     // FIXED: mediaPipeWasmPath previously used a relative '/wasm/' path that
@@ -61,8 +60,8 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     // Register the takeSnapshot function in the store for ARControls to access
     setTakeSnapshotFn(() => sessionManager.takeSnapshot());
 
-    // State change callback
-    sessionManager.onStateChange((state) => {
+    // State change callback - @fix BUG-01: Assign callback to property, not call as method
+    sessionManager.onStateChange = (state) => {
       setARState(state);
 
       if (state === 'INITIALIZING' || state === 'CAMERA_READY') {
@@ -70,18 +69,22 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
       } else {
         setLoading(false);
       }
-    });
+    };
 
-    // Error callback
-    sessionManager.onError((error) => {
+    // Error callback - @fix BUG-01: Assign callback to property, not call as method
+    sessionManager.onError = (error) => {
       console.error('AR Session error:', error);
       setError(error.message);
-    });
+    };
 
-    // Start AR session
+    // Start AR session - @fix BUG-02: Must call initialize() first before start()
     const startAR = async () => {
       try {
-        await sessionManager.start(video, canvas);
+        // Initialize session with container element (required to reach CAMERA_READY state)
+        await sessionManager.initialize(container);
+        // After initialize() resolves, start() can be called
+        // Note: start() manages its own video/canvas internally via the scene
+        sessionManager.start(video, canvas);
       } catch (error) {
         console.error('Failed to start AR:', error);
         setError('Failed to start AR session');
