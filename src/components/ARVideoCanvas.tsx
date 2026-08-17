@@ -86,12 +86,22 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
 
     // Start AR session - @fix NEW-02: Call initialize() then startLoops() instead of start(video, canvas)
     const startAR = async () => {
+      // Safety timeout: if initialize() hasn't resolved within 15 seconds,
+      // activate the camera-error fallback to prevent an infinite loading spinner.
+      // This guards against OS-level getUserMedia blocks and stalled WASM downloads.
+      const initTimeoutId = setTimeout(() => {
+        console.error('AR initialization timed out after 15 seconds');
+        setError('AR initialization timed out. Please check camera permissions and network.');
+      }, 15000);
+
       try {
         // Initialize session with container element - creates camera stream and Three.js canvas internally
         await sessionManager.initialize(container);
+        clearTimeout(initTimeoutId); // Resolved in time — cancel the safety timeout
         // After initialize() resolves, start the tracking and render loops
         sessionManager.startLoops();
       } catch (error) {
+        clearTimeout(initTimeoutId); // Threw — cancel the safety timeout (setError already handles UI)
         console.error('Failed to start AR:', error);
         setError('Failed to start AR session');
       }
