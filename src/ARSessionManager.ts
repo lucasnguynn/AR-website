@@ -616,7 +616,7 @@ export class ARSessionManager {
    * Take a snapshot of the current AR frame
    * Composites the video feed and Three.js canvas onto an in-memory 2D canvas
    * 
-   * @returns Base64 PNG data URL, or null if not ready
+   * @returns Base64 JPEG data URL (quality 0.92), or null if not ready
    */
   public takeSnapshot(): string | null {
     if (!this.videoElement || !this.scene) {
@@ -654,8 +654,8 @@ export class ARSessionManager {
     const threeCanvas = renderer.domElement;
     ctx.drawImage(threeCanvas, 0, 0, videoWidth, videoHeight);
 
-    // Return as base64 PNG data URL
-    return compositeCanvas.toDataURL('image/png');
+    // Return as base64 JPEG data URL (0.92 quality = ~85% smaller than PNG, imperceptible loss for photos)
+    return compositeCanvas.toDataURL('image/jpeg', 0.92);
   }
 }
 
