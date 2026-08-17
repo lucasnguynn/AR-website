@@ -6,8 +6,9 @@
  */
 
 import React, { useEffect, useRef } from 'react';
-import { useARStore } from '../store/useARStore';
+import { useARStore, selectARState } from '../store/useARStore';
 import { ARSessionManager, ARSessionConfig } from '../ARSessionManager';
+import RingCatalog from './RingCatalog';
 
 interface ARVideoCanvasProps {
   ringModelUrl: string;
@@ -17,6 +18,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   const containerRef = useRef<HTMLDivElement>(null);
   const sessionManagerRef = useRef<ARSessionManager | null>(null);
 
+  const arState = useARStore(selectARState);
   const setARState = useARStore((state) => state.setARState);
   const setError   = useARStore((state) => state.setError);
   const setLoading = useARStore((state) => state.setLoading);
@@ -117,7 +119,16 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   }, []);
 
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-black" />
+    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-black">
+      {/* Ring Catalog - only show when tracking is active */}
+      {arState === 'TRACKING_ACTIVE' && (
+        <RingCatalog
+          onSelectRing={(modelUrl) => {
+            sessionManagerRef.current?.swapRingModel(modelUrl);
+          }}
+        />
+      )}
+    </div>
   );
 };
 

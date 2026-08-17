@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import ARTryOnModal from './components/ARTryOnModal'
+import { DEFAULT_CATALOG } from './components/RingCatalog'
 
 /**
  * Public glTF-Binary ring model from the official Khronos sample repo.
- * Swap this for your own CDN-hosted .glb when you have one.
+ * Using the first item from the catalog as the default ring.
  */
-const RING_MODEL_URL =
-  'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Ring/glTF-Binary/Ring.glb'
+const RING_MODEL_URL = DEFAULT_CATALOG[0].modelUrl
 
 function App() {
   const [isOpen, setIsOpen] = useState(false)

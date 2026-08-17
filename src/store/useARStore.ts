@@ -40,6 +40,9 @@ interface ARUIState {
   
   /** Function to take a snapshot from the AR session */
   takeSnapshotFn: (() => string | null) | null;
+  
+  /** Ring scale for size adjustment (range: 0.5 - 2.0) */
+  ringScale: number;
 }
 
 interface ARUIActions {
@@ -78,6 +81,9 @@ interface ARUIActions {
   
   /** Set the takeSnapshot function from ARSessionManager */
   setTakeSnapshotFn: (fn: (() => string | null) | null) => void;
+  
+  /** Set ring scale for size adjustment */
+  setRingScale: (scale: number) => void;
 }
 
 const initialState: ARUIState = {
@@ -90,6 +96,7 @@ const initialState: ARUIState = {
   modelLoadingProgress: 0,
   errorMessage: null,
   takeSnapshotFn: null,
+  ringScale: 1.0,
 };
 
 export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
@@ -174,6 +181,10 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
   setTakeSnapshotFn: (fn: (() => string | null) | null) => {
     set({ takeSnapshotFn: fn });
   },
+  
+  setRingScale: (scale: number) => {
+    set({ ringScale: scale });
+  },
 }));
 
 /**
@@ -192,3 +203,4 @@ export const selectErrorMessage = (state: ARUIState & ARUIActions) => state.erro
 export const selectShouldShowFallback = (state: ARUIState & ARUIActions) => 
   state.activeFallbackMode !== 'NONE';
 export const selectTakeSnapshotFn = (state: ARUIState & ARUIActions) => state.takeSnapshotFn;
+export const selectRingScale = (state: ARUIState & ARUIActions) => state.ringScale;
