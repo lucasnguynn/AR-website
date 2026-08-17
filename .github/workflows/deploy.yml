@@ -30,6 +30,8 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          VITE_BASE_URL: /${{ github.event.repository.name }}/
 
       # Pushes ./dist to the gh-pages branch and enables GitHub Pages.
       # The GITHUB_TOKEN secret is provided automatically by Actions —
