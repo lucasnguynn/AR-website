@@ -379,14 +379,60 @@ export class ARScene {
   }
 
   /**
-   * Resize the rendering canvas
+   * Resize the rendering canvas and adjust camera for object-cover alignment
+   * 
+   * When CSS object-cover is used on the video element, the visible portion of the video
+   * is scaled to fill the container while maintaining aspect ratio. This causes a mismatch
+   * between the MediaPipe coordinates (which operate on raw video dimensions) and the
+   * Three.js projection.
+   * 
+   * To fix this, we calculate the "cover" scale factors and adjust the camera's FOV
+   * accordingly so that the 3D scene scales identically to how CSS object-cover scales the video.
+   * 
+   * @param width - Container width (from getBoundingClientRect)
+   * @param height - Container height (from getBoundingClientRect)
+   * @param videoWidth - Raw video intrinsic width
+   * @param videoHeight - Raw video intrinsic height
    */
-  resize(width: number, height: number): void {
+  resize(width: number, height: number, videoWidth?: number, videoHeight?: number): void {
     this.config.width = width;
     this.config.height = height;
     
     this.renderer.setSize(width, height);
-    this.camera.aspect = width / height;
+    
+    // Calculate aspect ratios
+    const containerAspect = width / height;
+    
+    if (videoWidth && videoHeight && videoWidth > 0 && videoHeight > 0) {
+      // Raw video aspect ratio
+      const videoAspect = videoWidth / videoHeight;
+      
+      // Calculate the "cover" scale factor
+      // CSS object-cover scales the video to fill the container while maintaining aspect ratio
+      // If container is wider than video: video is scaled by containerAspect/videoAspect
+      // If container is taller than video: video is scaled by videoAspect/containerAspect
+      
+      let coverScale: number;
+      if (containerAspect > videoAspect) {
+        // Container is wider - video scales to fit width, height overflows (cropped top/bottom)
+        coverScale = containerAspect / videoAspect;
+      } else {
+        // Container is taller - video scales to fit height, width overflows (cropped sides)
+        coverScale = videoAspect / containerAspect;
+      }
+      
+      // Adjust the camera FOV to compensate for object-cover scaling
+      // We need to effectively "zoom in" by the coverScale factor
+      // The effective FOV becomes smaller (more zoomed) as coverScale increases
+      const adjustedFov = 2 * Math.atan(Math.tan((this.config.fov * Math.PI / 180) / 2) / coverScale) * (180 / Math.PI);
+      
+      this.camera.fov = adjustedFov;
+      this.camera.aspect = containerAspect;
+    } else {
+      // Fallback: no video dimensions provided, use simple container aspect
+      this.camera.aspect = containerAspect;
+    }
+    
     this.camera.updateProjectionMatrix();
   }
 
