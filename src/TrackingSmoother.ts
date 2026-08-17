@@ -178,46 +178,62 @@ export class Vector3OneEuroFilter {
 }
 
 /**
- * Quaternion/Euler One Euro Filter for smoothing rotations
+ * Quaternion One Euro Filter for smoothing rotations using SLERP
  * 
- * Applies filtering to Euler angles (in degrees) to avoid gimbal lock issues
- * that can occur when filtering quaternion components directly.
+ * This implementation uses spherical linear interpolation (SLERP) on quaternions
+ * directly to avoid gimbal lock issues that occur when filtering Euler angles
+ * independently, especially at extreme rotation angles (e.g., fully inverted palm).
  */
 export class RotationOneEuroFilter {
-  private filterX: ScalarOneEuroFilter;
-  private filterY: ScalarOneEuroFilter;
-  private filterZ: ScalarOneEuroFilter;
+  private lastQuaternion: THREE.Quaternion | null = null;
+  private lastTime: number | null = null;
+  private config: OneEuroFilterConfig;
 
   constructor(config: Partial<OneEuroFilterConfig> = {}) {
-    this.filterX = new ScalarOneEuroFilter(config);
-    this.filterY = new ScalarOneEuroFilter(config);
-    this.filterZ = new ScalarOneEuroFilter(config);
+    this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
   /**
-   * Apply filter to Euler angles
+   * Apply filter to Euler angles by converting to quaternion, using SLERP, then back to Euler
    * @param euler - Input euler angles (in radians)
    * @param timestamp - Current timestamp in milliseconds
    * @param output - Optional output euler to reuse
    * @returns Smoothed euler angles
    */
   apply(euler: THREE.Euler, timestamp: number, output?: THREE.Euler): THREE.Euler {
+    const inputQ = new THREE.Quaternion().setFromEuler(euler);
+
+    if (!this.lastQuaternion || !this.lastTime) {
+      this.lastQuaternion = inputQ.clone();
+      this.lastTime = timestamp;
+      return euler;
+    }
+
+    const dt = (timestamp - this.lastTime) / 1000;
+    if (dt <= 0) {
+      return new THREE.Euler().setFromQuaternion(this.lastQuaternion);
+    }
+
+    // Adaptive alpha: fast movement = less smoothing, slow = more smoothing
+    const angularVelocity = this.lastQuaternion.angleTo(inputQ) / dt;
+    const adaptiveCutoff = this.config.minCutoff + this.config.beta * angularVelocity;
+    const clampedCutoff = Math.min(adaptiveCutoff, this.config.maxCutoff);
+    const tau = 1.0 / (2 * Math.PI * clampedCutoff);
+    const alpha = 1.0 / (1.0 + tau / dt);
+
+    // SLERP between last and current quaternion
+    const smoothedQ = this.lastQuaternion.clone().slerp(inputQ, alpha);
+    this.lastQuaternion = smoothedQ.clone();
+    this.lastTime = timestamp;
+
     const result = output ?? new THREE.Euler();
-    
-    // Convert to degrees for filtering (more intuitive cutoff values)
-    const toDegrees = 180 / Math.PI;
-    const toRadians = Math.PI / 180;
-    
-    result.x = this.filterX.apply(euler.x * toDegrees, timestamp) * toRadians;
-    result.y = this.filterY.apply(euler.y * toDegrees, timestamp) * toRadians;
-    result.z = this.filterZ.apply(euler.z * toDegrees, timestamp) * toRadians;
-    result.order = euler.order;
-    
+    result.setFromQuaternion(smoothedQ);
+    if (euler.order) result.order = euler.order;
     return result;
   }
 
   /**
-   * Apply filter directly to a quaternion by converting to euler first
+   * Apply filter directly to a quaternion using SLERP
    * @param quaternion - Input quaternion
    * @param timestamp - Current timestamp in milliseconds
    * @param output - Optional output quaternion to reuse
@@ -226,20 +242,17 @@ export class RotationOneEuroFilter {
   applyToQuaternion(quaternion: THREE.Quaternion, timestamp: number, output?: THREE.Quaternion): THREE.Quaternion {
     const euler = new THREE.Euler().setFromQuaternion(quaternion);
     const smoothedEuler = this.apply(euler, timestamp);
-    
     const result = output ?? new THREE.Quaternion();
     result.setFromEuler(smoothedEuler);
-    
     return result;
   }
 
   /**
-   * Reset all axis filters
+   * Reset filter state
    */
   reset(): void {
-    this.filterX.reset();
-    this.filterY.reset();
-    this.filterZ.reset();
+    this.lastQuaternion = null;
+    this.lastTime = null;
   }
 }
 
