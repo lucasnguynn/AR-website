@@ -1,25 +1,26 @@
 /**
  * ARTryOnModal.tsx
- * 
+ *
  * Main overlay modal component for the AR Try-On experience.
  * Implements graceful degradation: checks DeviceProfiler and mounts either
  * ARVideoCanvas (for supported devices) or Fallback3DViewer (for unsupported).
  */
 
 import React, { useEffect, useCallback, useRef } from 'react';
-import { useARStore, selectShouldShowFallback, selectIsLoading, selectErrorMessage, selectFallbackMode, selectModelLoadingProgress } from '../store/useARStore';
+import {
+  useARStore,
+  selectShouldShowFallback,
+  selectIsLoading,
+  selectErrorMessage,
+  selectFallbackMode,
+  selectModelLoadingProgress,
+} from '../store/useARStore';
 import { DeviceProfiler } from '../utils/DeviceProfiler';
 
-// Lazy load heavy components
 const ARVideoCanvas = React.lazy(() => import('./ARVideoCanvas'));
 const Fallback3DViewer = React.lazy(() => import('./Fallback3DViewer'));
 const ARControls = React.lazy(() => import('./ARControls'));
 
-/**
- * Dynamically determine video constraints based on available cameras.
- * If multiple video inputs exist (e.g., front and rear cameras), use 'environment' (rear).
- * Otherwise, default to 'user' (front) for devices with only one camera (e.g., desktop webcams).
- */
 async function getDynamicVideoConstraints(): Promise<MediaStreamConstraints['video']> {
   const baseConstraints: MediaStreamConstraints['video'] = {
     width: { ideal: 1280 },
@@ -27,31 +28,17 @@ async function getDynamicVideoConstraints(): Promise<MediaStreamConstraints['vid
   };
 
   try {
-    // Enumerate available video input devices
     const devices = await navigator.mediaDevices.enumerateDevices();
     const videoInputs = devices.filter(device => device.kind === 'videoinput');
 
-    // If multiple cameras exist, prefer the rear/environment camera
     if (videoInputs.length > 1) {
-      return {
-        ...baseConstraints,
-        facingMode: 'environment',
-      };
+      return { ...baseConstraints, facingMode: 'environment' };
     }
 
-    // Single camera or no enumeration support - default to 'user'
-    // This handles desktop browsers (no rear camera) gracefully
-    return {
-      ...baseConstraints,
-      facingMode: 'user',
-    };
+    return { ...baseConstraints, facingMode: 'user' };
   } catch (error) {
     console.warn('Could not enumerate devices, using default constraints:', error);
-    // Fallback to 'user' mode if enumeration fails
-    return {
-      ...baseConstraints,
-      facingMode: 'user',
-    };
+    return { ...baseConstraints, facingMode: 'user' };
   }
 }
 
@@ -71,70 +58,56 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
   const errorMessage = useARStore(selectErrorMessage);
   const fallbackMode = useARStore(selectFallbackMode);
   const modelLoadingProgress = useARStore(selectModelLoadingProgress);
-  
+
   const setCameraPermission = useARStore((state) => state.setCameraPermission);
   const setDeviceClass = useARStore((state) => state.setDeviceClass);
   const activateFallback = useARStore((state) => state.activateFallback);
+  const setLoading = useARStore((state) => state.setLoading);
   const closeModal = useARStore((state) => state.closeModal);
-  
+
   const modalRef = useRef<HTMLDivElement>(null);
   const hasInitializedRef = useRef(false);
 
-  // Handle escape key to close modal
+  // Escape key handler
   useEffect(() => {
     if (!isOpen) return;
-
     const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        handleClose();
-      }
+      if (event.key === 'Escape') handleClose();
     };
-
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isOpen]);
 
-  // Prevent body scroll when modal is open
+  // Body scroll lock
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = '';
     }
-
-    return () => {
-      document.body.style.overflow = '';
-    };
+    return () => { document.body.style.overflow = ''; };
   }, [isOpen]);
 
   // Initialize device profiling on modal open
   useEffect(() => {
     if (!isOpen || hasInitializedRef.current) return;
-
     hasInitializedRef.current = true;
 
     const initializeAR = async () => {
       try {
-        // Profile the device
         const profile = await DeviceProfiler.profile();
         setDeviceClass(profile.deviceClass);
 
-        // The store's setDeviceClass action (called above) already activates fallback
-        // for UNSUPPORTED and LOW devices. Check activeFallbackMode to decide whether to continue.
         if (profile.deviceClass === 'UNSUPPORTED' || profile.deviceClass === 'LOW') {
-          return; // setDeviceClass already called activateFallback — nothing left to do here
+          return;
         }
 
-        // Request camera permission with dynamic facing mode detection
         try {
           const videoConstraints = await getDynamicVideoConstraints();
           const stream = await navigator.mediaDevices.getUserMedia({
             video: videoConstraints,
           });
-          
-          // Stop the stream immediately after getting permission
           stream.getTracks().forEach(track => track.stop());
-          
           setCameraPermission(true);
         } catch (permissionError) {
           console.warn('Camera permission denied:', permissionError);
@@ -143,9 +116,11 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
           return;
         }
 
-        // Device is supported and permission granted - AR will start
       } catch (error) {
         console.error('AR initialization failed:', error);
+        // FIX BUG-4: Explicitly clear isLoading here in case ARVideoCanvas's
+        // onStateChange callback hasn't fired yet (race condition on fast failures).
+        setLoading(false);
         activateFallback('CAMERA_ERROR');
       }
     };
@@ -178,13 +153,13 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
       <div className="relative w-full h-full max-w-7xl max-h-screen bg-gray-900 shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between p-4 bg-gradient-to-b from-black/60 to-transparent">
-          <h2 
+          <h2
             id="ar-modal-title"
             className="text-white text-lg font-semibold tracking-wide"
           >
             Virtual Try-On
           </h2>
-          
+
           <button
             onClick={handleClose}
             className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors"
@@ -210,7 +185,6 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
                 ringModelUrl={ringModelUrl}
                 fallbackReason={fallbackMode}
                 onRetry={() => {
-                  // Reset and retry AR
                   hasInitializedRef.current = false;
                   useARStore.getState().reset();
                   useARStore.getState().openModal();
@@ -231,15 +205,24 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
             <div className="animate-spin rounded-full h-20 w-20 border-t-2 border-b-2 border-amber-400 mb-4"></div>
             <p className="text-white text-lg font-medium">Initializing AR Experience...</p>
             <p className="text-white/60 text-sm mt-2">Please allow camera access when prompted</p>
-            
-            {/* Progress Bar */}
+
+            {/*
+              FIX BUG-3 (169% display):
+              modelLoadingProgress is now guaranteed to be in [0, 100] because ARScene.ts
+              clamps intermediate progress to [0, 99] and only emits 100 from onLoad.
+              Math.round() here is still correct; just displaying a reliable value now.
+            */}
             <div className="w-64 h-2 bg-gray-700 rounded-full mt-4 overflow-hidden">
-              <div 
+              <div
                 className="h-full bg-brand-neon transition-all duration-300 ease-out"
-                style={{ width: `${modelLoadingProgress}%` }}
+                style={{ width: `${Math.min(modelLoadingProgress, 100)}%` }}
               />
             </div>
-            <p className="text-white/80 text-xs mt-2">{Math.round(modelLoadingProgress)}%</p>
+            <p className="text-white/80 text-xs mt-2">
+              {modelLoadingProgress < 100
+                ? `Loading model... ${Math.min(Math.round(modelLoadingProgress), 99)}%`
+                : 'Finalizing...'}
+            </p>
           </div>
         )}
 
