@@ -22,8 +22,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   const setARState = useARStore((state) => state.setARState);
   const setError   = useARStore((state) => state.setError);
   const setLoading = useARStore((state) => state.setLoading);
-  
-  // Sync Zustand ringScale → ARSessionManager whenever the slider changes
+
   const ringScale = useARStore(selectRingScale);
 
   useEffect(() => {
@@ -38,13 +37,6 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
 
     const container = containerRef.current;
 
-    // @fix NEW-01: containerRef now attached to JSX div, so initialization proceeds correctly
-    // @fix NEW-02: Removed video/canvas refs - ARSessionManager handles them internally via initialize()
-
-    // Configure AR Session
-    // FIXED: mediaPipeWasmPath previously used a relative '/wasm/' path that
-    // produces a 404 on GitHub Pages. It now points directly to the jsDelivr
-    // CDN bundle so the WASM binary is always reachable regardless of deploy base.
     const config: ARSessionConfig = {
       mediaPipeWasmPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
       ringModelUrl,
@@ -59,73 +51,66 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
       },
     };
 
-    // Create session manager
     const sessionManager = new ARSessionManager(config);
     sessionManagerRef.current = sessionManager;
 
-    // Note: The takeSnapshot function ref is set in ARSessionManager.initialize() after model loads
-
-    // State change callback - @fix BUG-01: Assign callback to property, not call as method
+    // FIX: onStateChange chỉ dùng để sync arState cho UI (RingCatalog visibility, v.v.)
+    // KHÔNG dùng để control isLoading nữa — vì state CAMERA_READY có thể tồn tại
+    // vô thời hạn nếu người dùng chưa đưa tay vào camera, khiến loading stuck mãi.
     sessionManager.onStateChange = (state) => {
       setARState(state);
-
-      if (state === 'INITIALIZING' || state === 'CAMERA_READY') {
-        setLoading(true);
-      } else {
-        setLoading(false);
-      }
+      // Chỉ set loading=true khi đang khởi tạo thật sự
+      // loading=false được xử lý bởi startAR() sau khi initialize() resolve
     };
 
-    // Error callback - @fix BUG-01: Assign callback to property, not call as method
     sessionManager.onError = (error) => {
       console.error('AR Session error:', error);
       setError(error.message);
+      // setError → activateFallback → isLoading: false (handled in store)
     };
 
-    // Start AR session - @fix NEW-02: Call initialize() then startLoops() instead of start(video, canvas)
     const startAR = async () => {
-      // Safety timeout: if initialize() hasn't resolved within 15 seconds,
-      // activate the camera-error fallback to prevent an infinite loading spinner.
-      // This guards against OS-level getUserMedia blocks and stalled WASM downloads.
+      // Safety timeout: 20 giây
       const initTimeoutId = setTimeout(() => {
-        console.error('AR initialization timed out after 15 seconds');
+        console.error('AR initialization timed out');
         setError('AR initialization timed out. Please check camera permissions and network.');
-      }, 15000);
+      }, 20000);
 
       try {
-        // Initialize session with container element - creates camera stream and Three.js canvas internally
+        setLoading(true); // Bắt đầu loading
+
         await sessionManager.initialize(container);
-        clearTimeout(initTimeoutId); // Resolved in time — cancel the safety timeout
-        // After initialize() resolves, start the tracking and render loops
+
+        clearTimeout(initTimeoutId);
+
+        // FIX CHÍNH: Tắt loading NGAY SAU KHI initialize() resolve thành công.
+        // Lúc này camera đã bật, model đã load xong, Three.js canvas đã mount.
+        // Không cần chờ TRACKING_ACTIVE (chờ người dùng đưa tay vào camera).
+        setLoading(false);
+
         sessionManager.startLoops();
       } catch (error) {
-        clearTimeout(initTimeoutId); // Threw — cancel the safety timeout (setError already handles UI)
+        clearTimeout(initTimeoutId);
         console.error('Failed to start AR:', error);
+        setLoading(false); // Đảm bảo loading luôn tắt dù có lỗi
         setError('Failed to start AR session');
       }
     };
 
     startAR();
 
-    // Cleanup - @fix NEW-02: Use dispose() which releases camera/worker/WebGL properly
     return () => {
       sessionManager.dispose();
       sessionManagerRef.current = null;
-      // Clear the snapshot ref on cleanup
       useARStore.getState().setSnapshotRef(null);
     };
   }, [ringModelUrl]);
 
-  // Handle resize - sync canvas to container bounding rect and update scene camera
+  // Handle resize
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current && sessionManagerRef.current) {
-        const container = containerRef.current;
-
-        // Get the actual rendered size of the container
-        const rect = container.getBoundingClientRect();
-        
-        // @fix NEW-02: Use new public resize() method instead of (as any).scene hack
+        const rect = containerRef.current.getBoundingClientRect();
         sessionManagerRef.current.resize(rect.width, rect.height);
       }
     };
@@ -138,7 +123,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-black">
-      {/* Ring Catalog - only show when tracking is active */}
+      {/* Ring Catalog - chỉ hiện khi đang track tay */}
       {arState === 'TRACKING_ACTIVE' && (
         <RingCatalog
           onSelectRing={(modelUrl) => {
