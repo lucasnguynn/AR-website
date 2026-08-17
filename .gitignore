@@ -6,6 +6,11 @@ node_modules/
 dist/
 build/
 *.js.map
+*.tsbuildinfo
+
+# Logs and temp files
+*.log
+*.tmp
 
 # Environment
 .env
@@ -15,36 +20,10 @@ build/
 # Editors
 .vscode/
 .idea/
-
-# Logs
-*.log
-
-# Python (if applicable)
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Temporary files
-*.tmp
 *.swp
-*~
+*.swo
 
-# OS specific
+# OS generated files
 .DS_Store
 Thumbs.db
-
-# Coverage reports
-coverage/
-htmlcov/
-
-# Distribution / packaging
-*.tar.gz
-*.whl
-*.egg
-*.egg-info/
-
-# Vite specific
-!.vite/
-.vite/deps/
 ```

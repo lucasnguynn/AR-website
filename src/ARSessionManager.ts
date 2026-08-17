@@ -555,6 +555,7 @@ export class ARSessionManager {
    * 
    * @param video - The video element for camera feed
    * @param canvas - The canvas element for Three.js rendering
+   * @deprecated Use initialize() followed by startLoops() instead
    */
   start(video: HTMLVideoElement, canvas: HTMLCanvasElement): void {
     if (this.state !== ARSessionState.CAMERA_READY && this.state !== ARSessionState.TRACKING_LOST) {
@@ -581,6 +582,31 @@ export class ARSessionManager {
 
     this.startTrackingLoop();
     this.startRenderLoop();
+  }
+
+  /**
+   * Start the tracking and render loops after initialize() has been called.
+   * This is the preferred method for starting the AR session after calling initialize().
+   * @fix NEW-02: New method to support the correct architecture where initialize() sets up
+   * the camera stream and Three.js canvas internally, then startLoops() begins the cycles.
+   */
+  public startLoops(): void {
+    if (this.state !== ARSessionState.CAMERA_READY &&
+        this.state !== ARSessionState.TRACKING_LOST) {
+      console.warn('Cannot start loops in current state:', this.state);
+      return;
+    }
+    this.startTrackingLoop();
+    this.startRenderLoop();
+  }
+
+  /**
+   * Resize the AR scene to match new container dimensions.
+   * @fix NEW-02: Public method to allow ARVideoCanvas to resize without accessing private scene property.
+   */
+  public resize(width: number, height: number): void {
+    if (!this.videoElement || !this.scene) return;
+    this.scene.resize(width, height, this.videoElement.videoWidth, this.videoElement.videoHeight);
   }
 
   /**

@@ -30,7 +30,8 @@ RingModel.displayName = 'RingModel';
 
 // Dynamic preload — called when component first renders with the URL
 // (Cannot be called at module level with a dynamic URL)
-useGLTF.preload('');
+// @fix NEW-03: Deleted useGLTF.preload('') which fired a network request for URL '' on every page load.
+// The useGLTF(url) hook inside RingModel already handles loading with built-in Suspense support.
 
 interface ViewerSceneProps {
   ringModelUrl: string;
