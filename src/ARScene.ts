@@ -9,8 +9,9 @@
  */
 
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader';
+import type { LoadingManager } from 'three';
 import { RingPose } from './RingPoseEstimator';
 
 /**
@@ -193,16 +194,17 @@ export class ARScene {
    * 
    * @param url - URL to the 3D model file
    * @param scale - Initial scale factor for the ring
+   * @param onProgress - Optional callback for loading progress (0-100)
    * @returns Promise that resolves when model is loaded
    */
-  async loadRing(url: string, scale: number = 1.0): Promise<void> {
+  async loadRing(url: string, scale: number = 1.0, onProgress?: (progress: number) => void): Promise<void> {
     return new Promise((resolve, reject) => {
       // Cleanup existing model
       this.unloadRing();
       
       this.gltfLoader.load(
         url,
-        (gltf) => {
+        (gltf: THREE.GLTF) => {
           try {
             // Extract the first mesh from the GLTF scene graph.
             //
@@ -224,7 +226,7 @@ export class ARScene {
             let rawMesh: THREE.Mesh | null = null;
 
             gltf.scene.traverse((child: THREE.Object3D) => {
-              if (rawMesh === null && child instanceof THREE.Mesh) {
+              if (child instanceof THREE.Mesh) {
                 rawMesh = child as THREE.Mesh;
               }
             });
@@ -273,14 +275,14 @@ export class ARScene {
             reject(error);
           }
         },
-        (progress) => {
+        (progress: THREE.ProgressEvent) => {
           // Loading progress callback
-          if (progress.total > 0) {
+          if (progress.total > 0 && onProgress) {
             const percent = (progress.loaded / progress.total) * 100;
-            console.log(`Ring model loading: ${percent.toFixed(2)}%`);
+            onProgress(percent);
           }
         },
-        (error) => {
+        (error: unknown) => {
           reject(error);
         }
       );

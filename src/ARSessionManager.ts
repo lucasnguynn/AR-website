@@ -10,6 +10,7 @@
 
 import { RingPoseEstimator, HandTrackingResult, NormalizedLandmark, RingPose } from './RingPoseEstimator';
 import { ARScene } from './ARScene';
+import { useARStore } from './store/useARStore';
 
 /**
  * AR Session State Enum
@@ -320,8 +321,15 @@ export class ARSessionManager {
       // Setup Web Worker
       await this.setupWorker();
 
-      // Load ring model
-      await this.scene.loadRing(this.config.ringModelUrl, this.config.ringScale);
+      // Load ring model with progress callback
+      const setModelLoadingProgress = useARStore.getState().setModelLoadingProgress;
+      await this.scene.loadRing(
+        this.config.ringModelUrl,
+        this.config.ringScale,
+        (progress: number) => {
+          setModelLoadingProgress(progress);
+        }
+      );
 
       this.setState(ARSessionState.CAMERA_READY);
 

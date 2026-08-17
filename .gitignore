@@ -1,40 +1,59 @@
 ```
 # Dependencies
 node_modules/
+package-lock.json
 
-# Logs and temp files
-*.log
-*.tmp
+# Build artifacts
+dist/
+build/
+target/
 
 # Environment
 .env
 .env.local
 *.env.*
 
-# Editors
+# Logs
+*.log
+
+# Editor/IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*.tmp
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.Python
+venv/
+.venv/
+.venv.*
+.env
+.env.*
 
-# Build outputs
-dist/
-build/
-*.min.js
-*.bundle.js
+# Coverage
+coverage/
+htmlcov/
+.coverage
 
-# Compression artifacts
-*.zip
-*.gz
-*.tar
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pytest
+.pytest_cache/
+
+# Gradle
+.gradle/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
 ```

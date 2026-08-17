@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useCallback, useRef } from 'react';
-import { useARStore, selectShouldShowFallback, selectIsLoading, selectErrorMessage, selectFallbackMode } from '../store/useARStore';
+import { useARStore, selectShouldShowFallback, selectIsLoading, selectErrorMessage, selectFallbackMode, selectModelLoadingProgress } from '../store/useARStore';
 import { DeviceProfiler } from '../utils/DeviceProfiler';
 import { ARSessionState } from './ARSessionManager';
 
@@ -31,6 +31,7 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
   const isLoading = useARStore(selectIsLoading);
   const errorMessage = useARStore(selectErrorMessage);
   const fallbackMode = useARStore(selectFallbackMode);
+  const modelLoadingProgress = useARStore(selectModelLoadingProgress);
   
   const setCameraPermission = useARStore((state) => state.setCameraPermission);
   const setDeviceClass = useARStore((state) => state.setDeviceClass);
@@ -190,6 +191,15 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
             <div className="animate-spin rounded-full h-20 w-20 border-t-2 border-b-2 border-amber-400 mb-4"></div>
             <p className="text-white text-lg font-medium">Initializing AR Experience...</p>
             <p className="text-white/60 text-sm mt-2">Please allow camera access when prompted</p>
+            
+            {/* Progress Bar */}
+            <div className="w-64 h-2 bg-gray-700 rounded-full mt-4 overflow-hidden">
+              <div 
+                className="h-full bg-brand-neon transition-all duration-300 ease-out"
+                style={{ width: `${modelLoadingProgress}%` }}
+              />
+            </div>
+            <p className="text-white/80 text-xs mt-2">{Math.round(modelLoadingProgress)}%</p>
           </div>
         )}
 
