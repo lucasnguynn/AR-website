@@ -1,13 +1,13 @@
 /**
  * ARVideoCanvas.tsx
- * 
+ *
  * Video canvas component that renders the camera feed and overlays
  * the 3D ring model using the ARSessionManager.
  */
 
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useARStore } from '../store/useARStore';
-import { ARSessionManager, ARSessionConfig } from './ARSessionManager';
+import { ARSessionManager, ARSessionConfig } from '../ARSessionManager';
 
 interface ARVideoCanvasProps {
   ringModelUrl: string;
@@ -17,18 +17,18 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sessionManagerRef = useRef<ARSessionManager | null>(null);
-  
+
   const setARState = useARStore((state) => state.setARState);
-  const setError = useARStore((state) => state.setError);
+  const setError   = useARStore((state) => state.setError);
   const setLoading = useARStore((state) => state.setLoading);
 
   // Initialize AR Session
   useEffect(() => {
     if (!videoRef.current || !canvasRef.current) return;
 
-    const video = videoRef.current;
+    const video  = videoRef.current;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+    const ctx    = canvas.getContext('2d');
 
     if (!ctx) {
       setError('Failed to initialize canvas context');
@@ -36,8 +36,11 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     }
 
     // Configure AR Session
+    // FIXED: mediaPipeWasmPath previously used a relative '/wasm/' path that
+    // produces a 404 on GitHub Pages. It now points directly to the jsDelivr
+    // CDN bundle so the WASM binary is always reachable regardless of deploy base.
     const config: ARSessionConfig = {
-      mediaPipeWasmPath: '/wasm/', // Adjust path as needed
+      mediaPipeWasmPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
       ringModelUrl,
       ringScale: 1.0,
       trackingFPS: 15,
@@ -45,7 +48,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
       minTrackingConfidence: 0.7,
       videoConstraints: {
         facingMode: 'environment',
-        width: { ideal: 1280 },
+        width:  { ideal: 1280 },
         height: { ideal: 720 },
       },
     };
@@ -57,7 +60,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     // State change callback
     sessionManager.onStateChange((state) => {
       setARState(state);
-      
+
       if (state === 'INITIALIZING' || state === 'CAMERA_READY') {
         setLoading(true);
       } else {
@@ -94,11 +97,11 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   useEffect(() => {
     const handleResize = () => {
       if (canvasRef.current && videoRef.current) {
-        const video = videoRef.current;
+        const video  = videoRef.current;
         const canvas = canvasRef.current;
-        
+
         // Match canvas size to video display size
-        canvas.width = video.videoWidth || 1280;
+        canvas.width  = video.videoWidth  || 1280;
         canvas.height = video.videoHeight || 720;
       }
     };
