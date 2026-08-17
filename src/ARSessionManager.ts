@@ -8,7 +8,7 @@
  * @module ARSessionManager
  */
 
-import { RingPoseEstimator, HandTrackingResult, NormalizedLandmark, RingPose } from './RingPoseEstimator';
+import { RingPoseEstimator, HandTrackingResult, RingPose } from './RingPoseEstimator';
 import { ARScene } from './ARScene';
 import { useARStore } from './store/useARStore';
 
@@ -94,8 +94,6 @@ interface WorkerProcessMessage {
 interface WorkerStopMessage {
   type: 'STOP';
 }
-
-type WorkerMessage = WorkerInitMessage | WorkerProcessMessage | WorkerStopMessage;
 
 /**
  * Response types from Web Worker
@@ -245,7 +243,6 @@ export class ARSessionManager {
   private isRendering: boolean = false;
   
   // Loop control
-  private trackingIntervalId: ReturnType<typeof setTimeout> | null = null;
   private animationFrameId: number | null = null;
   
   // Callbacks
@@ -454,7 +451,9 @@ export class ARSessionManager {
   }
 
   /**
-   * Start the tracking loop (async, lower FPS)
+   * Start the tracking loop using requestVideoFrameCallback
+   * This ensures MediaPipe only processes when a new physical frame is available,
+   * eliminating CPU waste from setTimeout-based polling.
    */
   private startTrackingLoop(): void {
     const processFrame = async () => {
@@ -491,13 +490,16 @@ export class ARSessionManager {
         console.error('Frame processing error:', error);
       }
 
-      // Schedule next frame based on target FPS
-      const delay = 1000 / this.config.trackingFPS;
-      this.trackingIntervalId = setTimeout(processFrame, delay);
+      // Re-register callback for next frame only if still tracking
+      if (this.isTracking && this.videoElement) {
+        this.videoElement.requestVideoFrameCallback(processFrame);
+      }
     };
 
     this.isTracking = true;
-    processFrame();
+    if (this.videoElement) {
+      this.videoElement.requestVideoFrameCallback(processFrame);
+    }
   }
 
   /**
@@ -547,6 +549,10 @@ export class ARSessionManager {
       const container = canvas.parentElement;
       if (container) {
         container.appendChild(this.scene.getDomElement());
+        
+        // Initial resize with object-cover compensation
+        const rect = container.getBoundingClientRect();
+        this.scene.resize(rect.width, rect.height, video.videoWidth, video.videoHeight);
       }
     }
 
@@ -561,12 +567,6 @@ export class ARSessionManager {
   stop(): void {
     this.isTracking = false;
     this.isRendering = false;
-
-    // Clear tracking interval
-    if (this.trackingIntervalId) {
-      clearTimeout(this.trackingIntervalId);
-      this.trackingIntervalId = null;
-    }
 
     // Cancel animation frame
     if (this.animationFrameId !== null) {

@@ -98,16 +98,36 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     };
   }, [ringModelUrl]);
 
-  // Handle resize
+  // Handle resize - sync canvas to container bounding rect and update scene camera
   useEffect(() => {
     const handleResize = () => {
-      if (canvasRef.current && videoRef.current) {
-        const video  = videoRef.current;
+      if (canvasRef.current && videoRef.current && sessionManagerRef.current) {
         const canvas = canvasRef.current;
+        const video = videoRef.current;
+        const container = canvas.parentElement;
 
-        // Match canvas size to video display size
-        canvas.width  = video.videoWidth  || 1280;
-        canvas.height = video.videoHeight || 720;
+        if (container) {
+          // Get the actual rendered size of the container
+          const rect = container.getBoundingClientRect();
+          
+          // Canvas MUST track container size, NOT video.videoWidth/videoHeight
+          // This is critical because CSS object-cover scales the video differently
+          // than its intrinsic aspect ratio
+          canvas.width = rect.width;
+          canvas.height = rect.height;
+          
+          // Notify ARScene to adjust camera FOV for object-cover alignment
+          // We need to pass video dimensions so the scene can calculate cover scale
+          try {
+            // Access the private scene property through type assertion for resize call
+            const scene = (sessionManagerRef.current as any).scene;
+            if (scene) {
+              scene.resize(rect.width, rect.height, video.videoWidth, video.videoHeight);
+            }
+          } catch (e) {
+            console.warn('Failed to update scene resize:', e);
+          }
+        }
       }
     };
 
