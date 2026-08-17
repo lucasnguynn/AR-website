@@ -23,7 +23,9 @@ interface InitMessage {
 
 interface ProcessMessage {
   type: 'PROCESS';
-  imageData: ImageData;
+  buffer: ArrayBuffer;
+  width: number;
+  height: number;
   timestamp: number;
 }
 
@@ -117,10 +119,13 @@ self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
     }
 
     try {
-      const { imageData, timestamp } = event.data as ProcessMessage;
+      const { buffer, width, height, timestamp } = event.data as ProcessMessage;
+
+      // Reconstruct ImageData from transferred buffer
+      const imgData = new ImageData(new Uint8ClampedArray(buffer), width, height);
 
       // Detect landmarks
-      const results = handLandmarker.detectForVideo(imageData, timestamp);
+      const results = handLandmarker.detectForVideo(imgData, timestamp);
 
       if (results.landmarks && results.landmarks.length > 0) {
         // Extract first hand's landmarks

@@ -90,7 +90,9 @@ interface WorkerInitMessage {
 
 interface WorkerProcessMessage {
   type: 'PROCESS';
-  imageData: ImageData;
+  buffer: ArrayBuffer;
+  width: number;
+  height: number;
   timestamp: number;
 }
 
@@ -148,6 +150,9 @@ export class ARSessionManager {
   // Loop control
   private animationFrameId: number | null = null;
   private trackingIntervalId: ReturnType<typeof setInterval> | null = null;
+  
+  // Back-pressure flag to prevent frame queue flooding
+  private workerBusy = false;
   
   // Callbacks
   public onStateChange: SessionStateCallback | null = null;
@@ -347,7 +352,7 @@ export class ARSessionManager {
         reject(error);
       };
 
-      // Initialize worker
+      // Initialize worker - worker is guaranteed non-null here since we just created it
       this.worker.postMessage({
         type: 'INIT',
         wasmPath: this.config.mediaPipeWasmPath,
@@ -366,6 +371,9 @@ export class ARSessionManager {
    * Handle hand tracking result from worker
    */
   private handleHandResult(result: HandTrackingResult | null, timestamp: number): void {
+    // Release back-pressure lock
+    this.workerBusy = false;
+    
     if (!this.poseEstimator || !this.scene) {
       return;
     }
@@ -405,6 +413,7 @@ export class ARSessionManager {
    * This ensures MediaPipe only processes when a new physical frame is available,
    * eliminating CPU waste from setTimeout-based polling.
    * @fix BUG-09: Add graceful fallback to setInterval for Firefox which doesn't support requestVideoFrameCallback
+   * @fix BUG-02: Add back-pressure via workerBusy flag and transfer buffer correctly
    */
   private startTrackingLoop(): void {
     // Create reusable offscreen canvas ONCE — avoids 900+ allocations/minute
@@ -413,6 +422,11 @@ export class ARSessionManager {
 
     const processFrame = async () => {
       if (!this.isTracking || !this.worker || !this.videoElement) {
+        return;
+      }
+
+      // Back-pressure: skip frame if worker is still busy
+      if (this.workerBusy) {
         return;
       }
 
@@ -433,12 +447,23 @@ export class ARSessionManager {
         const imageData = offscreenCtx.getImageData(0, 0, vw, vh);
         const timestamp = performance.now();
 
+        // Set back-pressure flag before posting message
+        this.workerBusy = true;
+
+        // Transfer buffer to worker with explicit reconstruction data
         this.worker.postMessage(
-          { type: 'PROCESS', imageData, timestamp } as WorkerProcessMessage,
+          {
+            type: 'PROCESS',
+            buffer: imageData.data.buffer,
+            width: vw,
+            height: vh,
+            timestamp
+          } as WorkerProcessMessage,
           [imageData.data.buffer]
         );
       } catch (error) {
         console.error('Frame processing error:', error);
+        this.workerBusy = false;
       }
 
       // Re-register callback for next frame only if still tracking

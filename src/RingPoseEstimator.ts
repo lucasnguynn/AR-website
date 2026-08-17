@@ -132,7 +132,6 @@ export class RingPoseEstimator {
   private metadata: RingARMetadata;
   
   // Reusable Three.js objects to avoid garbage collection
-  private ndcVector: THREE.Vector3;
   private worldPosition: THREE.Vector3;
   private forwardVector: THREE.Vector3;
   private rightVector: THREE.Vector3;
@@ -154,7 +153,6 @@ export class RingPoseEstimator {
     this.config = { ...DEFAULT_ESTIMATOR_CONFIG, ...config };
     
     // Initialize reusable Three.js objects
-    this.ndcVector = new THREE.Vector3();
     this.worldPosition = new THREE.Vector3();
     this.forwardVector = new THREE.Vector3();
     this.rightVector = new THREE.Vector3();
@@ -187,7 +185,7 @@ export class RingPoseEstimator {
    * - z: 0 (near) to 1 (far)
    */
   private normalizedToNDC(landmark: NormalizedLandmark): THREE.Vector3 {
-    return this.ndcVector.set(
+    return new THREE.Vector3(
       landmark.x * 2 - 1,           // [0,1] -> [-1,1]
       -(landmark.y * 2 - 1),        // [0,1] -> [1,-1] (flip Y for Three.js)
       landmark.z                     // Keep z as-is for depth calculation
@@ -215,14 +213,15 @@ export class RingPoseEstimator {
     // Convert depth from mm to Three.js units (assuming 1 unit = 1mm)
     const depth = depthMm;
     
-    // Set z to normalized depth for unprojection
-    this.ndcVector.copy(ndc);
-    this.ndcVector.z = (depth - camera.near) / (camera.far - camera.near);
+    // Create a new vector for NDC with updated z for unprojection
+    const ndcWithDepth = new THREE.Vector3(
+      ndc.x,
+      ndc.y,
+      (depth - camera.near) / (camera.far - camera.near)
+    );
     
     // Unproject to world space
-    this.worldPosition.copy(this.ndcVector).unproject(camera);
-    
-    return this.worldPosition.clone();
+    return ndcWithDepth.unproject(camera).clone();
   }
 
   /**
@@ -245,14 +244,14 @@ export class RingPoseEstimator {
    * Calculate the forward vector (direction along the finger)
    */
   private calculateForwardVector(mcp: THREE.Vector3, pip: THREE.Vector3): THREE.Vector3 {
-    return this.forwardVector.subVectors(pip, mcp).normalize();
+    return new THREE.Vector3().subVectors(pip, mcp).normalize();
   }
 
   /**
    * Calculate the right vector (perpendicular to finger, across the hand)
    */
   private calculateRightVector(indexMCP: THREE.Vector3, pinkyMCP: THREE.Vector3): THREE.Vector3 {
-    return this.rightVector.subVectors(pinkyMCP, indexMCP).normalize();
+    return new THREE.Vector3().subVectors(pinkyMCP, indexMCP).normalize();
   }
 
   /**
@@ -270,22 +269,22 @@ export class RingPoseEstimator {
     forward: THREE.Vector3,
     right: THREE.Vector3
   ): THREE.Quaternion {
-    // Calculate up vector
-    this.upVector.crossVectors(right, forward).normalize();
+    // Calculate up vector using cross product
+    const upVector = new THREE.Vector3().crossVectors(right, forward).normalize();
     
     // Re-orthogonalize right vector
-    this.rightVector.crossVectors(forward, this.upVector).normalize();
+    const rightVector = new THREE.Vector3().crossVectors(forward, upVector).normalize();
     
     // Construct rotation matrix from basis vectors
     // Columns represent: Right, Up, Forward (basis vectors)
-    this.matrix.makeBasis(
-      this.rightVector,
-      this.upVector,
+    const matrix = new THREE.Matrix4().makeBasis(
+      rightVector,
+      upVector,
       forward
     );
     
     // Extract quaternion from rotation matrix
-    const quaternion = new THREE.Quaternion().setFromRotationMatrix(this.matrix);
+    const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
     
     // Apply rotation offset from metadata
     if (this.metadata.rotationOffset) {

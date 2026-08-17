@@ -29,7 +29,16 @@ export class DeviceProfiler {
       const context = version === 1 
         ? canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
         : canvas.getContext('webgl2');
-      return !!context;
+      
+      if (!context) {
+        return false;
+      }
+
+      // Lose the context to prevent memory leaks from repeated tests
+      const ext = (context as WebGLRenderingContext)?.getExtension('WEBGL_lose_context');
+      ext?.loseContext();
+      
+      return true;
     } catch {
       return false;
     }
@@ -58,20 +67,14 @@ export class DeviceProfiler {
       return 'UNSUPPORTED';
     }
 
+    const effectiveCores = logicalCores ?? 0;
+
     // HIGH: 6+ cores AND 4GB+ memory
     // On Safari, deviceMemory is undefined, so rely on logicalCores alone for Apple devices
     const isAppleDevice = /iPad|iPhone|iPod|Mac/.test(navigator.userAgent);
-    const effectiveMemory = deviceMemory ?? (isAppleDevice ? 4 : 0);
-    const effectiveCores = logicalCores ?? 0;
-
-    if (effectiveCores >= 6 && effectiveMemory >= 4) {
-      return 'HIGH';
-    }
-
-    // MEDIUM: 4+ cores OR 2GB+ memory (but not HIGH tier)
-    // For Safari devices without deviceMemory, use logicalCores as primary classifier
+    
+    // For Safari devices without deviceMemory, classify based on cores alone
     if (isAppleDevice && deviceMemory === null) {
-      // Safari doesn't support deviceMemory - classify based on cores alone
       if (effectiveCores >= 6) {
         return 'HIGH';
       }
@@ -84,6 +87,13 @@ export class DeviceProfiler {
       return 'UNSUPPORTED';
     }
 
+    const effectiveMemory = deviceMemory ?? 0;
+
+    if (effectiveCores >= 6 && effectiveMemory >= 4) {
+      return 'HIGH';
+    }
+
+    // MEDIUM: 4+ cores OR 2GB+ memory (but not HIGH tier)
     if (effectiveCores >= 4 || effectiveMemory >= 2) {
       return 'MEDIUM';
     }
