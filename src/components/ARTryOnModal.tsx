@@ -1,9 +1,5 @@
 /**
  * ARTryOnModal.tsx
- *
- * Main overlay modal component for the AR Try-On experience.
- * Implements graceful degradation: checks DeviceProfiler and mounts either
- * ARVideoCanvas (for supported devices) or Fallback3DViewer (for unsupported).
  */
 
 import React, { useEffect, useCallback, useRef } from 'react';
@@ -26,18 +22,14 @@ async function getDynamicVideoConstraints(): Promise<MediaStreamConstraints['vid
     width: { ideal: 1280 },
     height: { ideal: 720 },
   };
-
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const videoInputs = devices.filter(device => device.kind === 'videoinput');
-
     if (videoInputs.length > 1) {
       return { ...baseConstraints, facingMode: 'environment' };
     }
-
     return { ...baseConstraints, facingMode: 'user' };
-  } catch (error) {
-    console.warn('Could not enumerate devices, using default constraints:', error);
+  } catch {
     return { ...baseConstraints, facingMode: 'user' };
   }
 }
@@ -48,11 +40,7 @@ interface ARTryOnModalProps {
   ringModelUrl: string;
 }
 
-export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
-  isOpen,
-  onClose,
-  ringModelUrl,
-}) => {
+export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({ isOpen, onClose, ringModelUrl }) => {
   const shouldShowFallback = useARStore(selectShouldShowFallback);
   const isLoading = useARStore(selectIsLoading);
   const errorMessage = useARStore(selectErrorMessage);
@@ -68,27 +56,18 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
   const modalRef = useRef<HTMLDivElement>(null);
   const hasInitializedRef = useRef(false);
 
-  // Escape key handler
   useEffect(() => {
     if (!isOpen) return;
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') handleClose();
-    };
+    const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, [isOpen]);
 
-  // Body scroll lock
   useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
+    document.body.style.overflow = isOpen ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
   }, [isOpen]);
 
-  // Initialize device profiling on modal open
   useEffect(() => {
     if (!isOpen || hasInitializedRef.current) return;
     hasInitializedRef.current = true;
@@ -97,29 +76,19 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
       try {
         const profile = await DeviceProfiler.profile();
         setDeviceClass(profile.deviceClass);
-
-        if (profile.deviceClass === 'UNSUPPORTED' || profile.deviceClass === 'LOW') {
-          return;
-        }
+        if (profile.deviceClass === 'UNSUPPORTED' || profile.deviceClass === 'LOW') return;
 
         try {
           const videoConstraints = await getDynamicVideoConstraints();
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: videoConstraints,
-          });
+          const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
           stream.getTracks().forEach(track => track.stop());
           setCameraPermission(true);
-        } catch (permissionError) {
-          console.warn('Camera permission denied:', permissionError);
+        } catch {
           setCameraPermission(false);
           activateFallback('PERMISSION_DENIED');
-          return;
         }
-
       } catch (error) {
         console.error('AR initialization failed:', error);
-        // FIX BUG-4: Explicitly clear isLoading here in case ARVideoCanvas's
-        // onStateChange callback hasn't fired yet (race condition on fast failures).
         setLoading(false);
         activateFallback('CAMERA_ERROR');
       }
@@ -128,18 +97,23 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
     initializeAR();
   }, [isOpen]);
 
-  const handleClose = useCallback(() => {
-    closeModal();
-    onClose();
-  }, [onClose]);
+  const handleClose = useCallback(() => { closeModal(); onClose(); }, [onClose]);
 
-  const handleBackdropClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget) {
-      handleClose();
-    }
+  const handleBackdropClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) handleClose();
   }, [handleClose]);
 
   if (!isOpen) return null;
+
+  // Tính progress label rõ ràng hơn
+  const progressClamped = Math.min(Math.round(modelLoadingProgress), 100);
+  const progressLabel = progressClamped < 30
+    ? 'Đang khởi động camera...'
+    : progressClamped < 70
+    ? `Đang tải mô hình 3D... ${progressClamped}%`
+    : progressClamped < 100
+    ? `Đang xử lý... ${progressClamped}%`
+    : 'Sẵn sàng!';
 
   return (
     <div
@@ -153,13 +127,9 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
       <div className="relative w-full h-full max-w-7xl max-h-screen bg-gray-900 shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between p-4 bg-gradient-to-b from-black/60 to-transparent">
-          <h2
-            id="ar-modal-title"
-            className="text-white text-lg font-semibold tracking-wide"
-          >
+          <h2 id="ar-modal-title" className="text-white text-lg font-semibold tracking-wide">
             Virtual Try-On
           </h2>
-
           <button
             onClick={handleClose}
             className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors"
@@ -171,15 +141,13 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
           </button>
         </div>
 
-        {/* Main Content Area */}
+        {/* Main Content */}
         <div className="w-full h-full">
-          <React.Suspense
-            fallback={
-              <div className="flex items-center justify-center w-full h-full">
-                <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-white"></div>
-              </div>
-            }
-          >
+          <React.Suspense fallback={
+            <div className="flex items-center justify-center w-full h-full">
+              <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-white"></div>
+            </div>
+          }>
             {shouldShowFallback ? (
               <Fallback3DViewer
                 ringModelUrl={ringModelUrl}
@@ -199,34 +167,24 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
           </React.Suspense>
         </div>
 
-        {/* Loading Overlay */}
+        {/* Loading Overlay — chỉ hiện khi isLoading === true */}
         {isLoading && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm">
             <div className="animate-spin rounded-full h-20 w-20 border-t-2 border-b-2 border-amber-400 mb-4"></div>
             <p className="text-white text-lg font-medium">Initializing AR Experience...</p>
             <p className="text-white/60 text-sm mt-2">Please allow camera access when prompted</p>
 
-            {/*
-              FIX BUG-3 (169% display):
-              modelLoadingProgress is now guaranteed to be in [0, 100] because ARScene.ts
-              clamps intermediate progress to [0, 99] and only emits 100 from onLoad.
-              Math.round() here is still correct; just displaying a reliable value now.
-            */}
             <div className="w-64 h-2 bg-gray-700 rounded-full mt-4 overflow-hidden">
               <div
-                className="h-full bg-brand-neon transition-all duration-300 ease-out"
-                style={{ width: `${Math.min(modelLoadingProgress, 100)}%` }}
+                className="h-full bg-amber-400 transition-all duration-300 ease-out"
+                style={{ width: `${progressClamped}%` }}
               />
             </div>
-            <p className="text-white/80 text-xs mt-2">
-              {modelLoadingProgress < 100
-                ? `Loading model... ${Math.min(Math.round(modelLoadingProgress), 99)}%`
-                : 'Finalizing...'}
-            </p>
+            <p className="text-white/80 text-xs mt-2">{progressLabel}</p>
           </div>
         )}
 
-        {/* Error Message Display */}
+        {/* Error */}
         {errorMessage && !isLoading && (
           <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 z-30 px-6 py-3 bg-red-500/90 rounded-lg shadow-lg">
             <p className="text-white text-sm font-medium">{errorMessage}</p>
