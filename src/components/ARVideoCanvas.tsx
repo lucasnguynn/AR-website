@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useRef } from 'react';
-import { useARStore, selectARState } from '../store/useARStore';
+import { useARStore, selectARState, selectRingScale } from '../store/useARStore';
 import { ARSessionManager, ARSessionConfig } from '../ARSessionManager';
 import RingCatalog from './RingCatalog';
 
@@ -23,6 +23,15 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   const setError   = useARStore((state) => state.setError);
   const setLoading = useARStore((state) => state.setLoading);
   const setTakeSnapshotFn = useARStore((state) => state.setTakeSnapshotFn);
+
+  // Sync Zustand ringScale → ARSessionManager whenever the slider changes
+  const ringScale = useARStore(selectRingScale);
+
+  useEffect(() => {
+    if (sessionManagerRef.current) {
+      sessionManagerRef.current.setRingScale(ringScale);
+    }
+  }, [ringScale]);
 
   // Initialize AR Session
   useEffect(() => {
