@@ -11,6 +11,8 @@
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader';
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader';
+import { PMREMGenerator } from 'three/examples/jsm/pmrem/PMREMGenerator';
 import type { LoadingManager } from 'three';
 import { RingPose } from './RingPoseEstimator';
 
@@ -77,6 +79,8 @@ export class ARScene {
   // Lighting
   private ambientLight: THREE.AmbientLight;
   private directionalLight: THREE.DirectionalLight;
+  private pmremGenerator: PMREMGenerator | null = null;
+  private environmentTexture: THREE.Texture | null = null;
   
   // Background video
   private videoElement: HTMLVideoElement | null = null;
@@ -133,6 +137,24 @@ export class ARScene {
     this.directionalLight.shadow.mapSize.height = 1024;
     this.scene.add(this.directionalLight);
     
+    // Initialize PMREMGenerator for HDRI environment mapping
+    this.pmremGenerator = new PMREMGenerator(this.renderer);
+    this.pmremGenerator.compileEquirectangularShader();
+    
+    // Load HDRI environment map for realistic metallic/refractive materials
+    const hdriUrl = 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/equirectangular/royal_esplanade_1k.hdr';
+    new RGBELoader()
+      .load(hdriUrl, (texture: THREE.DataTexture) => {
+        texture.mapping = THREE.EquirectangularReflectionMapping;
+        this.environmentTexture = this.pmremGenerator.fromEquirectangular(texture).texture;
+        this.scene.environment = this.environmentTexture;
+        // Keep the HDRI as background only if no video texture is set
+        if (!this.videoTexture) {
+          this.scene.background = this.environmentTexture;
+        }
+        texture.dispose();
+      });
+    
     // Initialize ring group
     this.ringGroup = new THREE.Group();
     this.scene.add(this.ringGroup);
@@ -172,8 +194,15 @@ export class ARScene {
     this.videoTexture.magFilter = THREE.LinearFilter;
     this.videoTexture.generateMipmaps = false;
     
-    // Set video as scene background
+    // Set video as scene background (overrides HDRI environment background)
     this.scene.background = this.videoTexture;
+  }
+
+  /**
+   * Get the environment texture for snapshot compositing
+   */
+  getEnvironmentTexture(): THREE.Texture | null {
+    return this.environmentTexture;
   }
 
   /**
@@ -394,6 +423,16 @@ export class ARScene {
     // Dispose lights
     this.ambientLight.dispose();
     this.directionalLight.dispose();
+    
+    // Dispose PMREMGenerator and environment texture
+    if (this.pmremGenerator) {
+      this.pmremGenerator.dispose();
+      this.pmremGenerator = null;
+    }
+    if (this.environmentTexture) {
+      this.environmentTexture.dispose();
+      this.environmentTexture = null;
+    }
     
     // Dispose renderer
     this.renderer.dispose();

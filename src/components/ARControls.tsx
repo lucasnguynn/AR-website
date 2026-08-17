@@ -5,16 +5,33 @@
  */
 
 import React from 'react';
-import { useARStore, selectARState, selectIsLoading } from '../store/useARStore';
+import { useARStore, selectARState, selectIsLoading, selectTakeSnapshotFn } from '../store/useARStore';
 import { ARSessionState } from './ARSessionManager';
 
 export const ARControls: React.FC = () => {
   const arState = useARStore(selectARState);
   const isLoading = useARStore(selectIsLoading);
+  const takeSnapshotFn = useARStore(selectTakeSnapshotFn);
 
   const handleTakePhoto = () => {
-    // TODO: Implement photo capture logic
-    console.log('Taking photo...');
+    if (!takeSnapshotFn) {
+      console.warn('Snapshot function not available');
+      return;
+    }
+
+    const dataUrl = takeSnapshotFn();
+    if (!dataUrl) {
+      console.warn('Failed to take snapshot');
+      return;
+    }
+
+    // Create a temporary anchor element and trigger download
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = 'ring-try-on.png';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const showLostTrackingGuide = arState === ARSessionState.TRACKING_LOST;

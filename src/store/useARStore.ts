@@ -36,6 +36,9 @@ interface ARUIState {
   
   /** Error message if any */
   errorMessage: string | null;
+  
+  /** Function to take a snapshot from the AR session */
+  takeSnapshotFn: (() => string | null) | null;
 }
 
 interface ARUIActions {
@@ -71,6 +74,9 @@ interface ARUIActions {
   
   /** Reset store to initial state */
   reset: () => void;
+  
+  /** Set the takeSnapshot function from ARSessionManager */
+  setTakeSnapshotFn: (fn: (() => string | null) | null) => void;
 }
 
 const initialState: ARUIState = {
@@ -82,6 +88,7 @@ const initialState: ARUIState = {
   isLoading: false,
   modelLoadingProgress: 0,
   errorMessage: null,
+  takeSnapshotFn: null,
 };
 
 export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
@@ -162,6 +169,10 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
   reset: () => {
     set(initialState);
   },
+  
+  setTakeSnapshotFn: (fn: (() => string | null) | null) => {
+    set({ takeSnapshotFn: fn });
+  },
 }));
 
 /**
@@ -179,3 +190,4 @@ export const selectModelLoadingProgress = (state: ARUIState & ARUIActions) => st
 export const selectErrorMessage = (state: ARUIState & ARUIActions) => state.errorMessage;
 export const selectShouldShowFallback = (state: ARUIState & ARUIActions) => 
   state.activeFallbackMode !== 'NONE';
+export const selectTakeSnapshotFn = (state: ARUIState & ARUIActions) => state.takeSnapshotFn;
