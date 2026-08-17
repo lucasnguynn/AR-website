@@ -14,8 +14,6 @@ interface ARVideoCanvasProps {
 }
 
 export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sessionManagerRef = useRef<ARSessionManager | null>(null);
 
@@ -26,14 +24,12 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
 
   // Initialize AR Session
   useEffect(() => {
-    if (!videoRef.current || !canvasRef.current || !containerRef.current) return;
+    if (!containerRef.current) return;
 
-    const video  = videoRef.current;
-    const canvas = canvasRef.current;
     const container = containerRef.current;
 
-    // @fix BUG-01 & BUG-02: Removed unused ctx variable (Three.js renders to its own WebGL canvas).
-    // Corrected session initialization flow: create manager, assign callbacks, call initialize(), then start().
+    // @fix NEW-01: containerRef now attached to JSX div, so initialization proceeds correctly
+    // @fix NEW-02: Removed video/canvas refs - ARSessionManager handles them internally via initialize()
 
     // Configure AR Session
     // FIXED: mediaPipeWasmPath previously used a relative '/wasm/' path that
@@ -77,14 +73,13 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
       setError(error.message);
     };
 
-    // Start AR session - @fix BUG-02: Must call initialize() first before start()
+    // Start AR session - @fix NEW-02: Call initialize() then startLoops() instead of start(video, canvas)
     const startAR = async () => {
       try {
-        // Initialize session with container element (required to reach CAMERA_READY state)
+        // Initialize session with container element - creates camera stream and Three.js canvas internally
         await sessionManager.initialize(container);
-        // After initialize() resolves, start() can be called
-        // Note: start() manages its own video/canvas internally via the scene
-        sessionManager.start(video, canvas);
+        // After initialize() resolves, start the tracking and render loops
+        sessionManager.startLoops();
       } catch (error) {
         console.error('Failed to start AR:', error);
         setError('Failed to start AR session');
@@ -93,9 +88,9 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
 
     startAR();
 
-    // Cleanup
+    // Cleanup - @fix NEW-02: Use dispose() which releases camera/worker/WebGL properly
     return () => {
-      sessionManager.stop();
+      sessionManager.dispose();
       sessionManagerRef.current = null;
       setTakeSnapshotFn(null);
     };
@@ -104,33 +99,14 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   // Handle resize - sync canvas to container bounding rect and update scene camera
   useEffect(() => {
     const handleResize = () => {
-      if (canvasRef.current && videoRef.current && sessionManagerRef.current) {
-        const canvas = canvasRef.current;
-        const video = videoRef.current;
-        const container = canvas.parentElement;
+      if (containerRef.current && sessionManagerRef.current) {
+        const container = containerRef.current;
 
-        if (container) {
-          // Get the actual rendered size of the container
-          const rect = container.getBoundingClientRect();
-          
-          // Canvas MUST track container size, NOT video.videoWidth/videoHeight
-          // This is critical because CSS object-cover scales the video differently
-          // than its intrinsic aspect ratio
-          canvas.width = rect.width;
-          canvas.height = rect.height;
-          
-          // Notify ARScene to adjust camera FOV for object-cover alignment
-          // We need to pass video dimensions so the scene can calculate cover scale
-          try {
-            // Access the private scene property through type assertion for resize call
-            const scene = (sessionManagerRef.current as any).scene;
-            if (scene) {
-              scene.resize(rect.width, rect.height, video.videoWidth, video.videoHeight);
-            }
-          } catch (e) {
-            console.warn('Failed to update scene resize:', e);
-          }
-        }
+        // Get the actual rendered size of the container
+        const rect = container.getBoundingClientRect();
+        
+        // @fix NEW-02: Use new public resize() method instead of (as any).scene hack
+        sessionManagerRef.current.resize(rect.width, rect.height);
       }
     };
 
@@ -141,25 +117,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   }, []);
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-black">
-      {/* Video Element - Camera Feed */}
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1]" // Mirror for natural interaction
-      />
-
-      {/* AR Canvas Overlay - Renders 3D ring */}
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1]" // Match video mirroring
-      />
-
-      {/* Vignette Overlay for premium feel */}
-      <div className="absolute inset-0 pointer-events-none bg-gradient-radial from-transparent via-transparent to-black/20" />
-    </div>
+    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-black" />
   );
 };
 
