@@ -29,41 +29,15 @@ const BASE_PATH = import.meta.env.BASE_URL;
 
 export const DEFAULT_CATALOG: RingItem[] = [
   {
-    id: 'diamond-solitaire',
-    name: 'Diamond Solitaire',
-    // PLACEHOLDER: Classic solitaire silhouette — replace with brand model
-    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/MetalRoughSpheres/glTF-Binary/MetalRoughSpheres.glb',
-    thumbnailUrl: '',
-    material: '18K Gold',
-    price: '12.500.000 ₫',
-  },
-  {
-    id: 'rose-gold-band',
-    name: 'Rose Gold Band',
-    // PLACEHOLDER: PBR metallic test — replace with brand model
-    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/GoldLabel/glTF-Binary/GoldLabel.glb',
-    thumbnailUrl: '',
-    material: 'Rose Gold',
-    price: '8.900.000 ₫',
-  },
-  {
-    id: 'emerald-eternity',
-    name: 'Emerald Eternity',
-    // PLACEHOLDER: Transmission/refraction test for gemstone rendering — replace with brand model
-    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/IridescentDishWithOlives/glTF-Binary/IridescentDishWithOlives.glb',
-    thumbnailUrl: '',
-    material: 'Platinum',
-    price: '15.200.000 ₫',
-  },
-  // EXAMPLE: How to reference LOCAL models from /public/models/ folder:
-  // {
-  //   id: 'custom-ring-1',
-  //   name: 'Custom Ring 1',
-  //   modelUrl: `'./Models/nhan.glb'`,
-  //   thumbnailUrl: `${BASE_PATH}thumbnails/custom-ring-1.webp`,
-  //   material: 'Silver 930 from Progold (Italy)',
-  //   price: '5.000.000 ₫',
-  // },
+    id: 'custom-ring-1',
+    name: 'Custom Ring 1',
+    // Sử dụng BASE_PATH kết hợp với thư mục models (viết thường)
+    modelUrl: `${BASE_PATH}models/nhan.glb`,
+    // Xóa BASE_PATH ở thumbnail nếu bạn chưa có ảnh, tránh lỗi 404 hình ảnh
+    thumbnailUrl: '', 
+    material: 'Silver 930 from Progold (Italy)',
+    price: '5.000.000 ₫',
+  }
 ];
 
 interface RingCatalogProps {
