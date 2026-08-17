@@ -31,6 +31,9 @@ interface ARUIState {
   /** Loading state for initialization */
   isLoading: boolean;
   
+  /** Model loading progress (0 to 100) */
+  modelLoadingProgress: number;
+  
   /** Error message if any */
   errorMessage: string | null;
 }
@@ -60,6 +63,9 @@ interface ARUIActions {
   /** Set loading state */
   setLoading: (loading: boolean) => void;
   
+  /** Set model loading progress */
+  setModelLoadingProgress: (progress: number) => void;
+  
   /** Set error message */
   setError: (message: string | null) => void;
   
@@ -74,6 +80,7 @@ const initialState: ARUIState = {
   arState: ARSessionState.IDLE,
   activeFallbackMode: 'NONE',
   isLoading: false,
+  modelLoadingProgress: 0,
   errorMessage: null,
 };
 
@@ -137,6 +144,10 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
     set({ isLoading: loading });
   },
   
+  setModelLoadingProgress: (progress: number) => {
+    set({ modelLoadingProgress: progress });
+  },
+  
   setError: (message: string | null) => {
     set({ 
       errorMessage: message,
@@ -164,6 +175,7 @@ export const selectDeviceClass = (state: ARUIState & ARUIActions) => state.devic
 export const selectARState = (state: ARUIState & ARUIActions) => state.arState;
 export const selectFallbackMode = (state: ARUIState & ARUIActions) => state.activeFallbackMode;
 export const selectIsLoading = (state: ARUIState & ARUIActions) => state.isLoading;
+export const selectModelLoadingProgress = (state: ARUIState & ARUIActions) => state.modelLoadingProgress;
 export const selectErrorMessage = (state: ARUIState & ARUIActions) => state.errorMessage;
 export const selectShouldShowFallback = (state: ARUIState & ARUIActions) => 
   state.activeFallbackMode !== 'NONE';
