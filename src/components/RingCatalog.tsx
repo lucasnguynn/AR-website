@@ -59,10 +59,10 @@ export const DEFAULT_CATALOG: RingItem[] = [
   // {
   //   id: 'custom-ring-1',
   //   name: 'Custom Ring 1',
-  //   modelUrl: `${BASE_PATH}models/custom-ring-1.glb`,
+  //   modelUrl: `'./Models/nhan.glb'`,
   //   thumbnailUrl: `${BASE_PATH}thumbnails/custom-ring-1.webp`,
-  //   material: '18K Gold',
-  //   price: '10.000.000 ₫',
+  //   material: 'Silver 930 from Progold (Italy)',
+  //   price: '5.000.000 ₫',
   // },
 ];
 
