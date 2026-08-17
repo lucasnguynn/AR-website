@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import ARTryOnModal from './components/ARTryOnModal';
+import { ARTryOnModal } from './components/ARTryOnModal';
 import { DEFAULT_CATALOG } from './components/RingCatalog';
 
 /**
