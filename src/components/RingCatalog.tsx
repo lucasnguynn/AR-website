@@ -16,11 +16,19 @@ export interface RingItem {
   price?: string;
 }
 
+// TODO [PRODUCTION]: Replace all modelUrl values below with your brand's actual ring .glb files.
+// Naming convention: /models/{ring-id}.glb (place files in the /public/models/ directory).
+// Each model must be exported with:
+//   - Origin at the ring's bore center (geometric center of the inner circle)
+//   - Y-axis pointing "up" through the bore (perpendicular to the ring plane)
+//   - Scale: 1 unit = 1 mm (standard jewellery CAD convention)
+// TODO [PRODUCTION]: Add real thumbnail images (400×400 WebP, transparent bg) for each ring.
 export const DEFAULT_CATALOG: RingItem[] = [
   {
     id: 'diamond-solitaire',
     name: 'Diamond Solitaire',
-    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/MaterialsVariantsShoe/glTF-Binary/MaterialsVariantsShoe.glb',
+    // PLACEHOLDER: Classic solitaire silhouette — replace with brand model
+    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/MetalRoughSpheres/glTF-Binary/MetalRoughSpheres.glb',
     thumbnailUrl: '',
     material: '18K Gold',
     price: '12.500.000 ₫',
@@ -28,7 +36,8 @@ export const DEFAULT_CATALOG: RingItem[] = [
   {
     id: 'rose-gold-band',
     name: 'Rose Gold Band',
-    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/ToyCar/glTF-Binary/ToyCar.glb',
+    // PLACEHOLDER: PBR metallic test — replace with brand model
+    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/GoldLabel/glTF-Binary/GoldLabel.glb',
     thumbnailUrl: '',
     material: 'Rose Gold',
     price: '8.900.000 ₫',
@@ -36,7 +45,8 @@ export const DEFAULT_CATALOG: RingItem[] = [
   {
     id: 'emerald-eternity',
     name: 'Emerald Eternity',
-    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/DragonAttenuation/glTF-Binary/DragonAttenuation.glb',
+    // PLACEHOLDER: Transmission/refraction test for gemstone rendering — replace with brand model
+    modelUrl: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/IridescentDishWithOlives/glTF-Binary/IridescentDishWithOlives.glb',
     thumbnailUrl: '',
     material: 'Platinum',
     price: '15.200.000 ₫',
