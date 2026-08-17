@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useRef } from 'react';
-import { useARStore, selectARState, selectRingScale } from '../store/useARStore';
+import { useARStore, selectARState, selectRingScale, selectSnapshotRef } from '../store/useARStore';
 import { ARSessionManager, ARSessionConfig } from '../ARSessionManager';
 import RingCatalog from './RingCatalog';
 
@@ -22,8 +22,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
   const setARState = useARStore((state) => state.setARState);
   const setError   = useARStore((state) => state.setError);
   const setLoading = useARStore((state) => state.setLoading);
-  const setTakeSnapshotFn = useARStore((state) => state.setTakeSnapshotFn);
-
+  
   // Sync Zustand ringScale → ARSessionManager whenever the slider changes
   const ringScale = useARStore(selectRingScale);
 
@@ -64,8 +63,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     const sessionManager = new ARSessionManager(config);
     sessionManagerRef.current = sessionManager;
 
-    // Register the takeSnapshot function in the store for ARControls to access
-    setTakeSnapshotFn(() => sessionManager.takeSnapshot());
+    // Note: The takeSnapshot function ref is set in ARSessionManager.initialize() after model loads
 
     // State change callback - @fix BUG-01: Assign callback to property, not call as method
     sessionManager.onStateChange = (state) => {
@@ -113,7 +111,8 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
     return () => {
       sessionManager.dispose();
       sessionManagerRef.current = null;
-      setTakeSnapshotFn(null);
+      // Clear the snapshot ref on cleanup
+      useARStore.getState().setSnapshotRef(null);
     };
   }, [ringModelUrl]);
 

@@ -173,8 +173,14 @@ export class ARScene {
       new RGBELoader().load(
         currentSource,
         (texture: THREE.DataTexture) => {
+          // Race-condition guard: dispose texture if scene was disposed quickly
+          if (!this.pmremGenerator) {
+            texture.dispose();
+            return;
+          }
+          
           texture.mapping = THREE.EquirectangularReflectionMapping;
-          this.environmentTexture = this.pmremGenerator!.fromEquirectangular(texture).texture;
+          this.environmentTexture = this.pmremGenerator.fromEquirectangular(texture).texture;
           this.scene.environment = this.environmentTexture;
           if (!this.videoTexture) {
             this.scene.background = this.environmentTexture;
