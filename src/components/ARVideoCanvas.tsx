@@ -50,7 +50,7 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
       mediaPipeWasmPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm',
       ringModelUrl,
       ringScale: 1.0,
-      trackingFPS: 15,
+      trackingFPS: 20,
       minDetectionConfidence: 0.7,
       minTrackingConfidence: 0.7,
       videoConstraints: {
