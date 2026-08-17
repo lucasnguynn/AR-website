@@ -1,46 +1,48 @@
-name: Deploy to GitHub Pages
+name: Deploy static content to Pages
 
 on:
   push:
-    branches:
-      - main
-      - master
-  # Allows manual trigger from the Actions tab
-  workflow_dispatch:
+    branches: ['main'] # Chạy action này mỗi khi có code push lên nhánh main
 
-# Write access is required so peaceiris/actions-gh-pages can push to gh-pages.
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
   deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v3
-
-      - name: Setup Node.js 18
-        uses: actions/setup-node@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
-
+          node-version: 20
+          cache: 'npm'
+          
       - name: Install dependencies
         run: npm install
-
+        
       - name: Build
         run: npm run build
-        env:
-          VITE_BASE_URL: /${{ github.event.repository.name }}/
-
-      # Pushes ./dist to the gh-pages branch and enables GitHub Pages.
-      # The GITHUB_TOKEN secret is provided automatically by Actions —
-      # no manual PAT is required.
-      - name: Deploy to gh-pages branch
-        uses: peaceiris/actions-gh-pages@v3
+        
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+        
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
-          # Keeps deployment history readable; set to true to squash if
-          # you want a single-commit history on the gh-pages branch.
-          force_orphan: false
+          path: './dist' # Chỉ lấy thư mục dist đã được build để đưa lên web
+          
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
