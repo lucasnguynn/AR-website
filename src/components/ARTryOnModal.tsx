@@ -80,10 +80,10 @@ export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
         const profile = await DeviceProfiler.profile();
         setDeviceClass(profile.deviceClass);
 
-        // @fix BUG-12: Treat LOW and UNSUPPORTED as requiring fallback
+        // The store's setDeviceClass action (called above) already activates fallback
+        // for UNSUPPORTED and LOW devices. Check activeFallbackMode to decide whether to continue.
         if (profile.deviceClass === 'UNSUPPORTED' || profile.deviceClass === 'LOW') {
-          activateFallback('DEVICE_UNSUPPORTED');
-          return;
+          return; // setDeviceClass already called activateFallback — nothing left to do here
         }
 
         // Request camera permission
