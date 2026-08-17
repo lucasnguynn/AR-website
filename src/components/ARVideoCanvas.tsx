@@ -1,13 +1,21 @@
 /**
- * ARVideoCanvas.tsx
+ * ARVideoCanvas.tsx — UPGRADED
  *
- * Video canvas component that renders the camera feed and overlays
- * the 3D ring model using the ARSessionManager.
+ * Changes vs original:
+ *  1. Exposes sessionManagerRef via the Zustand store so ARTryOnModal
+ *     can call switchCamera() without prop-drilling through Suspense boundaries.
+ *  2. Orientation-change handler added: calls session.resize() on rotate.
+ *  3. ResizeObserver used instead of window 'resize' for more accurate
+ *     container-size tracking (handles split-screen, browser chrome changes).
  */
 
-import React, { useEffect, useRef } from 'react';
-import { useARStore, selectARState, selectRingScale, selectSnapshotRef } from '../store/useARStore';
-import { ARSessionManager, ARSessionConfig } from '../ARSessionManager';
+import React, { useEffect, useRef, useCallback } from 'react';
+import {
+  useARStore,
+  selectARState,
+  selectRingScale,
+} from '../store/useARStore';
+import { ARSessionManager, ARSessionConfig, FacingMode } from '../ARSessionManager';
 import RingCatalog from './RingCatalog';
 
 interface ARVideoCanvasProps {
@@ -15,26 +23,30 @@ interface ARVideoCanvasProps {
 }
 
 export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const sessionManagerRef = useRef<ARSessionManager | null>(null);
+  const containerRef    = useRef<HTMLDivElement>(null);
+  const sessionRef      = useRef<ARSessionManager | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
-  const arState = useARStore(selectARState);
-  const setARState = useARStore((state) => state.setARState);
-  const setError   = useARStore((state) => state.setError);
-  const setLoading = useARStore((state) => state.setLoading);
-
+  const arState   = useARStore(selectARState);
   const ringScale = useARStore(selectRingScale);
+  const setARState  = useARStore((s) => s.setARState);
+  const setError    = useARStore((s) => s.setError);
+  const setLoading  = useARStore((s) => s.setLoading);
+  const setSessionRef = useARStore((s) => s.setSessionRef);   // ← new store action
 
+  // ── Ring scale sync ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (sessionManagerRef.current) {
-      sessionManagerRef.current.setRingScale(ringScale);
-    }
+    sessionRef.current?.setRingScale(ringScale);
   }, [ringScale]);
 
-  // Initialize AR Session
+  // ── Stable resize handler ─────────────────────────────────────────────────
+  const handleResize = useCallback((width: number, height: number) => {
+    sessionRef.current?.resize(width, height);
+  }, []);
+
+  // ── AR Session lifecycle ──────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
-
     const container = containerRef.current;
 
     const config: ARSessionConfig = {
@@ -42,92 +54,85 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
       ringModelUrl,
       ringScale: 1.0,
       trackingFPS: 20,
+      // ── UPGRADED confidence thresholds ──
       minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.7,
-      videoConstraints: {
-        facingMode: 'environment',
-        width:  { ideal: 1280 },
-        height: { ideal: 720 },
-      },
+      minTrackingConfidence:  0.7,
+      // Let ARSessionManager run its own mobile-first detection logic
+      // by omitting videoConstraints here (pass undefined = auto-detect).
     };
 
-    const sessionManager = new ARSessionManager(config);
-    sessionManagerRef.current = sessionManager;
+    const session = new ARSessionManager(config);
+    sessionRef.current = session;
 
-    // FIX: onStateChange chỉ dùng để sync arState cho UI (RingCatalog visibility, v.v.)
-    // KHÔNG dùng để control isLoading nữa — vì state CAMERA_READY có thể tồn tại
-    // vô thời hạn nếu người dùng chưa đưa tay vào camera, khiến loading stuck mãi.
-    sessionManager.onStateChange = (state) => {
-      setARState(state);
-      // Chỉ set loading=true khi đang khởi tạo thật sự
-      // loading=false được xử lý bởi startAR() sau khi initialize() resolve
-    };
+    // Expose session to store so ARTryOnModal can call switchCamera()
+    setSessionRef(session);
 
-    sessionManager.onError = (error) => {
-      console.error('AR Session error:', error);
+    session.onStateChange = (state) => { setARState(state); };
+    session.onError = (error) => {
+      console.error('[ARVideoCanvas] Session error:', error);
       setError(error.message);
-      // setError → activateFallback → isLoading: false (handled in store)
     };
 
     const startAR = async () => {
-      // Safety timeout: 20 giây
       const initTimeoutId = setTimeout(() => {
-        console.error('AR initialization timed out');
-        setError('AR initialization timed out. Please check camera permissions and network.');
-      }, 20000);
+        setError('AR initialization timed out. Check camera permissions and network.');
+      }, 20_000);
 
       try {
-        setLoading(true); // Bắt đầu loading
-
-        await sessionManager.initialize(container);
-
+        setLoading(true);
+        await session.initialize(container);
         clearTimeout(initTimeoutId);
-
-        // FIX CHÍNH: Tắt loading NGAY SAU KHI initialize() resolve thành công.
-        // Lúc này camera đã bật, model đã load xong, Three.js canvas đã mount.
-        // Không cần chờ TRACKING_ACTIVE (chờ người dùng đưa tay vào camera).
         setLoading(false);
-
-        sessionManager.startLoops();
-      } catch (error) {
+        session.startLoops();
+      } catch (err) {
         clearTimeout(initTimeoutId);
-        console.error('Failed to start AR:', error);
-        setLoading(false); // Đảm bảo loading luôn tắt dù có lỗi
+        console.error('[ARVideoCanvas] startAR failed:', err);
+        setLoading(false);
         setError('Failed to start AR session');
       }
     };
 
     startAR();
 
+    // ── ResizeObserver — more reliable than window resize ─────────────────
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        handleResize(width, height);
+      }
+    });
+    ro.observe(container);
+    resizeObserverRef.current = ro;
+
+    // ── Orientation change ────────────────────────────────────────────────
+    const handleOrientationChange = () => {
+      setTimeout(() => {
+        if (containerRef.current) {
+          const { clientWidth, clientHeight } = containerRef.current;
+          handleResize(clientWidth, clientHeight);
+        }
+      }, 350); // wait for browser layout reflow
+    };
+    window.addEventListener('orientationchange', handleOrientationChange);
+
     return () => {
-      sessionManager.dispose();
-      sessionManagerRef.current = null;
+      session.dispose();
+      sessionRef.current = null;
+      setSessionRef(null);
+      ro.disconnect();
+      resizeObserverRef.current = null;
+      window.removeEventListener('orientationchange', handleOrientationChange);
       useARStore.getState().setSnapshotRef(null);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ringModelUrl]);
-
-  // Handle resize
-  useEffect(() => {
-    const handleResize = () => {
-      if (containerRef.current && sessionManagerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        sessionManagerRef.current.resize(rect.width, rect.height);
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-    handleResize();
-
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-black">
-      {/* Ring Catalog - chỉ hiện khi đang track tay */}
       {arState === 'TRACKING_ACTIVE' && (
         <RingCatalog
           onSelectRing={(modelUrl) => {
-            sessionManagerRef.current?.swapRingModel(modelUrl);
+            sessionRef.current?.swapRingModel(modelUrl);
           }}
         />
       )}
@@ -136,3 +141,8 @@ export const ARVideoCanvas: React.FC<ARVideoCanvasProps> = ({ ringModelUrl }) =>
 };
 
 export default ARVideoCanvas;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Type augmentation helpers (consumed by ARTryOnModal)
+// ─────────────────────────────────────────────────────────────────────────────
+export type { FacingMode };
