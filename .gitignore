@@ -2,52 +2,39 @@
 # Dependencies
 node_modules/
 
-# Build outputs
-dist/
-build/
-coverage/
+# Logs and temp files
+*.log
+*.tmp
 
-# Environment variables
+# Environment
 .env
 .env.local
-.env.*
+*.env.*
 
-# IDE specific
+# Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Logs
-*.log
-
-# Python cache
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Temporary files
-*.tmp
-*.temp
+# Build outputs
+dist/
+build/
+*.min.js
+*.bundle.js
 
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Testing
-.nyc_output/
-coverage/
-htmlcov/
-
-# Bundler
-vendor/bundle/
-
-# TypeScript/JavaScript
-*.tsbuildinfo
-*.js.map
-*.ts.map
-
-# Vite
-.vite/
+# Compression artifacts
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
 ```
