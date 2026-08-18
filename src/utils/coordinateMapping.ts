@@ -1,314 +1,231 @@
 /**
  * coordinateMapping.ts
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHY THE OLD PROJECTION MATH FAILS  (Task 2 root cause analysis)
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * MediaPipe gives us landmarks in NORMALISED VIDEO-FRAME space:
- *   x ∈ [0, 1]   measured left→right in the RAW capture frame
- *   y ∈ [0, 1]   measured top→bottom in the RAW capture frame
- *   z             relative depth in "hand-width" units (negative = toward camera)
- *
- * The naive (broken) conversion is:
- *   ndcX = lm.x * 2 - 1
- *   ndcY = -(lm.y * 2 - 1)
- *
- * This is only correct when ALL of these hold simultaneously:
- *   A. The <video> element has exactly the same pixel dimensions as the
- *      Three.js <canvas> (they are stacked via position:absolute).
- *   B. The video fills the element with no cropping (object-fit: contain + exact
- *      aspect match).
- *   C. The camera is NOT mirrored (rear camera).
- *
- * In practice, none of A, B, or C hold for a front-facing jewellery try-on:
- *   A. The canvas can be 375×812 while the raw video is 640×480 (4:3).
- *   B. object-fit: cover crops the video to fill the element, so landmark
- *      x=0.5 in video space ≠ pixel 375/2 in element space.
- *   C. The front camera video is CSS-mirrored (transform: scaleX(-1)), so
- *      landmark x and the visual position are mirror images.
- *
- * The ring therefore appears at the wrong x/y and the wrong depth, making it
- * look like it's "not attached" to the finger.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * THE CORRECT PIPELINE  (implemented below)
- * ─────────────────────────────────────────────────────────────────────────────
- *
- *   [1] Mirror-flip X for front camera:
- *         mirroredX = 1 - lm.x
- *
- *   [2] Account for object-fit: cover aspect-ratio cropping:
- *         coverScale  = max(elemW / videoW,  elemH / videoH)
- *         scaledVideoW = videoW * coverScale  (px in display space)
- *         scaledVideoH = videoH * coverScale
- *         cropX = (scaledVideoW - elemW) / 2   (px cropped from each side)
- *         cropY = (scaledVideoH - elemH) / 2
- *         displayPxX = mirroredX * scaledVideoW - cropX
- *         displayPxY = lm.y      * scaledVideoH - cropY
- *         elemNormX = displayPxX / elemW   → now in [0,1] of the display box
- *         elemNormY = displayPxY / elemH
- *
- *   [3] Map element-space → canvas-space (they should match but may differ):
- *         canvNormX = elemNormX * (elemW / canvW)
- *         canvNormY = elemNormY * (elemH / canvH)
- *
- *   [4] Convert to NDC [-1, 1]:
- *         ndcX =   canvNormX * 2 - 1
- *         ndcY = -(canvNormY * 2 - 1)   ← WebGL Y is inverted
- *
- *   [5] Clamp to [-1,1] (landmark briefly outside frustum → edge-clamp):
- *         ndcX = clamp(ndcX, -1, 1)
- *         ndcY = clamp(ndcY, -1, 1)
- *
- *   [6] Build a camera ray via Raycaster.setFromCamera():
- *         raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera)
- *
- *   [7] Map MediaPipe z → world Z-plane depth and intersect the ray:
- *         worldPlaneZ = BASE_Z - lm.z * Z_SCALE
- *         plane = new THREE.Plane(new THREE.Vector3(0,0,1), -worldPlaneZ)
- *         raycaster.ray.intersectPlane(plane, worldPos)
- *
- * Step [2] is the critical missing piece in virtually every broken WebAR demo.
- * Step [7] keeps the ring inside the camera frustum regardless of hand depth.
+ * Strict MediaPipe-normalized-video to Three.js projection utilities plus an
+ * anatomical ring-pose solver. The hot-path APIs accept caller-owned output
+ * vectors/quaternions so WebAR render loops can run without per-frame Three.js
+ * allocations.
  */
 
 import * as THREE from 'three';
 import type { NormalisedLandmark } from '../types/ar.types';
+import { LM } from '../types/ar.types';
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Tuning constants — adjust these if the ring is consistently offset
-// ──────────────────────────────────────────────────────────────────────────────
-
-/**
- * The world-space Z coordinate the ring hovers around when lm.z = 0.
- * Assumes the Three.js camera is at z = 5 looking toward the origin.
- * A value of 1.5 places the ring roughly one-third of the way between
- * the camera and origin — comfortable viewing distance.
- */
 const BASE_Z = 1.5;
-
-/**
- * Amplification of MediaPipe's relative z depth into world units.
- * MediaPipe z range for a hand: roughly [-0.12, 0.06].
- * With Z_SCALE=5, that maps to [-0.6, 0.3] world units of variation around BASE_Z.
- * Increase this if the ring noticeably "flattens" when the hand tilts.
- */
 const Z_SCALE = 5.0;
-
-/**
- * Fraction along the MCP→PIP segment where the ring centre sits.
- * 0 = exactly at the MCP (base knuckle), 1 = at the PIP (middle knuckle).
- * Rings typically sit just above the MCP, so 0.25 is a realistic default.
- */
 export const RING_SEGMENT_T = 0.25;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Parameter bag (avoids long argument lists in hot-path code)
-// ──────────────────────────────────────────────────────────────────────────────
+const EPSILON = 1e-8;
 
 export interface ProjectionParams {
   videoElement: HTMLVideoElement;
-  /** The renderer's DOM element (gl.domElement in R3F). */
   canvasElement: HTMLCanvasElement;
   camera: THREE.PerspectiveCamera;
-  /**
-   * True if the video element is CSS-mirrored (transform: scaleX(-1)),
-   * which is standard for the front-facing camera.
-   */
   isMirrored?: boolean;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Reusable Three.js objects — allocated once, reused every frame.
-// Allocating new Vector2/Vector3/Raycaster inside useFrame causes GC pressure.
-// ──────────────────────────────────────────────────────────────────────────────
+export interface ViewportMappingParams {
+  videoWidth: number;
+  videoHeight: number;
+  videoElementWidth: number;
+  videoElementHeight: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  isMirrored?: boolean;
+}
+
+export interface AnatomicalRingPoseOutputs {
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  scale?: THREE.Vector3;
+}
+
+export interface AnatomicalRingPoseOptions {
+  ringSegmentT?: number;
+  ringModelDiameter?: number;
+  fingerWidthFraction?: number;
+}
+
 const _raycaster = new THREE.Raycaster();
 const _ndc = new THREE.Vector2();
 const _plane = new THREE.Plane();
-const _planeNormal = new THREE.Vector3(0, 0, 1); // world z-plane normal
+const _planeNormal = new THREE.Vector3(0, 0, 1);
 const _worldPos = new THREE.Vector3();
 
-/**
- * Projects a single MediaPipe normalised landmark into Three.js world space,
- * correctly handling mirror-flip, CSS cover cropping, and Z-depth.
- *
- * @returns A THREE.Vector3 in world space, or `null` if the ray misses the plane
- *          (can happen when the camera is rotated; caller should skip that frame).
- */
-export function landmarkToWorld(
+const _basisForward = new THREE.Vector3();
+const _basisRight = new THREE.Vector3();
+const _basisUp = new THREE.Vector3();
+const _handSpan = new THREE.Vector3();
+const _ringMatrix = new THREE.Matrix4();
+
+export function normalisedLandmarkToNdc(
   lm: NormalisedLandmark,
-  params: ProjectionParams,
-): THREE.Vector3 | null {
+  params: ViewportMappingParams,
+  out: THREE.Vector2 = _ndc,
+): THREE.Vector2 | null {
   const {
-    videoElement,
-    canvasElement,
-    camera,
+    videoWidth,
+    videoHeight,
+    videoElementWidth,
+    videoElementHeight,
+    canvasWidth,
+    canvasHeight,
     isMirrored = true,
   } = params;
 
-  // Guard: video must have decoded at least one frame.
-  const videoW = videoElement.videoWidth;
-  const videoH = videoElement.videoHeight;
-  if (videoW === 0 || videoH === 0) return null;
-
-  const elemW = videoElement.clientWidth;
-  const elemH = videoElement.clientHeight;
-  if (elemW === 0 || elemH === 0) return null;
-
-  const canvW = canvasElement.clientWidth;
-  const canvH = canvasElement.clientHeight;
-
-  // ── [1] Mirror-flip for front camera ──────────────────────────────────────
-  const normX = isMirrored ? 1.0 - lm.x : lm.x;
-  const normY = lm.y;
-
-  // ── [2] CSS object-fit: cover compensation ────────────────────────────────
-  //
-  // CSS "cover" picks the LARGER of (elemW/videoW) and (elemH/videoH) as the
-  // scale factor, ensuring the element is fully filled.  The axis with the
-  // smaller ratio gets cropped symmetrically on both sides.
-  //
-  const scaleX = elemW / videoW;
-  const scaleY = elemH / videoH;
-  const coverScale = Math.max(scaleX, scaleY);
-
-  const scaledVideoW = videoW * coverScale; // video pixels rendered at display scale
-  const scaledVideoH = videoH * coverScale;
-
-  // Crop offsets: how many display pixels are hidden beyond the element edge.
-  const cropX = (scaledVideoW - elemW) / 2;  // px cropped from left AND right
-  const cropY = (scaledVideoH - elemH) / 2;  // px cropped from top  AND bottom
-
-  // Landmark in display pixel space after crop:
-  const displayPxX = normX * scaledVideoW - cropX;
-  const displayPxY = normY * scaledVideoH - cropY;
-
-  // Normalise back to [0,1] within the visible display area:
-  const elemNormX = displayPxX / elemW;
-  const elemNormY = displayPxY / elemH;
-
-  // ── [3] Element → canvas normalised space ─────────────────────────────────
-  // If the canvas is overlaid at exactly the same CSS size as the video element
-  // these ratios are both 1.0.  Keep the formula generic for flexibility.
-  const canvNormX = elemNormX * (elemW / canvW);
-  const canvNormY = elemNormY * (elemH / canvH);
-
-  // ── [4] Convert to NDC [-1, 1] ────────────────────────────────────────────
-  const rawNdcX = canvNormX * 2 - 1;
-  const rawNdcY = -(canvNormY * 2 - 1); // WebGL Y is top-to-bottom → invert
-
-  // ── [5] Clamp to [-1, 1] so the ray always points inside the frustum ──────
-  _ndc.set(
-    Math.max(-1, Math.min(1, rawNdcX)),
-    Math.max(-1, Math.min(1, rawNdcY)),
-  );
-
-  // ── [6] Build camera ray via the raycaster ────────────────────────────────
-  _raycaster.setFromCamera(_ndc, camera);
-
-  // ── [7] Intersect a world-space Z-plane driven by MediaPipe depth ─────────
-  //
-  // MediaPipe z convention:
-  //   z < 0  →  closer to camera than the reference point (wrist)
-  //   z > 0  →  further  from camera
-  //
-  // Three.js default camera sits at z=+5 looking toward z=0.
-  // Higher world-z = CLOSER to camera.
-  //
-  // Mapping: worldPlaneZ = BASE_Z - lm.z * Z_SCALE
-  //   • lm.z = -0.1 (finger tilts toward camera) → planeZ = BASE_Z + 0.5  (closer) ✓
-  //   • lm.z =  0.0 (flat hand)                  → planeZ = BASE_Z        (nominal)
-  //   • lm.z = +0.1 (finger tilts away)           → planeZ = BASE_Z - 0.5  (further) ✓
-  //
-  const worldPlaneZ = BASE_Z - lm.z * Z_SCALE;
-
-  // Plane equation: n · x + d = 0  →  (0,0,1)·(x,y,z) + d = 0  →  d = -worldPlaneZ
-  _plane.set(_planeNormal, -worldPlaneZ);
-
-  const hit = _raycaster.ray.intersectPlane(_plane, _worldPos);
-  if (!hit) {
-    // Ray is parallel to the plane (camera rotated 90° around Y — very unlikely
-    // in a selfie AR scenario).  Return null so the caller skips this frame.
+  if (
+    videoWidth <= 0 ||
+    videoHeight <= 0 ||
+    videoElementWidth <= 0 ||
+    videoElementHeight <= 0 ||
+    canvasWidth <= 0 ||
+    canvasHeight <= 0
+  ) {
     return null;
   }
 
-  // Return a *copy* — _worldPos is a shared scratch object.
-  return _worldPos.clone();
-}
+  const normX = isMirrored ? 1 - lm.x : lm.x;
+  const coverScale = Math.max(videoElementWidth / videoWidth, videoElementHeight / videoHeight);
+  const scaledVideoW = videoWidth * coverScale;
+  const scaledVideoH = videoHeight * coverScale;
+  const cropX = (scaledVideoW - videoElementWidth) * 0.5;
+  const cropY = (scaledVideoH - videoElementHeight) * 0.5;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Ring orientation from two knuckle positions
-// ──────────────────────────────────────────────────────────────────────────────
+  const elemNormX = (normX * scaledVideoW - cropX) / videoElementWidth;
+  const elemNormY = (lm.y * scaledVideoH - cropY) / videoElementHeight;
 
-const _defaultAxis = new THREE.Vector3(0, 1, 0); // ring model "up" along Y
+  const canvasNormX = elemNormX * (videoElementWidth / canvasWidth);
+  const canvasNormY = elemNormY * (videoElementHeight / canvasHeight);
 
-/**
- * Computes a quaternion that rotates the ring model's Y-axis to align with
- * the finger direction (MCP → PIP).
- *
- * The ring model is assumed to be oriented so that when scale=1 and the
- * quaternion is identity, the ring hole points along +Y.  Most off-the-shelf
- * ring GLB assets exported from Blender in default orientation satisfy this.
- */
-export function computeRingQuaternion(
-  posMCP: THREE.Vector3,
-  posPIP: THREE.Vector3,
-  out: THREE.Quaternion = new THREE.Quaternion(),
-): THREE.Quaternion {
-  const fingerDir = posPIP.clone().sub(posMCP);
-
-  // Guard against zero-length vector (two landmarks at same position)
-  if (fingerDir.lengthSq() < 1e-8) {
-    out.identity();
-    return out;
-  }
-
-  fingerDir.normalize();
-  out.setFromUnitVectors(_defaultAxis, fingerDir);
+  out.set(
+    Math.max(-1, Math.min(1, canvasNormX * 2 - 1)),
+    Math.max(-1, Math.min(1, -(canvasNormY * 2 - 1))),
+  );
   return out;
 }
 
-/**
- * Computes the ring's uniform scale factor so the ring diameter matches the
- * visual width of the finger.
- *
- * `segmentWorldLength`: distance in world units between MCP and PIP.
- * `ringModelDiameter`:  the diameter of the ring mesh at scale=1 in world
- *                       units.  Measure this in Blender or with a BoxHelper.
- *                       A typical Blender-exported ring at 1 cm = 0.01 m → 0.01.
- * `fingerWidthFraction`: the ring diameter as a fraction of the MCP–PIP length.
- *                        Physically ~0.65 (finger width ≈ 65% of first segment).
- */
+export function landmarkToWorld(
+  lm: NormalisedLandmark,
+  params: ProjectionParams,
+  out: THREE.Vector3 = new THREE.Vector3(),
+): THREE.Vector3 | null {
+  const { videoElement, canvasElement, camera, isMirrored = true } = params;
+
+  const ndc = normalisedLandmarkToNdc(
+    lm,
+    {
+      videoWidth: videoElement.videoWidth,
+      videoHeight: videoElement.videoHeight,
+      videoElementWidth: videoElement.clientWidth,
+      videoElementHeight: videoElement.clientHeight,
+      canvasWidth: canvasElement.clientWidth,
+      canvasHeight: canvasElement.clientHeight,
+      isMirrored,
+    },
+    _ndc,
+  );
+  if (!ndc) return null;
+
+  _raycaster.setFromCamera(ndc, camera);
+  _plane.set(_planeNormal, -(BASE_Z - lm.z * Z_SCALE));
+
+  const hit = _raycaster.ray.intersectPlane(_plane, _worldPos);
+  if (!hit) return null;
+
+  out.copy(_worldPos);
+  return out;
+}
+
+function getLandmark(landmarks: NormalisedLandmark[], index: number): NormalisedLandmark | null {
+  for (let i = 0; i < landmarks.length; i += 1) {
+    if (landmarks[i].index === index) return landmarks[i];
+  }
+  return null;
+}
+
+export function projectRingLandmarks(
+  landmarks: NormalisedLandmark[],
+  params: ProjectionParams,
+  out: Record<number, THREE.Vector3>,
+): boolean {
+  const indexMcp = getLandmark(landmarks, LM.INDEX_MCP);
+  const ringMcp = getLandmark(landmarks, LM.RING_MCP);
+  const ringPip = getLandmark(landmarks, LM.RING_PIP);
+  const pinkyMcp = getLandmark(landmarks, LM.PINKY_MCP);
+
+  if (!indexMcp || !ringMcp || !ringPip || !pinkyMcp) return false;
+
+  return Boolean(
+    landmarkToWorld(indexMcp, params, out[LM.INDEX_MCP]) &&
+      landmarkToWorld(ringMcp, params, out[LM.RING_MCP]) &&
+      landmarkToWorld(ringPip, params, out[LM.RING_PIP]) &&
+      landmarkToWorld(pinkyMcp, params, out[LM.PINKY_MCP]),
+  );
+}
+
+export function computeAnatomicalRingPose(
+  projectedLandmarks: Record<number, THREE.Vector3>,
+  outputs: AnatomicalRingPoseOutputs,
+  options: AnatomicalRingPoseOptions = {},
+): number | null {
+  const indexMcp = projectedLandmarks[LM.INDEX_MCP];
+  const ringMcp = projectedLandmarks[LM.RING_MCP];
+  const ringPip = projectedLandmarks[LM.RING_PIP];
+  const pinkyMcp = projectedLandmarks[LM.PINKY_MCP];
+
+  _basisForward.subVectors(ringPip, ringMcp);
+  if (_basisForward.lengthSq() < EPSILON) return null;
+  _basisForward.normalize();
+
+  _handSpan.subVectors(pinkyMcp, indexMcp);
+  if (_handSpan.lengthSq() < EPSILON) return null;
+  _handSpan.normalize();
+
+  _basisRight.crossVectors(_basisForward, _handSpan);
+  if (_basisRight.lengthSq() < EPSILON) return null;
+  _basisRight.normalize();
+
+  _basisUp.crossVectors(_basisRight, _basisForward).normalize();
+
+  _ringMatrix.makeBasis(_basisRight, _basisUp, _basisForward);
+  outputs.quaternion.setFromRotationMatrix(_ringMatrix);
+
+  outputs.position.copy(ringMcp).lerp(ringPip, options.ringSegmentT ?? RING_SEGMENT_T);
+
+  const scale = computeRingScale(
+    ringMcp,
+    ringPip,
+    options.ringModelDiameter,
+    options.fingerWidthFraction,
+  );
+  outputs.scale?.setScalar(scale);
+  return scale;
+}
+
+export function computeRingQuaternion(
+  projectedLandmarks: Record<number, THREE.Vector3>,
+  out: THREE.Quaternion = new THREE.Quaternion(),
+): THREE.Quaternion {
+  const outputs = { position: _worldPos, quaternion: out };
+  const scale = computeAnatomicalRingPose(projectedLandmarks, outputs);
+  if (scale === null) out.identity();
+  return out;
+}
+
 export function computeRingScale(
   posMCP: THREE.Vector3,
   posPIP: THREE.Vector3,
-  ringModelDiameter = 0.02,    // adjust to your .glb's actual mesh diameter at scale=1
+  ringModelDiameter = 0.02,
   fingerWidthFraction = 0.65,
 ): number {
   const segmentLength = posMCP.distanceTo(posPIP);
-  // desired ring diameter = segmentLength * fingerWidthFraction
-  // scale = desiredDiameter / modelDiameter
   const scale = (segmentLength * fingerWidthFraction) / ringModelDiameter;
-  // Clamp to reasonable range to prevent explosion on bad frames
   return Math.max(0.1, Math.min(20, scale));
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Helper: capture one video frame into an ArrayBuffer for the worker
-// ──────────────────────────────────────────────────────────────────────────────
 
 let _captureCanvas: OffscreenCanvas | null = null;
 let _captureCtx: OffscreenCanvasRenderingContext2D | null = null;
 
-/**
- * Draws the current video frame onto an OffscreenCanvas and returns the
- * raw RGBA bytes as a transferable ArrayBuffer.
- *
- * Reuses a single OffscreenCanvas/context pair to avoid per-frame allocation.
- * The returned buffer should be transferred (not copied) to the worker:
- *   worker.postMessage({ buffer }, [buffer])
- */
 export function captureVideoFrame(
   video: HTMLVideoElement,
 ): { buffer: ArrayBuffer; width: number; height: number } | null {
@@ -316,19 +233,14 @@ export function captureVideoFrame(
   const h = video.videoHeight;
   if (w === 0 || h === 0) return null;
 
-  // Lazily create / resize the offscreen canvas
   if (!_captureCanvas || _captureCanvas.width !== w || _captureCanvas.height !== h) {
     _captureCanvas = new OffscreenCanvas(w, h);
-    // Bật chế độ tối ưu đọc dữ liệu liên tục cho AI
     _captureCtx = _captureCanvas.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
   }
 
   _captureCtx!.drawImage(video, 0, 0, w, h);
   const imageData = _captureCtx!.getImageData(0, 0, w, h);
 
-  // .buffer is the underlying ArrayBuffer — we .slice() to get an owned copy
-  // that can be safely transferred to the worker without leaving a detached
-  // TypedArray in the caller.
   return {
     buffer: imageData.data.buffer.slice(0),
     width: w,

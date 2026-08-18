@@ -24,10 +24,8 @@ import { useRingModel, RING_SCALE, OFFSET_Y, OFFSET_Z } from '../hook/useRingMod
 import type { HandTrackingResult } from '../types/ar.types';
 import { LM } from '../types/ar.types';
 import {
-  landmarkToWorld,
-  computeRingQuaternion,
-  computeRingScale,
-  RING_SEGMENT_T,
+  computeAnatomicalRingPose,
+  projectRingLandmarks,
 } from '../utils/coordinateMapping';
 import { VelocityAdaptiveEMAFilter, ScalarEMAFilter } from '../utils/emaFilter';
 
@@ -47,6 +45,15 @@ function RingMesh({ resultRef }: RingSceneProps) {
   const emaFilter   = useRef(new VelocityAdaptiveEMAFilter());
   const scaleFilter = useRef(new ScalarEMAFilter(0.35));
   const wasDetected = useRef(false);
+  const projectedLandmarks = useRef<Record<number, THREE.Vector3>>({
+    [LM.INDEX_MCP]: new THREE.Vector3(),
+    [LM.RING_MCP]: new THREE.Vector3(),
+    [LM.RING_PIP]: new THREE.Vector3(),
+    [LM.PINKY_MCP]: new THREE.Vector3(),
+  });
+  const rawPosition = useRef(new THREE.Vector3());
+  const rawQuaternion = useRef(new THREE.Quaternion());
+  const rawScale = useRef(new THREE.Vector3(1, 1, 1));
 
   // ── Per-frame ring positioning (mutated refs — no React state, no re-renders)
   useFrame(() => {
@@ -72,42 +79,43 @@ function RingMesh({ resultRef }: RingSceneProps) {
 
     wasDetected.current = true;
 
-    const hand      = result.hands[0];
-    const landmarks = hand.landmarks;
-    const lm13 = landmarks.find((landmark) => landmark.index === LM.RING_MCP); // base knuckle
-    const lm14 = landmarks.find((landmark) => landmark.index === LM.RING_PIP); // middle knuckle
-    if (!lm13 || !lm14) return;
+    const hand = result.hands[0];
 
-    // For projection we need a video element to read its dimensions.
-    // We synthesise a minimal object with the canvas size as a fallback
-    // because the video element lives outside the Canvas context.
+    // Fallback path for the standalone RingScene: assume the canvas and video
+    // share dimensions when no DOM video ref is available. ARTryOnModal uses
+    // the stricter real-video path.
     const videoLike = {
-      videoWidth:  canvas.width,
-      videoHeight: canvas.height,
+      videoWidth: canvas.clientWidth || canvas.width,
+      videoHeight: canvas.clientHeight || canvas.height,
+      clientWidth: canvas.clientWidth || canvas.width,
+      clientHeight: canvas.clientHeight || canvas.height,
     } as HTMLVideoElement;
 
     const projParams = {
-      videoElement:  videoLike,
+      videoElement: videoLike,
       canvasElement: canvas,
       camera: camera as THREE.PerspectiveCamera,
-      isMirrored: true, // front camera is CSS-mirrored
+      isMirrored: true,
     };
 
-    const pos13 = landmarkToWorld(lm13, projParams);
-    const pos14 = landmarkToWorld(lm14, projParams);
-    if (!pos13 || !pos14) return;
+    if (!projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) return;
 
-    // Interpolate along MCP→PIP segment; RING_SEGMENT_T=0.25 sits near base knuckle
-    const rawPosition = pos13.clone().lerp(pos14, RING_SEGMENT_T);
-    rawPosition.y += OFFSET_Y;
-    rawPosition.z += OFFSET_Z;
+    const poseScale = computeAnatomicalRingPose(
+      projectedLandmarks.current,
+      {
+        position: rawPosition.current,
+        quaternion: rawQuaternion.current,
+        scale: rawScale.current,
+      },
+    );
+    if (poseScale === null) return;
 
-    const rawQuaternion = computeRingQuaternion(pos13, pos14);
-    const rawScale      = computeRingScale(pos13, pos14);
+    rawPosition.current.y += OFFSET_Y;
+    rawPosition.current.z += OFFSET_Z;
 
     const { position: filteredPos, quaternion: filteredQuat } =
-      emaFilter.current.update(rawPosition, rawQuaternion);
-    const filteredScale = scaleFilter.current.update(rawScale);
+      emaFilter.current.update(rawPosition.current, rawQuaternion.current);
+    const filteredScale = scaleFilter.current.update(rawScale.current.x);
 
     group.visible = true;
     group.position.copy(filteredPos);

@@ -44,10 +44,8 @@ import { useHandTracking } from '../hook/useHandTracking';
 import { useLoadingState } from '../hook/useLoadingState';
 import { useCamera, startCameraFromRef, resetCamera } from '../hook/useCamera';
 import {
-  landmarkToWorld,
-  computeRingQuaternion,
-  computeRingScale,
-  RING_SEGMENT_T,
+  computeAnatomicalRingPose,
+  projectRingLandmarks,
 } from '../utils/coordinateMapping';
 import { VelocityAdaptiveEMAFilter, ScalarEMAFilter } from '../utils/emaFilter';
 import { LM } from '../types/ar.types';
@@ -240,7 +238,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
 
             <ModelErrorBoundary>
               <Suspense fallback={null}>
-                <RingScene resultRef={resultRef} />
+                <RingScene resultRef={resultRef} facingMode={facingMode} />
               </Suspense>
             </ModelErrorBoundary>
           </Canvas>
@@ -266,9 +264,10 @@ function OnMountNotifier({ onMount }: { onMount: () => void }) {
 // ===========================================================================
 interface RingSceneProps {
   resultRef: React.RefObject<HandTrackingResult | null>;
+  facingMode: FacingMode;
 }
 
-function RingScene({ resultRef }: RingSceneProps) {
+function RingScene({ resultRef, facingMode }: RingSceneProps) {
   const { camera, gl } = useThree();
   const videoRef       = React.useContext(VideoRefContext);
   const groupRef       = useRef<THREE.Group>(null);
@@ -278,6 +277,15 @@ function RingScene({ resultRef }: RingSceneProps) {
   const emaFilter   = useRef(new VelocityAdaptiveEMAFilter());
   const scaleFilter = useRef(new ScalarEMAFilter(0.35));
   const wasDetected = useRef(false);
+  const projectedLandmarks = useRef<Record<number, THREE.Vector3>>({
+    [LM.INDEX_MCP]: new THREE.Vector3(),
+    [LM.RING_MCP]: new THREE.Vector3(),
+    [LM.RING_PIP]: new THREE.Vector3(),
+    [LM.PINKY_MCP]: new THREE.Vector3(),
+  });
+  const rawPosition = useRef(new THREE.Vector3());
+  const rawQuaternion = useRef(new THREE.Quaternion());
+  const rawScale = useRef(new THREE.Vector3(1, 1, 1));
 
   useFrame(() => {
     const group = groupRef.current;
@@ -300,33 +308,32 @@ function RingScene({ resultRef }: RingSceneProps) {
 
     wasDetected.current = true;
 
-    const hand      = result.hands[0];
-    const landmarks = hand.landmarks;
-    const lm13 = landmarks.find((landmark) => landmark.index === LM.RING_MCP);
-    const lm14 = landmarks.find((landmark) => landmark.index === LM.RING_PIP);
-    if (!lm13 || !lm14) return;
-
+    const hand = result.hands[0];
     const projParams = {
       videoElement:  video,
       canvasElement: gl.domElement,
       camera:        camera as THREE.PerspectiveCamera,
-      isMirrored:    true,
+      isMirrored:    facingMode === 'user',
     };
 
-    const pos13 = landmarkToWorld(lm13, projParams);
-    const pos14 = landmarkToWorld(lm14, projParams);
-    if (!pos13 || !pos14) return;
+    if (!projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) return;
 
-    const rawPosition = pos13.clone().lerp(pos14, RING_SEGMENT_T);
-    rawPosition.y += OFFSET_Y;
-    rawPosition.z += OFFSET_Z;
+    const poseScale = computeAnatomicalRingPose(
+      projectedLandmarks.current,
+      {
+        position: rawPosition.current,
+        quaternion: rawQuaternion.current,
+        scale: rawScale.current,
+      },
+    );
+    if (poseScale === null) return;
 
-    const rawQuaternion = computeRingQuaternion(pos13, pos14);
-    const rawScale      = computeRingScale(pos13, pos14);
+    rawPosition.current.y += OFFSET_Y;
+    rawPosition.current.z += OFFSET_Z;
 
     const { position: filteredPos, quaternion: filteredQuat } =
-      emaFilter.current.update(rawPosition, rawQuaternion);
-    const filteredScale = scaleFilter.current.update(rawScale);
+      emaFilter.current.update(rawPosition.current, rawQuaternion.current);
+    const filteredScale = scaleFilter.current.update(rawScale.current.x);
 
     group.visible = true;
     group.position.copy(filteredPos);
