@@ -24,7 +24,7 @@ export default defineConfig({
   // Dependency pre-bundling
   // ---------------------------------------------------------------------------
   optimizeDeps: {
-    exclude: ['@mediapipe/tasks-vision'],
+    exclude: ['@mediapipe/tasks-vision', '@tensorflow/tfjs-core', '@tensorflow/tfjs-backend-webgpu', '@tensorflow/tfjs-converter'],
     include: ['three', 'three/examples/jsm/loaders/GLTFLoader',
               'three/examples/jsm/loaders/DRACOLoader'],
   },
@@ -38,6 +38,7 @@ export default defineConfig({
           'vendor-three': ['three'],
           'vendor-r3f': ['@react-three/fiber', '@react-three/drei'],
           'vendor-mediapipe': ['@mediapipe/tasks-vision'],
+          'vendor-tfjs': ['@tensorflow/tfjs-core', '@tensorflow/tfjs-backend-webgpu', '@tensorflow/tfjs-converter'],
           'vendor-react': ['react', 'react-dom'],
         },
       },
