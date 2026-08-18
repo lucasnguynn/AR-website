@@ -1,8 +1,9 @@
 import React, { Suspense, useEffect, useMemo, useState } from 'react';
-import { Canvas, type CanvasProps } from '@react-three/fiber';
+import { Canvas, useThree, type CanvasProps } from '@react-three/fiber';
 import * as THREE from 'three';
 import { RingScene } from './RingScene';
 import type { HandTrackingResult } from '../types/ar.types';
+import type { AmbientLightState } from '../utils/AmbientLightAdapter';
 
 type WebGPURendererModule = typeof import('three/examples/jsm/renderers/webgpu/WebGPURenderer.js');
 type ThreeRenderer = THREE.WebGLRenderer & { init?: () => Promise<void> };
@@ -19,6 +20,7 @@ export interface WebGPUSceneProps {
   facingMode?: 'user' | 'environment';
   onMount?: () => void;
   dpr?: CanvasProps['dpr'];
+  ambientLight?: AmbientLightState;
 }
 
 export function hasWebGPUSupport(): boolean {
@@ -46,6 +48,16 @@ async function createHighPerformanceRenderer(canvas: HTMLCanvasElement | Offscre
   }) as ThreeRenderer;
 }
 
+function AdaptiveToneMapping({ ambientLight }: { ambientLight?: AmbientLightState }) {
+  const { gl, scene } = useThree();
+  useEffect(() => {
+    if (!ambientLight) return;
+    gl.toneMappingExposure = ambientLight.exposure;
+    scene.userData.ambientColorTemperature = ambientLight.colorTemperature;
+  }, [ambientLight, gl, scene]);
+  return null;
+}
+
 function RendererReadyNotifier({ onMount }: { onMount?: () => void }) {
   useEffect(() => {
     onMount?.();
@@ -53,7 +65,7 @@ function RendererReadyNotifier({ onMount }: { onMount?: () => void }) {
   return null;
 }
 
-export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount, dpr }: WebGPUSceneProps) {
+export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount, dpr, ambientLight }: WebGPUSceneProps) {
   const [rendererMode] = useState<'webgpu' | 'webgl'>(() => (hasWebGPUSupport() ? 'webgpu' : 'webgl'));
   const glFactory = useMemo(() => createHighPerformanceRenderer as unknown as CanvasProps['gl'], []);
 
@@ -65,15 +77,17 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
       onCreated={({ gl, scene }) => {
         gl.outputColorSpace = THREE.SRGBColorSpace;
         gl.toneMapping = THREE.ACESFilmicToneMapping;
-        gl.toneMappingExposure = rendererMode === 'webgpu' ? 1.05 : 1.0;
+        gl.toneMappingExposure = ambientLight?.exposure ?? (rendererMode === 'webgpu' ? 1.05 : 1.0);
         scene.userData.rendererMode = rendererMode;
+        scene.userData.ambientColorTemperature = ambientLight?.colorTemperature;
       }}
       camera={{ fov: 45, near: 0.01, far: 100, position: [0, 0, 5] }}
       dpr={dpr}
     >
+      <AdaptiveToneMapping ambientLight={ambientLight} />
       <RendererReadyNotifier onMount={onMount} />
       <Suspense fallback={null}>
-        <RingScene resultRef={resultRef} videoRef={videoRef} facingMode={facingMode} enableRayTracing={rendererMode === 'webgpu'} />
+        <RingScene resultRef={resultRef} videoRef={videoRef} facingMode={facingMode} enableRayTracing={rendererMode === 'webgpu'} ambientLight={ambientLight} />
       </Suspense>
     </Canvas>
   );

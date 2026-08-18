@@ -29,6 +29,7 @@ import {
   OFFSET_Z,
 } from '../hook/useRingModel';
 import type { HandTrackingResult } from '../types/ar.types';
+import type { AmbientLightState } from '../utils/AmbientLightAdapter';
 import { LM } from '../types/ar.types';
 import {
   computeAnatomicalRingPose,
@@ -56,12 +57,13 @@ interface RingSceneProps {
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   facingMode?: 'user' | 'environment';
   enableRayTracing?: boolean;
+  ambientLight?: AmbientLightState;
 }
 
 // ── RingMesh — inner component, renders only after useGLTF resolves ──────────
 // Kept separate from the Suspense boundary so ErrorBoundary can catch
 // suspension errors without unmounting the whole scene.
-function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false }: RingSceneProps) {
+function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false, ambientLight }: RingSceneProps) {
   const { camera, gl } = useThree();
   const groupRef   = useRef<THREE.Group>(null);
   const occluderRef = useRef<THREE.Mesh>(null);
@@ -196,10 +198,10 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
 
   return (
     <>
-      <Environment preset="city" background={false} environmentIntensity={0.85} />
-      <ambientLight intensity={0.35} />
-      <hemisphereLight args={['#fff7e8', '#24222a', 0.55]} />
-      <rectAreaLight position={[0, 1.4, 1.6]} width={1.6} height={0.9} intensity={1.7} />
+      <Environment preset="city" background={false} environmentIntensity={0.65 + (ambientLight?.exposure ?? 1) * 0.22} />
+      <ambientLight intensity={0.22 + (ambientLight?.exposure ?? 1) * 0.12} color={ambientLight?.keyColor ?? '#fff7e8'} />
+      <hemisphereLight args={[ambientLight?.keyColor ?? '#fff7e8', '#24222a', 0.55]} />
+      <rectAreaLight position={[0, 1.4, 1.6]} width={1.6} height={0.9} intensity={1.25 + (ambientLight?.exposure ?? 1) * 0.45} color={ambientLight?.keyColor ?? '#fff7e8'} />
 
       {/* Ring mesh — hidden until a hand is detected */}
       <mesh ref={occluderRef} visible={false} renderOrder={FINGER_OCCLUDER_RENDER_ORDER} rotation={[Math.PI / 2, 0, 0]}>

@@ -72,7 +72,7 @@ const CONFIG = {
   MIN_TRACKING_CONFIDENCE: 0.8,
 } as const;
 
-const RING_LANDMARK_INDICES = [0, 5, 13, 14, 15, 16, 17] as const;
+const RING_LANDMARK_INDICES = [0, 4, 5, 8, 13, 14, 15, 16, 17] as const;
 type RingLandmarkIndex = (typeof RING_LANDMARK_INDICES)[number];
 
 // ──────────────────────────────────────────────────────────────────────────────

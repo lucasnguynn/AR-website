@@ -11,6 +11,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useCamera, startCameraFromRef, resetCamera } from '../hook/useCamera';
 import { useHandTracking } from '../hook/useHandTracking';
 import { useLoadingState } from '../hook/useLoadingState';
+import { useAmbientLightAdapter } from '../utils/AmbientLightAdapter';
+import { assertLocalCameraPrivacy } from '../utils/SecurityUtils';
+import { estimateRingSizeFromPinch, type RingSizeEstimate } from '../utils/SizingTool';
 import { WebGPUScene } from './WebGPUScene';
 
 export interface ARTryOnModalProps {
@@ -24,6 +27,7 @@ type CriticalError = {
 };
 
 const TRACKING_TIMEOUT_MS = 12_000;
+const SMART_HUD_DELAY_MS = 2_000;
 
 function hasWebGLSupport(): boolean {
   const canvas = document.createElement('canvas');
@@ -41,6 +45,9 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   const [criticalError, setCriticalError] = useState<CriticalError | null>(null);
   const { resultRef, loadingState, startTracking, setActive, destroy } = useHandTracking();
   const { isLoading, markLoaded } = useLoadingState();
+  const ambientLight = useAmbientLightAdapter(videoRef);
+  const [hudVisible, setHudVisible] = useState(false);
+  const [sizeEstimate, setSizeEstimate] = useState<RingSizeEstimate | null>(null);
   const {
     cameraState,
     facingMode,
@@ -53,6 +60,8 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   } = useCamera();
 
   const adaptiveDpr = useMemo<[number, number]>(() => [1, Math.min(window.devicePixelRatio, 1.75)], []);
+  const combinedProgress = Math.min(100, Math.round(loadingState.mediapipe * 0.7 + (isLoading ? 0 : 30)));
+  const isReady = !isLoading && loadingState.mediapipe >= 100 && loadingState.camera && !criticalError;
 
   const closeAR = useCallback(() => {
     if (closeRequestedRef.current) return;
@@ -64,6 +73,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     setActive(false);
     destroy();
     stopCamera();
+    assertLocalCameraPrivacy(videoRef.current);
     resetCamera();
     onClose();
   }, [destroy, onClose, setActive, stopCamera]);
@@ -96,9 +106,11 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
       if (trackingTimeoutRef.current !== null) window.clearTimeout(trackingTimeoutRef.current);
       setActive(false);
       destroy();
+      stopCamera();
+      assertLocalCameraPrivacy(videoRef.current);
       resetCamera();
     };
-  }, [destroy, setActive]);
+  }, [destroy, setActive, stopCamera]);
 
   useEffect(() => {
     if (criticalError || !videoRef.current || cameraState !== 'IDLE') return;
@@ -153,6 +165,35 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     };
   }, [loadingState.camera, loadingState.ready, resultRef]);
 
+
+  useEffect(() => {
+    if (!isReady) {
+      setHudVisible(false);
+      return;
+    }
+
+    let missingSince: number | null = null;
+    let rafId = 0;
+    const monitor = () => {
+      const result = resultRef.current;
+      const confidence = result?.hands[0]?.confidence ?? 0;
+      const tracked = Boolean(result?.detected && confidence >= 0.65);
+      const now = performance.now();
+      setSizeEstimate(estimateRingSizeFromPinch(result ?? null, videoRef.current));
+
+      if (tracked) {
+        missingSince = null;
+        setHudVisible(false);
+      } else {
+        missingSince ??= now;
+        setHudVisible(now - missingSince > SMART_HUD_DELAY_MS);
+      }
+      rafId = window.requestAnimationFrame(monitor);
+    };
+    rafId = window.requestAnimationFrame(monitor);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [isReady, resultRef]);
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closeAR();
@@ -160,9 +201,6 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [closeAR]);
-
-  const combinedProgress = Math.min(100, Math.round(loadingState.mediapipe * 0.7 + (isLoading ? 0 : 30)));
-  const isReady = !isLoading && loadingState.mediapipe >= 100 && loadingState.camera && !criticalError;
 
   return (
     <div
@@ -188,6 +226,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
           facingMode={facingMode}
           onMount={markLoaded}
           dpr={adaptiveDpr}
+          ambientLight={ambientLight}
         />
 
         <div className="pointer-events-none absolute inset-x-4 top-[calc(env(safe-area-inset-top)+1rem)] z-20 flex items-start justify-between gap-3">
@@ -211,7 +250,8 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
           </button>
         </div>
 
-        {isReady && <GuidanceOverlay />}
+        {isReady && <GuidanceOverlay ambientLight={ambientLight} sizeEstimate={sizeEstimate} />}
+        {isReady && hudVisible && <SmartHud />}
         {!isReady && !criticalError && <LoadingOverlay progress={combinedProgress} hasCamera={loadingState.camera} />}
         {criticalError && <RecoveryOverlay error={criticalError} onRetry={retryExperience} onClose={closeAR} />}
       </div>
@@ -219,12 +259,27 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   );
 }
 
-function GuidanceOverlay() {
+function GuidanceOverlay({ ambientLight, sizeEstimate }: { ambientLight: ReturnType<typeof useAmbientLightAdapter>; sizeEstimate: RingSizeEstimate | null }) {
+  const sizeText = sizeEstimate?.isPinching && sizeEstimate.usRingSize
+    ? `Estimated US ${sizeEstimate.usRingSize}`
+    : 'Pinch thumb and index to size';
+
   return (
     <div className="pointer-events-none absolute inset-x-6 bottom-[calc(env(safe-area-inset-bottom)+2rem)] z-20 rounded-3xl border border-white/10 bg-black/35 px-5 py-4 text-center backdrop-blur-xl">
       <p className="text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">Live try-on</p>
-      <p className="mt-2 text-lg font-light tracking-[-0.02em]">Place your hand in the frame</p>
-      <p className="mt-1 text-sm text-white/70">Move your hand naturally for a precise fit.</p>
+      <p className="mt-2 text-lg font-light tracking-[-0.02em]">{sizeText}</p>
+      <p className="mt-1 text-sm text-white/70">Light matched at {ambientLight.colorTemperature}K · camera processed locally.</p>
+    </div>
+  );
+}
+
+function SmartHud() {
+  return (
+    <div className="pointer-events-none absolute inset-6 z-20 flex items-center justify-center rounded-[2rem] border border-[#D5FD50]/70 bg-black/20 text-center shadow-[0_0_40px_rgba(213,253,80,0.16)] backdrop-blur-[2px]" aria-live="polite">
+      <div className="rounded-full border border-[#D5FD50]/40 bg-black/55 px-5 py-3">
+        <p className="text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">Tracking paused</p>
+        <p className="mt-1 text-sm text-white/80">Return your hand to the frame.</p>
+      </div>
     </div>
   );
 }

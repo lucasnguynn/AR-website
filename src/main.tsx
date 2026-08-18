@@ -10,6 +10,12 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './index.css';
 
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}secure-assets-sw.js`, { scope: import.meta.env.BASE_URL });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Remove the static loading screen injected by index.html once React is live
 // ---------------------------------------------------------------------------
