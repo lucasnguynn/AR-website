@@ -52,7 +52,7 @@ export type WorkerOutMessage =
  * z:    relative depth in "hand-width" units (negative = closer to camera).
  */
 export interface NormalisedLandmark {
-  /** Original MediaPipe hand-landmark index. Ring tracking emits 0, 4, 5, 8, 13, 14, 15, 16, and 17 only. */
+  /** Original MediaPipe hand-landmark index. Hand tracking emits the full 21-point MediaPipe hand topology. */
   index?: number;
   x: number;
   y: number;
@@ -62,7 +62,7 @@ export interface NormalisedLandmark {
 
 /** Per-hand result with normalized structure */
 export interface HandResult {
-  /** Ring-placement subset of MediaPipe landmarks: 0, 5, 13, 14, 15, 16, and 17. */
+  /** Full 21-point MediaPipe hand topology for sizing, gestures, and placement. */
   landmarks: NormalisedLandmark[];
   /** Matching world-space landmark subset from MediaPipe, when available. */
   worldLandmarks: NormalisedLandmark[] | null;
