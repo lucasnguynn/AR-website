@@ -379,25 +379,13 @@ function RingScene({ resultRef, ringModelPath, onModelProgress }: RingSceneProps
 // ===========================================================================
 
 function useGLTFWithDraco(path: string, onProgress: (p: number) => void) {
-  // We use a ref to call onProgress without re-triggering the effect
   const onProgressRef = useRef(onProgress);
   useEffect(() => { onProgressRef.current = onProgress; }, [onProgress]);
 
-  // drei's useGLTF already handles caching and Suspense.
-  // We inject a custom loader below via the loaderOptions.
-  const gltf = useGLTF(path, true, true, (loader) => {
-    // Configure DRACOLoader on the GLTFLoader instance.
-    // This is safe to call even if the model isn't Draco-compressed;
-    // the loader simply ignores the extension in that case.
-    const dracoLoader = new DRACOLoader();
-    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
-    dracoLoader.preload();
-    // Ép kiểu qua unknown trước để vượt qua xung đột type giữa three-stdlib và three gốc
-    (loader as unknown as GLTFLoader).setDRACOLoader(dracoLoader);
-  }); // <--- CHÍNH LÀ DÒNG NÀY ĐÃ BỊ XÓA MẤT TRONG BẢN TRƯỚC
+  // CHỈ GỌI NHƯ THẾ NÀY LÀ ĐỦ: Bỏ 'true, true' (tắt meshopt gây lỗi Uncaught Promise)
+  const gltf = useGLTF(path);
 
-  // drei's Suspense flow means by the time we get here the model is loaded.
-  // Signal 100% immediately.
+  // Báo cáo 100% ngay khi Suspense resolve (model tải xong)
   useEffect(() => {
     onProgressRef.current(100);
   }, []);
