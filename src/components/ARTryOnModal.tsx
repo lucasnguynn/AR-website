@@ -42,7 +42,7 @@ import * as THREE from 'three';
 
 import { useHandTracking } from '../hook/useHandTracking';
 import { useLoadingState } from '../hook/useLoadingState';
-import { useCamera, startCameraFromRef } from '../hook/useCamera';
+import { useCamera, startCameraFromRef, resetCamera } from '../hook/useCamera';
 import {
   landmarkToWorld,
   computeRingQuaternion,
@@ -55,7 +55,7 @@ import type { HandTrackingResult } from '../types/ar.types';
 import { ModelErrorBoundary } from './ModelErrorBoundary';
 import { useRingModel, RING_SCALE, OFFSET_Y, OFFSET_Z } from '../hook/useRingModel';
 import { useFrame, useThree } from '@react-three/fiber';
-import { FacingMode } from '../services/cameraSystem';
+import type { FacingMode } from '../services/cameraSystem';
 
 // ---------------------------------------------------------------------------
 // Context: share the video element reference with the inner R3F component
