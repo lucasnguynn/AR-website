@@ -1,8 +1,8 @@
 export interface Keypoint2DMeasurement { readonly x: number; readonly y: number; readonly confidence: number; readonly timestamp: number; }
-export interface Pose6DoFMeasurement { readonly position: Float32Array | readonly number[]; readonly orientation: Float32Array | readonly number[]; readonly confidence: number; readonly timestamp: number; }
-export interface FusionState { readonly position: Float32Array; readonly velocity: Float32Array; readonly acceleration: Float32Array; readonly orientation: Float32Array; readonly covariance: Float32Array; readonly timestamp: number; }
+export interface Pose6DoFMeasurement { readonly position: Float32Array | readonly number[]; readonly orientation: Float32Array | readonly number[]; readonly confidence: number; readonly timestamp: number; readonly scale?: number; }
+export interface FusionState { readonly position: Float32Array; readonly velocity: Float32Array; readonly acceleration: Float32Array; readonly orientation: Float32Array; readonly covariance: Float32Array; readonly timestamp: number; readonly quaternionUKF: Float32Array | null; readonly scaleUKF: number; }
 
-const N = 9;
+const N = 15;
 const SIGMA = N * 2 + 1;
 const ALPHA = 1e-3;
 const BETA = 2;
@@ -13,6 +13,12 @@ const WM0 = LAMBDA / (N + LAMBDA);
 const WC0 = WM0 + (1 - ALPHA * ALPHA + BETA);
 const WI = 1 / (2 * (N + LAMBDA));
 const EPS = 1e-6;
+const QW = 9;
+const QX = 10;
+const QY = 11;
+const QZ = 12;
+const SCALE = 13;
+const WZ = 14;
 
 export class UKFEngine {
   private readonly x = new Float32Array(N);
@@ -22,23 +28,24 @@ export class UKFEngine {
   private readonly mean = new Float32Array(N);
   private readonly scratch = new Float32Array(N * N);
   private readonly k = new Float32Array(N);
+  private readonly quaternion = this.x.subarray(QW, QZ + 1);
   private readonly orientation = new Float32Array([0, 0, 0, 1]);
   private readonly state: FusionState;
   private initialized = false;
   private lastTimestamp = 0;
-
-  constructor(processNoise = 0.035) {
-    for (let i = 0; i < N; i += 1) this.p[i * N + i] = i < 3 ? 0.015 : i < 6 ? 0.08 : 0.18;
-    this.state = { position: this.x.subarray(0, 3), velocity: this.x.subarray(3, 6), acceleration: this.x.subarray(6, 9), orientation: this.orientation, covariance: this.p, timestamp: 0 };
-    this.processNoise = processNoise;
-  }
-
   processNoise: number;
 
+  constructor(processNoise = 0.035) {
+    this.processNoise = processNoise;
+    this.x[QW] = 1;
+    this.x[SCALE] = 1;
+    this.resetCovariance();
+    this.state = { position: this.x.subarray(0, 3), velocity: this.x.subarray(3, 6), acceleration: this.x.subarray(6, 9), orientation: this.orientation, covariance: this.p, timestamp: 0, quaternionUKF: this.quaternion, scaleUKF: 1 };
+  }
+
   reset(): void {
-    this.x.fill(0); this.p.fill(0); this.orientation[0] = 0; this.orientation[1] = 0; this.orientation[2] = 0; this.orientation[3] = 1;
-    for (let i = 0; i < N; i += 1) this.p[i * N + i] = i < 3 ? 0.015 : i < 6 ? 0.08 : 0.18;
-    this.initialized = false; this.lastTimestamp = 0;
+    this.x.fill(0); this.p.fill(0); this.x[QW] = 1; this.x[SCALE] = 1;
+    this.resetCovariance(); this.initialized = false; this.lastTimestamp = 0;
   }
 
   predict(timestamp: number): FusionState {
@@ -46,80 +53,55 @@ export class UKFEngine {
     const dt = Math.max(1 / 240, Math.min((timestamp - this.lastTimestamp) * 0.001, 1 / 20));
     this.lastTimestamp = timestamp;
     this.computeSigmaPoints();
-    for (let s = 0; s < SIGMA; s += 1) {
-      const o = s * N;
-      this.propagated[o] = this.sigma[o] + this.sigma[o + 3] * dt + 0.5 * this.sigma[o + 6] * dt * dt;
-      this.propagated[o + 1] = this.sigma[o + 1] + this.sigma[o + 4] * dt + 0.5 * this.sigma[o + 7] * dt * dt;
-      this.propagated[o + 2] = this.sigma[o + 2] + this.sigma[o + 5] * dt + 0.5 * this.sigma[o + 8] * dt * dt;
-      this.propagated[o + 3] = this.sigma[o + 3] + this.sigma[o + 6] * dt;
-      this.propagated[o + 4] = this.sigma[o + 4] + this.sigma[o + 7] * dt;
-      this.propagated[o + 5] = this.sigma[o + 5] + this.sigma[o + 8] * dt;
-      this.propagated[o + 6] = this.sigma[o + 6]; this.propagated[o + 7] = this.sigma[o + 7]; this.propagated[o + 8] = this.sigma[o + 8];
-    }
+    for (let s = 0; s < SIGMA; s += 1) this.propagateSigma(s * N, dt);
     this.unscentedMeanCovariance(dt);
+    this.normalizeQuaternion(this.x, QW);
     return this.publish(timestamp);
   }
 
   updateKeypoint2D(m: Keypoint2DMeasurement, depthMeters = 0): FusionState {
     if (!this.initialized) { this.x[0] = m.x; this.x[1] = m.y; this.x[2] = depthMeters; this.initialized = true; this.lastTimestamp = m.timestamp; }
     else this.predict(m.timestamp);
-    this.scalarUpdate(0, m.x, Math.max(0.0004, 0.018 / Math.max(m.confidence, 0.05)));
-    this.scalarUpdate(1, m.y, Math.max(0.0004, 0.018 / Math.max(m.confidence, 0.05)));
+    const r = Math.max(0.0004, 0.018 / Math.max(m.confidence, 0.05));
+    this.scalarUpdate(0, m.x, r); this.scalarUpdate(1, m.y, r);
     if (Number.isFinite(depthMeters)) this.scalarUpdate(2, depthMeters, 0.05);
     return this.publish(m.timestamp);
   }
 
   updatePose6DoF(m: Pose6DoFMeasurement): FusionState {
-    if (!this.initialized) { this.x[0] = m.position[0]; this.x[1] = m.position[1]; this.x[2] = m.position[2]; this.initialized = true; this.lastTimestamp = m.timestamp; }
+    if (!this.initialized) { this.x[0] = m.position[0]; this.x[1] = m.position[1]; this.x[2] = m.position[2]; this.x[QW] = m.orientation[3]; this.x[QX] = m.orientation[0]; this.x[QY] = m.orientation[1]; this.x[QZ] = m.orientation[2]; this.x[SCALE] = m.scale ?? 1; this.initialized = true; this.lastTimestamp = m.timestamp; }
     else this.predict(m.timestamp);
     const r = Math.max(0.00001, 0.004 / Math.max(m.confidence, 0.05));
     this.scalarUpdate(0, m.position[0], r); this.scalarUpdate(1, m.position[1], r); this.scalarUpdate(2, m.position[2], r);
-    this.orientation[0] += (m.orientation[0] - this.orientation[0]) * m.confidence;
-    this.orientation[1] += (m.orientation[1] - this.orientation[1]) * m.confidence;
-    this.orientation[2] += (m.orientation[2] - this.orientation[2]) * m.confidence;
-    this.orientation[3] += (m.orientation[3] - this.orientation[3]) * m.confidence;
-    this.normalizeOrientation();
+    this.scalarUpdate(QW, m.orientation[3], r); this.scalarUpdate(QX, m.orientation[0], r); this.scalarUpdate(QY, m.orientation[1], r); this.scalarUpdate(QZ, m.orientation[2], r);
+    if (m.scale !== undefined) this.scalarUpdateScale(m.scale, r);
+    this.normalizeQuaternion(this.x, QW);
     return this.publish(m.timestamp);
   }
 
-  private computeSigmaPoints(): void {
-    this.cholesky();
-    this.sigma.set(this.x, 0);
-    for (let c = 0; c < N; c += 1) for (let r = 0; r < N; r += 1) {
-      const v = GAMMA * this.scratch[r * N + c];
-      this.sigma[(1 + c) * N + r] = this.x[r] + v;
-      this.sigma[(1 + N + c) * N + r] = this.x[r] - v;
-    }
+  scalarUpdateScale(scale: number, noise = 0.001): void { this.scalarUpdate(SCALE, scale, noise); this.x[SCALE] = Math.max(EPS, this.x[SCALE]); }
+
+  private propagateSigma(o: number, dt: number): void {
+    const dt2 = 0.5 * dt * dt;
+    this.propagated[o] = this.sigma[o] + this.sigma[o + 3] * dt + this.sigma[o + 6] * dt2;
+    this.propagated[o + 1] = this.sigma[o + 1] + this.sigma[o + 4] * dt + this.sigma[o + 7] * dt2;
+    this.propagated[o + 2] = this.sigma[o + 2] + this.sigma[o + 5] * dt + this.sigma[o + 8] * dt2;
+    this.propagated[o + 3] = this.sigma[o + 3] + this.sigma[o + 6] * dt; this.propagated[o + 4] = this.sigma[o + 4] + this.sigma[o + 7] * dt; this.propagated[o + 5] = this.sigma[o + 5] + this.sigma[o + 8] * dt;
+    this.propagated[o + 6] = this.sigma[o + 6]; this.propagated[o + 7] = this.sigma[o + 7]; this.propagated[o + 8] = this.sigma[o + 8];
+    const angle = this.sigma[o + WZ] * dt * 0.5; const c = Math.cos(angle); const z = Math.sin(angle);
+    const qw = this.sigma[o + QW], qx = this.sigma[o + QX], qy = this.sigma[o + QY], qz = this.sigma[o + QZ];
+    this.propagated[o + QW] = qw * c - qz * z; this.propagated[o + QX] = qx * c + qy * z; this.propagated[o + QY] = qy * c - qx * z; this.propagated[o + QZ] = qz * c + qw * z;
+    this.normalizeQuaternion(this.propagated, o + QW);
+    this.propagated[o + SCALE] = this.sigma[o + SCALE]; this.propagated[o + WZ] = this.sigma[o + WZ];
   }
 
-  private unscentedMeanCovariance(dt: number): void {
-    this.mean.fill(0); this.p.fill(0);
-    for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WM0 : WI; for (let i = 0; i < N; i += 1) this.mean[i] += w * this.propagated[s * N + i]; }
-    for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WC0 : WI; const o = s * N; for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] += w * (this.propagated[o + i] - this.mean[i]) * (this.propagated[o + j] - this.mean[j]); }
-    this.x.set(this.mean); const q = this.processNoise * dt; for (let i = 0; i < N; i += 1) this.p[i * N + i] += q + EPS;
-  }
+  private computeSigmaPoints(): void { this.cholesky(); this.sigma.set(this.x, 0); for (let c = 0; c < N; c += 1) for (let r = 0; r < N; r += 1) { const v = GAMMA * this.scratch[r * N + c]; this.sigma[(1 + c) * N + r] = this.x[r] + v; this.sigma[(1 + N + c) * N + r] = this.x[r] - v; } }
 
-  private scalarUpdate(index: number, measurement: number, noise: number): void {
-    const innovationVariance = this.p[index * N + index] + noise;
-    for (let i = 0; i < N; i += 1) this.k[i] = this.p[i * N + index] / innovationVariance;
-    const residual = measurement - this.x[index];
-    for (let i = 0; i < N; i += 1) this.x[i] += this.k[i] * residual;
-    for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] -= this.k[i] * this.p[index * N + j];
-  }
+  private unscentedMeanCovariance(dt: number): void { this.mean.fill(0); this.p.fill(0); for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WM0 : WI; const o = s * N; for (let i = 0; i < N; i += 1) this.mean[i] += w * this.propagated[o + i]; } this.normalizeQuaternion(this.mean, QW); for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WC0 : WI; const o = s * N; for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] += w * (this.propagated[o + i] - this.mean[i]) * (this.propagated[o + j] - this.mean[j]); } this.x.set(this.mean); const q = this.processNoise * dt; for (let i = 0; i < N; i += 1) this.p[i * N + i] += q + EPS; }
 
-  private cholesky(): void {
-    this.scratch.fill(0);
-    for (let i = 0; i < N; i += 1) for (let j = 0; j <= i; j += 1) {
-      let sum = this.p[i * N + j];
-      for (let k = 0; k < j; k += 1) sum -= this.scratch[i * N + k] * this.scratch[j * N + k];
-      this.scratch[i * N + j] = i === j ? Math.sqrt(Math.max(sum, EPS)) : sum / Math.max(this.scratch[j * N + j], EPS);
-    }
-  }
-
-  private normalizeOrientation(): void {
-    const inv = 1 / Math.hypot(this.orientation[0], this.orientation[1], this.orientation[2], this.orientation[3]);
-    this.orientation[0] *= inv; this.orientation[1] *= inv; this.orientation[2] *= inv; this.orientation[3] *= inv;
-  }
-
-  private publish(timestamp: number): FusionState { (this.state as { timestamp: number }).timestamp = timestamp; return this.state; }
+  private scalarUpdate(index: number, measurement: number, noise: number): void { const innovationVariance = this.p[index * N + index] + noise; for (let i = 0; i < N; i += 1) this.k[i] = this.p[i * N + index] / innovationVariance; const residual = measurement - this.x[index]; for (let i = 0; i < N; i += 1) this.x[i] += this.k[i] * residual; for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] -= this.k[i] * this.p[index * N + j]; }
+  private cholesky(): void { this.scratch.fill(0); for (let i = 0; i < N; i += 1) for (let j = 0; j <= i; j += 1) { let sum = this.p[i * N + j]; for (let k = 0; k < j; k += 1) sum -= this.scratch[i * N + k] * this.scratch[j * N + k]; this.scratch[i * N + j] = i === j ? Math.sqrt(Math.max(sum, EPS)) : sum / Math.max(this.scratch[j * N + j], EPS); } }
+  private normalizeQuaternion(a: Float32Array, o: number): void { const inv = 1 / Math.max(EPS, Math.hypot(a[o], a[o + 1], a[o + 2], a[o + 3])); a[o] *= inv; a[o + 1] *= inv; a[o + 2] *= inv; a[o + 3] *= inv; }
+  private resetCovariance(): void { for (let i = 0; i < N; i += 1) this.p[i * N + i] = i < 3 ? 0.015 : i < 6 ? 0.08 : i < 9 ? 0.18 : i < 13 ? 0.025 : 0.01; }
+  private publish(timestamp: number): FusionState { this.orientation[0] = this.x[QX]; this.orientation[1] = this.x[QY]; this.orientation[2] = this.x[QZ]; this.orientation[3] = this.x[QW]; (this.state as { timestamp: number; scaleUKF: number }).timestamp = timestamp; (this.state as { scaleUKF: number }).scaleUKF = this.x[SCALE]; return this.state; }
 }
