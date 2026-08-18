@@ -1,176 +1,39 @@
-/**
- * useHandTracking.ts
- *
- * Manages the full lifecycle of the MediaPipe Web Worker:
- *   • Spawns the worker exactly once on mount
- *   • Sends INIT and tracks PROGRESS from both the WASM phase and the model phase
- *   • Dispatches video frames to the worker on a requestAnimationFrame loop
- *   • Returns the latest HandTrackingResult via a ref (not state — avoids
- *     triggering a React re-render on every frame)
- *   • Reports combined loading progress as a single 0-100 number
- *
- * WHY REF INSTEAD OF STATE FOR LANDMARKS?
- *   setState → re-render → all children reconcile → DOM diff → at 30 fps this
- *   is 30 full React render cycles per second for the entire AR subtree.
- *   Instead we store the result in a ref and let the R3F useFrame hook read it
- *   directly each render without touching React at all.
- */
+// src/hooks/useHandTracking.ts  — excerpt showing the corrected useEffect
+// (replace your existing worker useEffect with this block)
 
-import { useEffect, useRef, useCallback, useState } from 'react';
-import type { HandTrackingResult, LoadingState, WorkerOutMessage } from '../types/ar.types';
-import { captureVideoFrame } from '../utils/coordinateMapping';
+useEffect(() => {
+  // Guard: don't init if the video element isn't ready
+  if (!videoRef.current) return;
 
-// Vite worker import — bundled as a separate chunk for code splitting
-import MediapipeWorker from '../workers/mediapipe.worker?worker';
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Hook return type
-// ──────────────────────────────────────────────────────────────────────────────
-
-export interface UseHandTrackingReturn {
-  /** Latest tracking result — read in useFrame, never causes React re-renders */
-  resultRef: React.RefObject<HandTrackingResult | null>;
-  /** Loading progress 0-100 and status flags */
-  loadingState: LoadingState;
-  /** Call this once the camera stream is available to start frame dispatch */
-  startTracking: (video: HTMLVideoElement) => void;
-  /** Pause/resume frame dispatch (e.g. when modal is hidden) */
-  setActive: (active: boolean) => void;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Hook
-// ──────────────────────────────────────────────────────────────────────────────
-
-export function useHandTracking(): UseHandTrackingReturn {
-  const workerRef = useRef<Worker | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const rafRef = useRef<number>(0);
-  const activeRef = useRef(false);
-  const resultRef = useRef<HandTrackingResult | null>(null);
-
-  const [loadingState, setLoadingState] = useState<LoadingState>({
-    mediapipe: 0,
-    model: 0,
-    camera: false,
-    ready: false,
-    error: null,
-  });
-
-  // ── Spawn worker and wire up message handler ─────────────────────────────
-  useEffect(() => {
-    const worker = new MediapipeWorker();
-    workerRef.current = worker;
-
-    worker.addEventListener('message', (e: MessageEvent<WorkerOutMessage>) => {
-      const msg = e.data;
-
-      switch (msg.type) {
-        case 'PROGRESS': {
-          const { phase, progress } = msg.payload;
-          setLoadingState((prev) => ({
-            ...prev,
-            // WASM (0→100) accounts for the first half of the combined bar.
-            // Model (0→100) accounts for the second half.
-            mediapipe:
-              phase === 'wasm'
-                ? Math.round(progress / 2)         // 0-50
-                : Math.round(50 + progress / 2),   // 50-100
-          }));
-          break;
-        }
-
-        case 'READY':
-          setLoadingState((prev) => ({ ...prev, mediapipe: 100, ready: prev.model >= 100 }));
-          break;
-
-        case 'RESULT':
-          resultRef.current = msg.payload;
-          break;
-
-        case 'ERROR':
-          setLoadingState((prev) => ({
-            ...prev,
-            error: msg.payload.message,
-          }));
-          console.error('[MediaPipe Worker]', msg.payload.message);
-          break;
-      }
-    });
-
-    // ── Send INIT — the worker immediately starts fetching WASM + model ──────
-    worker.postMessage({ type: 'INIT' });
-
-    return () => {
-      cancelAnimationFrame(rafRef.current);
-      worker.postMessage({ type: 'DESTROY' });
-      worker.terminate();
-      workerRef.current = null;
-    };
-  }, []); // runs once
-
-  // ── Frame dispatch loop ──────────────────────────────────────────────────
-// Thêm một ref để theo dõi thời gian của khung hình trước đó
-  const lastFrameTimeRef = useRef<number>(0);
-
-  const dispatchFrame = useCallback(() => {
-    if (!activeRef.current) return;
-    rafRef.current = requestAnimationFrame(dispatchFrame);
-
-    const now = performance.now();
-    // Giới hạn tốc độ xử lý AI ở mức 30fps (khoảng 33ms/khung hình)
-    // Điều này ngăn chặn việc gọi getImageData quá nhiều gây sập WebGL Context
-    if (now - lastFrameTimeRef.current < 33) return;
-
-    const video = videoRef.current;
-    const worker = workerRef.current;
-    if (!video || !worker) return;
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-
-    const frame = captureVideoFrame(video);
-    if (!frame) return;
-
-    lastFrameTimeRef.current = now; // Cập nhật thời gian
-
-    worker.postMessage(
-      {
-        type: 'DETECT',
-        payload: {
-          buffer: frame.buffer,
-          width: frame.width,
-          height: frame.height,
-          timestamp: now,
-        },
-      },
-      [frame.buffer],
-    );
-  }, []);
-
-  // ── Public API ────────────────────────────────────────────────────────────
-
-  const startTracking = useCallback(
-    (video: HTMLVideoElement) => {
-      videoRef.current = video;
-      activeRef.current = true;
-      setLoadingState((prev) => ({ ...prev, camera: true }));
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(dispatchFrame);
-    },
-    [dispatchFrame],
+  const worker = new Worker(
+    new URL('../workers/handTrackingWorker.ts', import.meta.url),
+    { type: 'module' }
   );
 
-  const setActive = useCallback(
-    (active: boolean) => {
-      activeRef.current = active;
-      if (active && videoRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = requestAnimationFrame(dispatchFrame);
-      } else {
-        cancelAnimationFrame(rafRef.current);
-      }
-    },
-    [dispatchFrame],
-  );
+  worker.onmessage = (e: MessageEvent<HandTrackingResult>) => {
+    // ... your existing message handler
+  };
 
-  return { resultRef, loadingState, startTracking, setActive };
-}
+  worker.onerror = (err) => {
+    console.error('[useHandTracking] Worker error:', err);
+  };
+
+  // Start the worker
+  worker.postMessage({ type: 'INIT', payload: { /* config */ } });
+
+  // ─── Cleanup ──────────────────────────────────────────────────────────────
+  // Without terminate(), the MediaPipe WASM runtime keeps running after the
+  // component unmounts (e.g. during React HMR or route changes), consuming
+  // CPU and leaking the camera stream lock.
+  return () => {
+    worker.postMessage({ type: 'DESTROY' }); // let the worker close MediaPipe gracefully
+    // Give it 300 ms to flush, then hard-terminate regardless.
+    const killTimer = setTimeout(() => worker.terminate(), 300);
+    worker.addEventListener('message', (e) => {
+      if (e.data?.type === 'DESTROYED') {
+        clearTimeout(killTimer);
+        worker.terminate();
+      }
+    }, { once: true });
+  };
+}, [videoRef]); // re-init only if the video element reference changes
