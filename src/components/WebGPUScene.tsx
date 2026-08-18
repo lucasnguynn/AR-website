@@ -8,7 +8,12 @@ import type { AmbientLightState } from '../utils/AmbientLightAdapter';
 type RenderTier = 'webgpu' | 'webgl2' | 'webgl1';
 type QualityTier = 'HIGH' | 'MEDIUM' | 'LOW';
 type ThreeRenderer = THREE.WebGLRenderer & { init?: () => Promise<void> };
-type WebGPURendererModule = typeof import('three/examples/jsm/renderers/webgpu/WebGPURenderer.js');
+type WebGPURendererConstructor = new (parameters: {
+  canvas: HTMLCanvasElement | OffscreenCanvas;
+  alpha: boolean;
+  antialias: boolean;
+  powerPreference: WebGLPowerPreference;
+}) => ThreeRenderer;
 
 declare global {
   interface Navigator {
@@ -62,7 +67,9 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
 async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<ThreeRenderer> {
   if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
     try {
-      const { default: WebGPURenderer } = await import('three/examples/jsm/renderers/webgpu/WebGPURenderer.js') as WebGPURendererModule;
+      // Three.js >=0.170 exposes examples modules through the `three/addons/*` alias.
+      // @ts-expect-error The installed Three.js type declarations may omit this addon module.
+      const { default: WebGPURenderer } = await import('three/addons/renderers/webgpu/WebGPURenderer.js') as { default: WebGPURendererConstructor };
       const renderer = new WebGPURenderer({
         canvas,
         alpha: true,
