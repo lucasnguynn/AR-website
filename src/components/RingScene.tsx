@@ -36,6 +36,7 @@ import {
 } from '../utils/coordinateMapping';
 import { RingTrackingStabilizer } from '../utils/trackingStabilizer';
 import type { RingPoseSample } from '../utils/trackingStabilizer';
+import { useRayTracingPipeline } from './RayTracingPipeline';
 
 const FINGER_OCCLUDER_RENDER_ORDER = -1;
 const RING_RENDER_ORDER = 0;
@@ -54,16 +55,18 @@ interface RingSceneProps {
   resultRef: React.RefObject<HandTrackingResult | null>;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   facingMode?: 'user' | 'environment';
+  enableRayTracing?: boolean;
 }
 
 // ── RingMesh — inner component, renders only after useGLTF resolves ──────────
 // Kept separate from the Suspense boundary so ErrorBoundary can catch
 // suspension errors without unmounting the whole scene.
-function RingMesh({ resultRef, videoRef, facingMode = 'user' }: RingSceneProps) {
+function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false }: RingSceneProps) {
   const { camera, gl } = useThree();
   const groupRef   = useRef<THREE.Group>(null);
   const occluderRef = useRef<THREE.Mesh>(null);
   const { scene }  = useRingModel();
+  useRayTracingPipeline({ enabled: enableRayTracing, ringRoot: scene });
 
   // Tracking stabilizer — state machine + outlier rejection + adaptive filters
   const stabilizer = useRef(new RingTrackingStabilizer());

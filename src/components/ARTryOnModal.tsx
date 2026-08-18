@@ -6,14 +6,12 @@
  * Three.js resources when the modal closes.
  */
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
-import * as THREE from 'three';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useCamera, startCameraFromRef, resetCamera } from '../hook/useCamera';
 import { useHandTracking } from '../hook/useHandTracking';
 import { useLoadingState } from '../hook/useLoadingState';
-import { RingScene } from './RingScene';
+import { WebGPUScene } from './WebGPUScene';
 
 export interface ARTryOnModalProps {
   onClose: () => void;
@@ -184,23 +182,13 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
           autoPlay
         />
 
-        <Canvas
-          className="absolute inset-0"
-          style={{ background: 'transparent' }}
-          gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
-          onCreated={({ gl }) => {
-            gl.outputColorSpace = THREE.SRGBColorSpace;
-            gl.toneMapping = THREE.ACESFilmicToneMapping;
-            gl.toneMappingExposure = 1.0;
-          }}
-          camera={{ fov: 45, near: 0.01, far: 100, position: [0, 0, 5] }}
+        <WebGPUScene
+          resultRef={resultRef}
+          videoRef={videoRef}
+          facingMode={facingMode}
+          onMount={markLoaded}
           dpr={adaptiveDpr}
-        >
-          <OnMountNotifier onMount={markLoaded} />
-          <Suspense fallback={null}>
-            <RingScene resultRef={resultRef} videoRef={videoRef} facingMode={facingMode} />
-          </Suspense>
-        </Canvas>
+        />
 
         <div className="pointer-events-none absolute inset-x-4 top-[calc(env(safe-area-inset-top)+1rem)] z-20 flex items-start justify-between gap-3">
           {cameraIsReady && (
@@ -229,13 +217,6 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
       </div>
     </div>
   );
-}
-
-function OnMountNotifier({ onMount }: { onMount: () => void }) {
-  useEffect(() => {
-    onMount();
-  }, [onMount]);
-  return null;
 }
 
 function GuidanceOverlay() {
