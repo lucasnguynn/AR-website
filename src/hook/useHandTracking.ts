@@ -110,9 +110,17 @@ export function useHandTracking(): UseHandTrackingReturn {
   }, []); // runs once
 
   // ── Frame dispatch loop ──────────────────────────────────────────────────
+// Thêm một ref để theo dõi thời gian của khung hình trước đó
+  const lastFrameTimeRef = useRef<number>(0);
+
   const dispatchFrame = useCallback(() => {
     if (!activeRef.current) return;
     rafRef.current = requestAnimationFrame(dispatchFrame);
+
+    const now = performance.now();
+    // Giới hạn tốc độ xử lý AI ở mức 30fps (khoảng 33ms/khung hình)
+    // Điều này ngăn chặn việc gọi getImageData quá nhiều gây sập WebGL Context
+    if (now - lastFrameTimeRef.current < 33) return;
 
     const video = videoRef.current;
     const worker = workerRef.current;
@@ -122,7 +130,8 @@ export function useHandTracking(): UseHandTrackingReturn {
     const frame = captureVideoFrame(video);
     if (!frame) return;
 
-    // Transfer the buffer to avoid copying ~1.2 MB of pixel data every frame.
+    lastFrameTimeRef.current = now; // Cập nhật thời gian
+
     worker.postMessage(
       {
         type: 'DETECT',
@@ -130,10 +139,10 @@ export function useHandTracking(): UseHandTrackingReturn {
           buffer: frame.buffer,
           width: frame.width,
           height: frame.height,
-          timestamp: performance.now(),
+          timestamp: now,
         },
       },
-      [frame.buffer], // transferable — the buffer is detached in the sender
+      [frame.buffer],
     );
   }, []);
 
