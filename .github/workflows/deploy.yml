@@ -22,33 +22,24 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+# ... các dòng trước đó ...
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          # FIX: Use 'npm ci' with cache for reproducible, faster builds.
-          # 'npm install' ignores the lockfile and can silently upgrade packages,
-          # leading to build drift between local and CI environments.
+          node-version: '20'
           cache: 'npm'
 
+      # SỬA DÒNG NÀY: Thay vì dùng npm ci, hãy dùng npm install để tự sinh lại lock file khớp với package.json
       - name: Install dependencies
-        # FIX: Use 'npm ci' instead of 'npm install'.
-        # 'npm ci' enforces the lockfile exactly — no surprise dependency upgrades.
-        run: npm ci
+        run: npm install
 
       - name: Build
-        # FIX: Use 'npm run build' instead of 'npx vite build'.
-        # The package.json 'build' script runs: compress-3d && tsc && vite build
-        # Calling 'npx vite build' directly SKIPS TypeScript checking (tsc) and
-        # the model compression pipeline. Using 'npm run build' runs the full chain.
-        #
-        # The compress-3d script safely no-ops if assets/models/raw/ doesn't exist
-        # (exits 0 with a warning), so this won't break CI when there are no raw models.
         run: npm run build
+# ... các dòng sau đó ...
 
       - name: Create 404.html for SPA routing
         # GitHub Pages serves a 404 page for any URL that doesn't match a file.
