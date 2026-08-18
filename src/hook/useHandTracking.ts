@@ -9,6 +9,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { HandTrackingResult, LoadingState, WorkerOutMessage, TrackingMetrics } from '../types/ar.types';
 import { captureVideoFrame } from '../utils/coordinateMapping';
+import { GestureDetector } from '../utils/GestureDetector';
 
 export interface UseHandTrackingReturn {
   resultRef: React.RefObject<HandTrackingResult | null>;
@@ -31,6 +32,7 @@ export function useHandTracking(): UseHandTrackingReturn {
   const workerReadyRef = useRef(false);
   const inFlightRef = useRef(false);
   const inferenceTimerRef = useRef<number | null>(null);
+  const gestureDetectorRef = useRef(new GestureDetector());
 
   const [loadingState, setLoadingState] = useState<LoadingState>({
     mediapipe: 0,
@@ -91,10 +93,15 @@ export function useHandTracking(): UseHandTrackingReturn {
           workerReadyRef.current = true;
           setLoadingState((prev) => ({ ...prev, mediapipe: 100, ready: true, error: null }));
           break;
-        case 'RESULT':
+        case 'RESULT': {
           resultRef.current = message.payload;
+          const gestures = gestureDetectorRef.current.detect(message.payload);
+          gestures.forEach((gesture) => {
+            window.dispatchEvent(new CustomEvent('ar:gesture', { detail: gesture }));
+          });
           inFlightRef.current = false;
           break;
+        }
         case 'PAUSED':
           isPausedRef.current = true;
           break;

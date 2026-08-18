@@ -14,6 +14,7 @@ import { useLoadingState } from '../hook/useLoadingState';
 import { useAmbientLightAdapter } from '../utils/AmbientLightAdapter';
 import { assertLocalCameraPrivacy } from '../utils/SecurityUtils';
 import { estimateRingSizeFromPinch, type RingSizeEstimate } from '../utils/SizingTool';
+import { ARControls } from './ARControls';
 import { WebGPUScene } from './WebGPUScene';
 
 export interface ARTryOnModalProps {
@@ -250,7 +251,8 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
           </button>
         </div>
 
-        {isReady && <GuidanceOverlay ambientLight={ambientLight} sizeEstimate={sizeEstimate} />}
+        {isReady && <GuidanceOverlay ambientLight={ambientLight} />}
+        {isReady && <ARControls confidence={resultRef.current?.hands[0]?.confidence ?? 0} sizeEstimate={sizeEstimate} />}
         {isReady && hudVisible && <SmartHud />}
         {!isReady && !criticalError && <LoadingOverlay progress={combinedProgress} hasCamera={loadingState.camera} />}
         {criticalError && <RecoveryOverlay error={criticalError} onRetry={retryExperience} onClose={closeAR} />}
@@ -259,15 +261,11 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   );
 }
 
-function GuidanceOverlay({ ambientLight, sizeEstimate }: { ambientLight: ReturnType<typeof useAmbientLightAdapter>; sizeEstimate: RingSizeEstimate | null }) {
-  const sizeText = sizeEstimate?.isPinching && sizeEstimate.usRingSize
-    ? `Estimated US ${sizeEstimate.usRingSize}`
-    : 'Pinch thumb and index to size';
-
+function GuidanceOverlay({ ambientLight }: { ambientLight: ReturnType<typeof useAmbientLightAdapter> }) {
   return (
     <div className="pointer-events-none absolute inset-x-6 bottom-[calc(env(safe-area-inset-bottom)+2rem)] z-20 rounded-3xl border border-white/10 bg-black/35 px-5 py-4 text-center backdrop-blur-xl">
       <p className="text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">Live try-on</p>
-      <p className="mt-2 text-lg font-light tracking-[-0.02em]">{sizeText}</p>
+      <p className="mt-2 text-lg font-light tracking-[-0.02em]">Place your ring finger flat in frame.</p>
       <p className="mt-1 text-sm text-white/70">Light matched at {ambientLight.colorTemperature}K · camera processed locally.</p>
     </div>
   );

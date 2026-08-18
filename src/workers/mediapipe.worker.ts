@@ -3,8 +3,8 @@
  *
  * Low-latency MediaPipe HandLandmarker worker for ring-finger WebAR tracking.
  * The worker keeps a strict lifecycle, accepts only the newest frame under
- * backpressure, and emits a normalized protocol containing only the landmarks
- * required for ring placement.
+ * backpressure, and emits a normalized protocol containing all 21 hand landmarks
+ * required for sizing, gesture detection, and ring placement.
  */
 
 import {
@@ -34,7 +34,7 @@ interface FramePayload {
 }
 
 interface RingLandmark {
-  index: RingLandmarkIndex;
+  index: HandLandmarkIndex;
   x: number;
   y: number;
   z: number;
@@ -72,8 +72,8 @@ const CONFIG = {
   MIN_TRACKING_CONFIDENCE: 0.8,
 } as const;
 
-const RING_LANDMARK_INDICES = [0, 4, 5, 8, 13, 14, 15, 16, 17] as const;
-type RingLandmarkIndex = (typeof RING_LANDMARK_INDICES)[number];
+const HAND_LANDMARK_INDICES = Array.from({ length: 21 }, (_, index) => index) as HandLandmarkIndex[];
+type HandLandmarkIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // State
@@ -110,7 +110,7 @@ function reportError(message: string): void {
   postMessageSafe({ type: 'ERROR', payload: { message, state } });
 }
 
-function normalizeLandmark(index: RingLandmarkIndex, landmark: NormalizedLandmark): RingLandmark {
+function normalizeLandmark(index: HandLandmarkIndex, landmark: NormalizedLandmark): RingLandmark {
   return {
     index,
     x: landmark.x,
@@ -123,7 +123,7 @@ function normalizeLandmark(index: RingLandmarkIndex, landmark: NormalizedLandmar
 function extractRingLandmarks(landmarks: NormalizedLandmark[] | undefined): RingLandmark[] {
   if (!landmarks) return [];
 
-  return RING_LANDMARK_INDICES.flatMap((index) => {
+  return HAND_LANDMARK_INDICES.flatMap((index) => {
     const landmark = landmarks[index];
     return landmark ? [normalizeLandmark(index, landmark)] : [];
   });
