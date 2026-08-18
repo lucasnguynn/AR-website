@@ -51,6 +51,8 @@ export type CameraErrorCode =
   | 'CONSTRAINTS_UNSUPPORTED'
   | 'SWITCH_FAILED'
   | 'INTERRUPTED'
+  | 'WEBGL_UNSUPPORTED'
+  | 'METADATA_TIMEOUT'
   | 'UNKNOWN';
 
 export type CameraStatus =
@@ -189,7 +191,6 @@ export class CameraSystem {
       
       // Validate session is still current
       if (!this._isSessionCurrent(sessionId)) {
-        console.warn('[CameraSystem] Session invalidated during startup');
         return;
       }
 
@@ -206,7 +207,6 @@ export class CameraSystem {
 
     } catch (error) {
       if (!this._isSessionCurrent(sessionId)) {
-        console.warn('[CameraSystem] Session invalidated during error handling');
         return;
       }
 
@@ -222,12 +222,10 @@ export class CameraSystem {
 
   public async switchCamera(facingMode: FacingMode): Promise<void> {
     if (this.status === 'SWITCHING') {
-      console.warn('[CameraSystem] Switch already in progress');
       return;
     }
 
     if (facingMode === this.facingMode) {
-      console.warn('[CameraSystem] Already using requested facing mode');
       return;
     }
 
@@ -251,7 +249,6 @@ export class CameraSystem {
         
         // Validate session is still current
         if (!this._isSessionCurrent(sessionId)) {
-          console.warn('[CameraSystem] Session invalidated during switch');
           return;
         }
 
@@ -269,7 +266,6 @@ export class CameraSystem {
 
     } catch (error) {
       if (!this._isSessionCurrent(sessionId)) {
-        console.warn('[CameraSystem] Session invalidated during switch error');
         return;
       }
 
@@ -291,14 +287,12 @@ export class CameraSystem {
 
   public async recover(): Promise<void> {
     if (!this.videoElement || !this.stream) {
-      console.warn('[CameraSystem] Cannot recover: no video element or stream');
       return;
     }
 
     // Check if stream is still valid
     const tracks = this.stream.getVideoTracks();
     if (tracks.length > 0 && tracks[0].readyState === 'live') {
-      console.log('[CameraSystem] Stream is still valid, no recovery needed');
       return;
     }
 
@@ -351,6 +345,9 @@ export class CameraSystem {
     };
 
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new DOMException('Camera API unavailable', 'NotFoundError');
+      }
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       this.stream = stream;
     } catch (error) {
@@ -382,7 +379,7 @@ export class CameraSystem {
         resolve();
       };
 
-      const onError = (e: Event) => {
+      const onError = () => {
         cleanup();
         reject(new Error('Video element error while loading metadata'));
       };
@@ -403,9 +400,7 @@ export class CameraSystem {
       videoElement.addEventListener('error', onError, { once: true });
 
       // Trigger play to ensure metadata loads
-      videoElement.play().catch((err) => {
-        console.warn('[CameraSystem] Video play failed:', err);
-      });
+      void videoElement.play();
     });
   }
 
@@ -442,13 +437,11 @@ export class CameraSystem {
     this._cancelRetry();
     
     this.retryCount++;
-    console.log(`[CameraSystem] Scheduling retry ${this.retryCount}/${MAX_RETRY_COUNT}`);
 
     this.retryTimer = setTimeout(async () => {
       try {
         await this.start(videoElement, facingMode);
       } catch (error) {
-        console.warn('[CameraSystem] Retry failed:', error);
       }
     }, RETRY_DELAY_MS * this.retryCount);
   }
