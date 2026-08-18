@@ -1,0 +1,32 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      FIX BUG-1: Removed `./vite.svg` favicon reference — that file does not exist
+      in /public/, causing a 404 on every page load. Replaced with an inline SVG
+      data URI so there is zero network round-trip and zero 404.
+    -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💍</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebAR Jewelry Try-On</title>
+    <!-- Tailwind CDN (development convenience — consider moving to PostCSS build for production) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module" crossorigin src="/AR-website/assets/index-CxsPE_Oe.js"></script>
+    <link rel="modulepreload" crossorigin href="/AR-website/assets/vendor-three-BkP0RGdo.js">
+    <link rel="modulepreload" crossorigin href="/AR-website/assets/vendor-r3f-DVvRca1I.js">
+    <link rel="stylesheet" crossorigin href="/AR-website/assets/index-CKoiaS0n.css">
+  </head>
+  <body>
+    <div id="root"></div>
+    <!--
+      Static loading screen shown before React hydrates.
+      Removed by main.tsx after React mounts (500ms fade-out).
+      This is intentionally separate from the React loading overlay in ARTryOnModal.
+    -->
+    <div id="loading" class="fixed inset-0 flex items-center justify-center bg-black z-50 transition-opacity duration-500">
+      <h1 class="text-[#D5FD50] text-2xl font-bold animate-pulse">Loading WebAR Experience...</h1>
+    </div>
+  </body>
+</html>
