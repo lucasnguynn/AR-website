@@ -38,7 +38,7 @@ export type WorkerOutMessage =
       };
     }
   | { type: 'RESULT'; payload: HandTrackingResult }
-  | { type: 'ERROR'; payload: { message: string } }
+  | { type: 'ERROR'; payload: { message: string; state?: 'INIT' | 'READY' | 'PROCESS' | 'DESTROY' } }
   | { type: 'PAUSED' }
   | { type: 'DESTROYED' };
 
@@ -52,6 +52,8 @@ export type WorkerOutMessage =
  * z:    relative depth in "hand-width" units (negative = closer to camera).
  */
 export interface NormalisedLandmark {
+  /** Original MediaPipe hand-landmark index. Ring tracking emits 0, 5, 13, 14, 15, 16, and 17 only. */
+  index?: number;
   x: number;
   y: number;
   z: number;
@@ -60,12 +62,16 @@ export interface NormalisedLandmark {
 
 /** Per-hand result with normalized structure */
 export interface HandResult {
-  /** All 21 MediaPipe landmarks */
+  /** Ring-placement subset of MediaPipe landmarks: 0, 5, 13, 14, 15, 16, and 17. */
   landmarks: NormalisedLandmark[];
+  /** Matching world-space landmark subset from MediaPipe, when available. */
+  worldLandmarks: NormalisedLandmark[] | null;
   /** 'Left' | 'Right' as detected by MediaPipe (mirror-aware) */
   handedness: string;
-  /** Detection confidence 0-1 */
-  score: number;
+  /** Detection confidence 0-1 from MediaPipe handedness category score. */
+  confidence: number;
+  /** Timestamp of the processed frame. */
+  timestamp: number;
 }
 
 /** Full result returned by the worker for one video frame */

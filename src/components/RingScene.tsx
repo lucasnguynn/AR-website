@@ -74,10 +74,9 @@ function RingMesh({ resultRef }: RingSceneProps) {
 
     const hand      = result.hands[0];
     const landmarks = hand.landmarks;
-    if (!landmarks || landmarks.length < LM.RING_PIP + 1) return;
-
-    const lm13 = landmarks[LM.RING_MCP]; // base knuckle
-    const lm14 = landmarks[LM.RING_PIP]; // middle knuckle
+    const lm13 = landmarks.find((landmark) => landmark.index === LM.RING_MCP); // base knuckle
+    const lm14 = landmarks.find((landmark) => landmark.index === LM.RING_PIP); // middle knuckle
+    if (!lm13 || !lm14) return;
 
     // For projection we need a video element to read its dimensions.
     // We synthesise a minimal object with the canvas size as a fallback
