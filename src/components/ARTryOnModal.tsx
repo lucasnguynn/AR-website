@@ -302,10 +302,9 @@ function RingScene({ resultRef }: RingSceneProps) {
 
     const hand      = result.hands[0];
     const landmarks = hand.landmarks;
-    if (!landmarks || landmarks.length < LM.RING_PIP + 1) return;
-
-    const lm13 = landmarks[LM.RING_MCP];
-    const lm14 = landmarks[LM.RING_PIP];
+    const lm13 = landmarks.find((landmark) => landmark.index === LM.RING_MCP);
+    const lm14 = landmarks.find((landmark) => landmark.index === LM.RING_PIP);
+    if (!lm13 || !lm14) return;
 
     const projParams = {
       videoElement:  video,
