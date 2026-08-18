@@ -8,24 +8,25 @@
  *  │  <div id="ar-root">                                      │
  *  │   ├── <video>  ← camera feed, CSS-mirrored             │
  *  │   └── <Canvas> ← R3F, transparent bg, overlaid         │
- *  │        └── <RingScene>  ← reads from trackingResultRef │
+ *  │        └── <RingScene>  ← reads from resultRef         │
  *  └─────────────────────────────────────────────────────────┘
  *
- * Loading strategy (Task 1 — sub-3s):
- *   Promise.all([
- *     worker INIT (MediaPipe WASM + model, ~2-4s, in parallel threads),
- *     useGLTF preload (ring model + Draco decode, ~0.5-1s)
- *   ])
- *   Both start SIMULTANEOUSLY the moment the component mounts.
+ * FIXED BUGS vs previous version:
+ *  1. `useGLTF.setDecoderPath(DRACO_DECODER_PATH)` was called at module level.
+ *     The ring model (nhan.glb) has NO Draco compression (extensionsUsed = []).
+ *     Calling setDecoderPath causes DRACOLoader to initialise its WASM runtime
+ *     and spin waiting for a decode message that never arrives → Suspense deadlock.
+ *     REMOVED. No Draco path is set anywhere in the codebase.
+ *
+ *  2. RING_MODEL_PATH pointed to `import.meta.env.BASE_URL + 'models/nhan.glb'`
+ *     which is correct — kept and also aligned with useRingModel.ts.
+ *
+ *  3. useGLTF.preload() is now only called from useRingModel.ts (single source
+ *     of truth). The duplicate call here has been removed to avoid double-fetch.
+ *
+ * Loading strategy:
+ *   MediaPipe worker (WASM + model) and GLB fetch start SIMULTANEOUSLY on mount.
  *   Total wait = max(mediapipe_time, gltf_time) instead of their sum.
- *
- *   GLTF loading progress (0-100) is fed back via a custom GLTFLoader
- *   onProgress callback and merged with the worker's progress.
- *
- *   Combined progress bar formula:
- *     combinedProgress = (mediapipeProgress + modelProgress) / 2
- *   This gives a realistic 0-100 reading without either half "waiting" for
- *   the other.
  */
 
 import React, {
@@ -35,15 +36,12 @@ import React, {
   useState,
   Suspense,
   createContext,
-  useContext,
 } from 'react';
-import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { useGLTF, Environment } from '@react-three/drei';
+import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 import { useHandTracking } from '../hook/useHandTracking';
+import { useLoadingState } from '../hook/useLoadingState';
 import {
   landmarkToWorld,
   computeRingQuaternion,
@@ -53,26 +51,13 @@ import {
 import { VelocityAdaptiveEMAFilter, ScalarEMAFilter } from '../utils/emaFilter';
 import { LM } from '../types/ar.types';
 import type { HandTrackingResult } from '../types/ar.types';
-
-// ---------------------------------------------------------------------------
-// Draco path — pointing to the files copied by vite.config.ts
-// ---------------------------------------------------------------------------
-const DRACO_DECODER_PATH = 'https://www.gstatic.com/draco/versioned/decoders/1.5.6/';
-
-// ---------------------------------------------------------------------------
-// Preload the ring model the moment this module is imported —
-// BEFORE the component even mounts.  This starts the fetch in parallel with
-// the MediaPipe worker init that begins on component mount.
-// ---------------------------------------------------------------------------
-const RING_MODEL_PATH = import.meta.env.BASE_URL + 'models/nhan.glb';
-
-// Tell drei's useGLTF to use our DRACOLoader instance
-useGLTF.setDecoderPath(DRACO_DECODER_PATH);
-// Kick off the network fetch immediately (module evaluation time)
-useGLTF.preload(RING_MODEL_PATH);
+import { ModelErrorBoundary } from './ModelErrorBoundary';
+import { useRingModel, RING_SCALE, OFFSET_Y, OFFSET_Z } from '../hook/useRingModel';
+import { useFrame, useThree } from '@react-three/fiber';
 
 // ---------------------------------------------------------------------------
 // Context: share the video element reference with the inner R3F component
+// so landmark→world projection uses the correct video dimensions.
 // ---------------------------------------------------------------------------
 const VideoRefContext = createContext<React.RefObject<HTMLVideoElement | null>>(
   { current: null },
@@ -84,21 +69,17 @@ const VideoRefContext = createContext<React.RefObject<HTMLVideoElement | null>>(
 export interface ARTryOnModalProps {
   /** Called when the user dismisses the AR modal */
   onClose: () => void;
-  /** Ring model path override — defaults to /models/ring.glb */
-  ringModelPath?: string;
 }
 
 // ===========================================================================
 // ARTryOnModal (outer component — DOM layer + loading orchestration)
 // ===========================================================================
-export function ARTryOnModal({ onClose, ringModelPath = RING_MODEL_PATH }: ARTryOnModalProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
+  const videoRef  = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const { resultRef, loadingState, startTracking } = useHandTracking();
-
-  // Model loading progress (0-100), reported via custom loader callback
-  const [modelProgress, setModelProgress] = useState(0);
+  const { isLoading, markLoaded } = useLoadingState();
 
   // ── Camera setup ──────────────────────────────────────────────────────────
   const initCamera = useCallback(async () => {
@@ -106,18 +87,16 @@ export function ARTryOnModal({ onClose, ringModelPath = RING_MODEL_PATH }: ARTry
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'user',
-          width: { ideal: 640 },
-          height: { ideal: 480 },
+          width:     { ideal: 640 },
+          height:    { ideal: 480 },
           frameRate: { ideal: 30 },
         },
         audio: false,
       });
       streamRef.current = stream;
-
       if (!videoRef.current) return;
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
-
       startTracking(videoRef.current);
     } catch (err) {
       console.error('[AR Camera]', err);
@@ -131,18 +110,18 @@ export function ARTryOnModal({ onClose, ringModelPath = RING_MODEL_PATH }: ARTry
     };
   }, [initCamera]);
 
-  // ── Combined loading progress ─────────────────────────────────────────────
-  // mediapipe: 0-100 (from worker messages, already set in hook)
-  // model:     0-100 (from GLTF loader onProgress)
-  const combinedProgress = Math.round((loadingState.mediapipe + modelProgress) / 2);
-  const isReady = loadingState.mediapipe >= 100 && modelProgress >= 100;
-
   // ── Escape key to close ───────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
+
+  // ── Combined loading progress ─────────────────────────────────────────────
+  // mediapipe 0-100 (from worker PROGRESS messages)
+  // isLoading: false once OnMountNotifier fires inside Canvas (= GLB resolved)
+  const combinedProgress = Math.round(loadingState.mediapipe / 2);
+  const isReady          = !isLoading && loadingState.mediapipe >= 100;
 
   return (
     <div
@@ -169,12 +148,12 @@ export function ARTryOnModal({ onClose, ringModelPath = RING_MODEL_PATH }: ARTry
         />
       )}
 
-      {/* The AR viewport: video + Three.js canvas stacked */}
+      {/* AR viewport: video + Three.js canvas stacked */}
       <div
         className="relative w-full h-full overflow-hidden"
         style={{ maxWidth: 480, margin: '0 auto' }}
       >
-        {/* Camera feed — CSS mirror matches what users expect from a selfie view */}
+        {/* Camera feed — CSS mirror matches selfie expectations */}
         <video
           ref={videoRef}
           className="absolute inset-0 w-full h-full object-cover"
@@ -184,37 +163,153 @@ export function ARTryOnModal({ onClose, ringModelPath = RING_MODEL_PATH }: ARTry
           autoPlay
         />
 
-        {/* Three.js canvas — transparent background, perfectly overlaid */}
+        {/* Three.js canvas — transparent overlay */}
         <VideoRefContext.Provider value={videoRef}>
           <Canvas
             className="absolute inset-0"
             style={{ background: 'transparent' }}
             gl={{
-              alpha: true,
-              antialias: true,
-              powerPreference: 'high-performance',
+              alpha:            true,
+              antialias:        true,
+              powerPreference:  'high-performance',
             }}
             camera={{
-              fov: 45,
-              near: 0.01,
-              far: 100,
+              fov:      45,
+              near:     0.01,
+              far:      100,
               position: [0, 0, 5],
             }}
-            // Ensure Three.js renders at the native pixel ratio (not 2× on retina)
-            // to match the landmark coordinate space exactly.
+            // dpr={[1,1]} keeps landmark coordinate space aligned with the canvas.
             dpr={[1, 1]}
           >
-            <Suspense fallback={null}>
-              <RingScene
-                resultRef={resultRef}
-                ringModelPath={ringModelPath}
-                onModelProgress={setModelProgress}
-              />
-            </Suspense>
+            {/* Fires markLoaded() the first time this tree renders, which is
+                guaranteed to be AFTER Suspense resolves (GLB parsed). */}
+            <OnMountNotifier onMount={markLoaded} />
+
+            <ModelErrorBoundary>
+              <Suspense fallback={null}>
+                <RingScene resultRef={resultRef} />
+              </Suspense>
+            </ModelErrorBoundary>
           </Canvas>
         </VideoRefContext.Provider>
       </div>
     </div>
+  );
+}
+
+// ===========================================================================
+// OnMountNotifier — lives inside Canvas, fires after Suspense resolves
+// ===========================================================================
+function OnMountNotifier({ onMount }: { onMount: () => void }) {
+  useEffect(() => {
+    onMount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+}
+
+// ===========================================================================
+// RingScene — the R3F component that positions the ring each frame
+// ===========================================================================
+interface RingSceneProps {
+  resultRef: React.RefObject<HandTrackingResult | null>;
+}
+
+function RingScene({ resultRef }: RingSceneProps) {
+  const { camera, gl } = useThree();
+  const videoRef       = React.useContext(VideoRefContext);
+  const groupRef       = useRef<THREE.Group>(null);
+  const { scene }      = useRingModel();
+
+  // Filters — new instance per session mount
+  const emaFilter   = useRef(new VelocityAdaptiveEMAFilter());
+  const scaleFilter = useRef(new ScalarEMAFilter(0.35));
+  const wasDetected = useRef(false);
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group) return;
+
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return;
+
+    const result = resultRef.current;
+
+    if (!result || !result.detected || result.hands.length === 0) {
+      group.visible = false;
+      if (wasDetected.current) {
+        emaFilter.current.reset();
+        scaleFilter.current.reset();
+        wasDetected.current = false;
+      }
+      return;
+    }
+
+    wasDetected.current = true;
+
+    const hand      = result.hands[0];
+    const landmarks = hand.landmarks;
+    if (!landmarks || landmarks.length < LM.RING_PIP + 1) return;
+
+    const lm13 = landmarks[LM.RING_MCP];
+    const lm14 = landmarks[LM.RING_PIP];
+
+    const projParams = {
+      videoElement:  video,
+      canvasElement: gl.domElement,
+      camera:        camera as THREE.PerspectiveCamera,
+      isMirrored:    true,
+    };
+
+    const pos13 = landmarkToWorld(lm13, projParams);
+    const pos14 = landmarkToWorld(lm14, projParams);
+    if (!pos13 || !pos14) return;
+
+    const rawPosition = pos13.clone().lerp(pos14, RING_SEGMENT_T);
+    rawPosition.y += OFFSET_Y;
+    rawPosition.z += OFFSET_Z;
+
+    const rawQuaternion = computeRingQuaternion(pos13, pos14);
+    const rawScale      = computeRingScale(pos13, pos14);
+
+    const { position: filteredPos, quaternion: filteredQuat } =
+      emaFilter.current.update(rawPosition, rawQuaternion);
+    const filteredScale = scaleFilter.current.update(rawScale);
+
+    group.visible = true;
+    group.position.copy(filteredPos);
+    group.quaternion.copy(filteredQuat);
+    group.scale.setScalar(filteredScale * RING_SCALE);
+  });
+
+  // Dispose on unmount
+  useEffect(() => {
+    return () => {
+      scene.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach((m) => m.dispose());
+          } else {
+            (mesh.material as THREE.Material)?.dispose();
+          }
+        }
+      });
+    };
+  }, [scene]);
+
+  return (
+    <>
+      <ambientLight intensity={1.2} />
+      <directionalLight position={[2, 4, 3]}   intensity={2.0} castShadow={false} />
+      <directionalLight position={[-2, 1, -1]} intensity={0.6} />
+
+      <group ref={groupRef} visible={false}>
+        <primitive object={scene} dispose={null} />
+      </group>
+    </>
   );
 }
 
@@ -226,8 +321,8 @@ function LoadingOverlay({
   error,
   hasCamera,
 }: {
-  progress: number;
-  error: string | null;
+  progress:  number;
+  error:     string | null;
   hasCamera: boolean;
 }) {
   return (
@@ -252,8 +347,8 @@ function LoadingOverlay({
           </div>
 
           <div className="text-sm text-white/60">
-            {!hasCamera && 'Waiting for camera permission…'}
-            {hasCamera && progress < 50 && 'Loading AI model (WASM)…'}
+            {!hasCamera                               && 'Waiting for camera permission…'}
+            {hasCamera && progress < 50               && 'Loading AI model (WASM)…'}
             {hasCamera && progress >= 50 && progress < 90 && 'Preparing 3D ring…'}
             {hasCamera && progress >= 90 && progress < 100 && 'Almost ready…'}
           </div>
@@ -262,186 +357,3 @@ function LoadingOverlay({
     </div>
   );
 }
-
-// ===========================================================================
-// RingScene — the R3F component that lives inside <Canvas>
-//
-// This is where the corrected 2D→3D projection and EMA filter are applied
-// every render frame via useFrame (no React state, no re-renders).
-// ===========================================================================
-interface RingSceneProps {
-  resultRef: React.RefObject<HandTrackingResult | null>;
-  ringModelPath: string;
-  onModelProgress: (progress: number) => void;
-}
-
-function RingScene({ resultRef, ringModelPath, onModelProgress }: RingSceneProps) {
-  const { camera, gl } = useThree();
-  const videoRef = useContext(VideoRefContext);
-
-  // ── Load the GLTF with DRACOLoader + progress callback ────────────────────
-  const { scene: ringScene } = useGLTFWithDraco(ringModelPath, onModelProgress);
-
-  // ── Ring transform refs (mutated in useFrame, not state) ──────────────────
-  const ringGroupRef = useRef<THREE.Group>(null);
-
-  // ── Filters — one filter instance per session, reset on tracking loss ─────
-  const emaFilter = useRef(new VelocityAdaptiveEMAFilter());
-  const scaleFilter = useRef(new ScalarEMAFilter(0.35));
-  const wasDetected = useRef(false);
-
-  // ── Per-frame position/rotation update ───────────────────────────────────
-  useFrame(() => {
-    const group = ringGroupRef.current;
-    if (!group) return;
-
-    const video = videoRef.current;
-    if (!video || video.videoWidth === 0) return;
-
-    const result = resultRef.current;
-
-    // No hand detected — hide ring, reset filter
-    if (!result || !result.detected || result.hands.length === 0) {
-      group.visible = false;
-      if (wasDetected.current) {
-        // Hard-reset the filter so the ring doesn't spring from an old position
-        emaFilter.current.reset();
-        scaleFilter.current.reset();
-        wasDetected.current = false;
-      }
-      return;
-    }
-
-    wasDetected.current = true;
-
-    const hand = result.hands[0];
-    const landmarks = hand.landmarks;
-
-    // Guard: we need at least LM14 (index 14)
-    if (!landmarks || landmarks.length < LM.RING_PIP + 1) return;
-
-    const lm13 = landmarks[LM.RING_MCP]; // base knuckle
-    const lm14 = landmarks[LM.RING_PIP]; // middle knuckle
-
-    const projParams = {
-      videoElement: video,
-      canvasElement: gl.domElement,
-      camera: camera as THREE.PerspectiveCamera,
-      isMirrored: true, // front camera is CSS-mirrored
-    };
-
-    // Project both knuckles into world space
-    const pos13 = landmarkToWorld(lm13, projParams);
-    const pos14 = landmarkToWorld(lm14, projParams);
-
-    // If either projection fails (ray parallel to plane), skip this frame
-    if (!pos13 || !pos14) return;
-
-    // ── Raw ring position: lerp along the MCP→PIP segment ─────────────────
-    // RING_SEGMENT_T = 0.25 → ring sits just above the base knuckle
-    const rawPosition = pos13.clone().lerp(pos14, RING_SEGMENT_T);
-
-    // ── Raw ring rotation ─────────────────────────────────────────────────
-    const rawQuaternion = computeRingQuaternion(pos13, pos14);
-
-    // ── Apply velocity-adaptive EMA filters ──────────────────────────────
-    const { position: filteredPos, quaternion: filteredQuat } =
-      emaFilter.current.update(rawPosition, rawQuaternion);
-
-    // ── Raw ring scale (self-calibrating from projected finger length) ────
-    const rawScale = computeRingScale(pos13, pos14);
-    const filteredScale = scaleFilter.current.update(rawScale);
-
-    // ── Apply to the Three.js group ───────────────────────────────────────
-    group.visible = true;
-    group.position.copy(filteredPos);
-    group.quaternion.copy(filteredQuat);
-    group.scale.setScalar(filteredScale);
-  });
-
-  return (
-    <>
-      {/* Ambient + directional light for the ring — adjust to your product */}
-      <ambientLight intensity={1.2} />
-      <directionalLight position={[2, 4, 3]} intensity={2} castShadow={false} />
-      <directionalLight position={[-2, 1, -1]} intensity={0.6} />
-
-      {/* The ring mesh */}
-      <group ref={ringGroupRef} visible={false}>
-        <primitive object={ringScene.clone(true)} dispose={null} />
-      </group>
-    </>
-  );
-}
-
-// ===========================================================================
-// Custom GLTF + Draco hook with progress reporting
-// ===========================================================================
-
-function useGLTFWithDraco(path: string, onProgress: (p: number) => void) {
-  const onProgressRef = useRef(onProgress);
-  useEffect(() => { onProgressRef.current = onProgress; }, [onProgress]);
-
-  // CHỈ GỌI NHƯ THẾ NÀY LÀ ĐỦ: Bỏ 'true, true' (tắt meshopt gây lỗi Uncaught Promise)
-  const gltf = useGLTF(path);
-
-  // Báo cáo 100% ngay khi Suspense resolve (model tải xong)
-  useEffect(() => {
-    onProgressRef.current(100);
-  }, []);
-
-  return gltf;
-}
-
-// ===========================================================================
-// Compress-3D helper script (instructions, not a React component)
-// ===========================================================================
-
-/*
-  HOW TO DRACO-COMPRESS YOUR RING MODEL FOR FASTER LOADS
-  ──────────────────────────────────────────────────────────────────────────────
-
-  The build script in package.json should include a "compress-3d" step that runs:
-
-    npx gltf-transform optimize assets/models/raw/ring.glb assets/models/ring.glb \
-      --compress draco
-
-  This uses @gltf-transform/functions (already installed) to Draco-compress all
-  mesh geometry in the GLB.  Typical compression ratios: 3-8×.
-
-  Example package.json scripts section:
-    {
-      "compress-3d": "node scripts/compress-models.mjs",
-      "build": "npm run compress-3d && tsc && vite build"
-    }
-
-  scripts/compress-models.mjs:
-  ──────────────────────────────────────────────────────────────────────────────
-  import { NodeIO } from '@gltf-transform/core';
-  import { draco } from '@gltf-transform/functions';
-  import { KHRONOS_EXTENSIONS } from '@gltf-transform/extensions';
-  import { existsSync } from 'fs';
-  import { mkdir } from 'fs/promises';
-
-  const RAW_DIR = 'assets/models/raw';
-  const OUT_DIR = 'public/models';  // Vite serves /public as /
-
-  if (!existsSync(RAW_DIR)) {
-    console.log('[compress-3d] No raw models directory — skipping.');
-    process.exit(0);
-  }
-
-  await mkdir(OUT_DIR, { recursive: true });
-
-  const io = new NodeIO().registerExtensions(KHRONOS_EXTENSIONS);
-
-  const doc = await io.read(`${RAW_DIR}/ring.glb`);
-  await doc.transform(draco({ method: 'edgebreaker' }));
-  await io.write(`${OUT_DIR}/ring.glb`, doc);
-
-  console.log('[compress-3d] ✓ ring.glb compressed with Draco');
-  ──────────────────────────────────────────────────────────────────────────────
-
-  After compression, the DRACOLoader in the Three.js code above will automatically
-  decompress the geometry at load time using the WASM decoder in /public/draco/.
-*/
