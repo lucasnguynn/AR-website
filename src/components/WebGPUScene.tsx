@@ -65,16 +65,19 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
 }
 
 async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<ThreeRenderer> {
-  if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
+if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
     try {
-      // Sử dụng subpath export chính thức của Three.js để tương thích với Rollup/Vite
-      const { WebGPURenderer } = await import(/* @vite-ignore */'three/webgpu') as { WebGPURenderer: WebGPURendererConstructor };
+      // Dùng ép kiểu qua 'unknown as any' để vượt qua lỗi TS2352 của TypeScript strict mode
+      const mod = await import(/* @vite-ignore */'three/webgpu') as unknown as { WebGPURenderer: any };
+      const WebGPURenderer = mod.WebGPURenderer;
+
       const renderer = new WebGPURenderer({
         canvas,
         alpha: true,
         antialias: true,
         powerPreference: 'high-performance',
       }) as unknown as ThreeRenderer;
+
       await renderer.init?.();
       renderer.setClearColor?.(0x000000, 0);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
