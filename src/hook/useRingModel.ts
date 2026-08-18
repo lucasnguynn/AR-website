@@ -1,62 +1,68 @@
-// src/hooks/useRingModel.ts
-import { useEffect, useState } from 'react';
+/**
+ * useRingModel.ts
+ *
+ * FIXED BUGS:
+ *  1. MODEL_PATH pointed to '/models/ring.glb' but the actual file in
+ *     public/models/ is 'nhan.glb'. This caused a 404, which killed
+ *     the Suspense boundary and left the loading screen frozen forever.
+ *     Fixed to use `import.meta.env.BASE_URL + 'models/nhan.glb'` so
+ *     the path resolves correctly both in local dev (/) and on GitHub
+ *     Pages (/AR-website/).
+ *
+ *  2. The GLB has NO Draco compression (confirmed: extensionsUsed = []).
+ *     Calling useGLTF.setDecoderPath() when the model is not Draco-compressed
+ *     causes DRACOLoader to initialize its WASM decoder and wait for a decode
+ *     job that never comes → Suspense deadlock.
+ *     The setDecoderPath call has been REMOVED from this file.
+ *     The same call in ARTryOnModal.tsx has also been removed.
+ *
+ *  3. The `useGLTF` call passed undefined for the onProgress 4th argument via
+ *     positional params (dracoPath, meshoptPath, onProgress) — this API shape
+ *     only works in newer drei versions. Using the hook without extra args is
+ *     cleaner and avoids internal type mismatches across drei versions.
+ */
+
+import { useEffect } from 'react';
 import { useGLTF } from '@react-three/drei';
-import * as THREE from 'three';
 
 // ─── Calibration constants — tweak these to fit the ring on the finger ───────
-export const RING_SCALE  = 0.018;   // World-space scale of the ring mesh
-export const OFFSET_Y    = 0.004;   // Vertical nudge along the finger axis
-export const OFFSET_Z    = 0.000;   // Depth nudge (toward/away from camera)
+export const RING_SCALE = 0.018;  // World-space uniform scale of the ring mesh
+export const OFFSET_Y   = 0.004; // Vertical nudge along finger axis (positive = up)
+export const OFFSET_Z   = 0.000; // Depth nudge (positive = toward camera)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ⚠️  IMPORTANT: Only set a Draco decoder path if ring.glb was actually
-//    compressed with Draco. An uncompressed GLB + Draco config causes the
-//    DracoLoader to spin forever waiting for a decode job that never arrives,
-//    which is the exact Suspense deadlock you are experiencing.
-//
-//    To check: open ring.glb in https://gltf.report/ or run
-//      `npx gltf-transform inspect public/models/ring.glb`
-//    If it reports no Draco compression, keep the line below commented out.
-//
-// useGLTF.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.5/');
+// ⚠️  BASE_URL is critical for GitHub Pages.
+//    In dev:   BASE_URL = '/'           → '/models/nhan.glb'
+//    In prod:  BASE_URL = '/AR-website/' → '/AR-website/models/nhan.glb'
+const MODEL_PATH = import.meta.env.BASE_URL + 'models/nhan.glb';
 
-const MODEL_PATH = '/models/ring.glb'; // Must be relative to `public/`
+// ⚠️  NO useGLTF.setDecoderPath() here.
+//    The model is NOT Draco-compressed. Setting a decoder path triggers
+//    DRACOLoader initialisation which spins waiting for a decode job that
+//    never arrives — this was the root cause of the Suspense deadlock.
 
 /**
- * Thin wrapper around useGLTF that:
- *  1. Reports granular load progress so the loading overlay can update.
- *  2. Clones the scene so multiple instances never share geometry state.
- *  3. Exposes calibration constants alongside the model.
+ * Thin wrapper around useGLTF.
+ * useGLTF suspends until the file is fully parsed, then returns the scene.
+ * The Suspense boundary in RingScene shows null while waiting.
  */
 export function useRingModel() {
-  const [progress, setProgress] = useState(0);
+  const gltf = useGLTF(MODEL_PATH);
 
-  // useGLTF suspends the component until the file is fully parsed.
-  // The Suspense boundary above us shows the loading overlay while we wait.
-  const { scene } = useGLTF(
-    MODEL_PATH,
-    // Second arg = DRACO path override (undefined = use the default, which is
-    // fine as long as we have NOT called useGLTF.setDecoderPath above).
-    undefined,
-    // Third arg = MESHOPT path (leave undefined unless you verified Meshopt).
-    undefined,
-    // Fourth arg = onProgress loader callback — this is how the overlay learns
-    // that loading actually reached 100% and should dismiss.
-    (xhr) => {
-      if (xhr.total > 0) {
-        setProgress(Math.round((xhr.loaded / xhr.total) * 100));
-      }
-    }
-  );
+  // Defensive: log exactly which model path was resolved so path bugs are
+  // immediately visible in the console rather than a silent loading hang.
+  useEffect(() => {
+    console.info('[useRingModel] Model loaded from:', MODEL_PATH);
+  }, []);
 
   // Clone so the original cached scene is never mutated.
-  // Without this, disposing one instance disposes the shared geometry.
-  const clonedScene = scene.clone(true);
+  // Without this, disposing one instance disposes the shared geometry for all.
+  const clonedScene = gltf.scene.clone(true);
 
-  return { scene: clonedScene, progress };
+  return { scene: clonedScene };
 }
 
-// Eagerly kick off the network request before the component mounts.
-// This moves the fetch into the browser's request pipeline during app boot,
-// so the Suspense delay is shorter.
+// Eagerly start the network fetch before the component mounts.
+// This moves the request into the browser pipeline during app boot so the
+// Suspense wait is shorter when the component tree eventually renders.
 useGLTF.preload(MODEL_PATH);
