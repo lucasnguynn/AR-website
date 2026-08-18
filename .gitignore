@@ -1,4 +1,3 @@
-```
 # Dependencies
 node_modules/
 
@@ -7,10 +6,6 @@ dist/
 build/
 *.js.map
 *.tsbuildinfo
-
-# Logs and temp files
-*.log
-*.tmp
 
 # Environment
 .env
@@ -22,6 +17,10 @@ build/
 .idea/
 *.swp
 *.swo
+*.tmp
+
+# Logs
+*.log
 
 # Python
 __pycache__/
@@ -34,35 +33,83 @@ venv/
 .venv/
 pip-log.txt
 pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git/modules/
-*.sublime-workspace
-.pytest_cache/
-.mypy_cache/
-.hypothesis/
 
-# Compiled and binary files
-*.o
-*.obj
+# Coverage
+coverage/
+htmlcov/
+.coverage
+*.coverage
+
+# Testing
+.nyc_output/
+coverage-final.json
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Archives
+*.zip
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.7z
+*.rar
+*.gz
+*.bz2
+*.xz
+*.zst
+
+# Compiled binaries
 *.exe
 *.dll
 *.so
+*.dylib
+*.class
+*.o
+*.obj
 *.a
+*.lib
 *.out
 
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-```
+# Gradle
+.gradle/
+build/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# PyTest
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Bazel
+bazel-*
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.manifest
+Makefile
+ninja_log.txt
+compile_commands.json
+
+# Go
+*.exe~

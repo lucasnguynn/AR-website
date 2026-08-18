@@ -1,20 +1,22 @@
 /**
- * useARStore.ts — UPGRADED
+ * useARStore.ts
  *
- * New additions vs original:
- *  - sessionRef: stores the live ARSessionManager instance so components
- *    can call session.switchCamera() without prop-drilling.
- *  - currentFacingMode: 'environment' | 'user' — UI reads this to show
- *    the correct camera-flip icon.
- *  - setSessionRef / setFacingMode actions.
- *
- * All original state/actions preserved verbatim.
+ * Centralized Zustand store for AR UI state.
+ * Manages modal visibility, camera permission, device class,
+ * loading states, error handling, and fallback modes.
  */
 
 import { create } from 'zustand';
 import { DeviceClass } from '../utils/DeviceProfiler';
-import { ARSessionState } from '../ARSessionManager';
-import type { ARSessionManager, FacingMode } from '../ARSessionManager';
+
+export type ARStatus =
+  | 'idle'
+  | 'initializing'
+  | 'camera-ready'
+  | 'tracking'
+  | 'lost'
+  | 'error'
+  | 'closing';
 
 export type FallbackMode =
   | 'NONE'
@@ -26,19 +28,12 @@ interface ARUIState {
   modalOpen: boolean;
   hasCameraPermission: boolean;
   deviceClass: DeviceClass | null;
-  arState: ARSessionState;
+  arState: ARStatus;
   activeFallbackMode: FallbackMode;
   isLoading: boolean;
   modelLoadingProgress: number;
   errorMessage: string | null;
   snapshotRef: { current: (() => string | null) | null };
-
-  /** Live ARSessionManager — NOT serialised, used for imperative calls */
-  sessionRef: ARSessionManager | null;
-
-  /** Current camera facing mode reflected from ARSessionManager */
-  currentFacingMode: FacingMode;
-
   ringScale: number;
 }
 
@@ -47,7 +42,7 @@ interface ARUIActions {
   closeModal: () => void;
   setCameraPermission: (granted: boolean) => void;
   setDeviceClass: (deviceClass: DeviceClass) => void;
-  setARState: (state: ARSessionState) => void;
+  setARState: (state: ARStatus) => void;
   activateFallback: (mode: FallbackMode) => void;
   deactivateFallback: () => void;
   setLoading: (loading: boolean) => void;
@@ -56,26 +51,18 @@ interface ARUIActions {
   reset: () => void;
   setSnapshotRef: (fn: (() => string | null) | null) => void;
   setRingScale: (scale: number) => void;
-
-  /** Store the live ARSessionManager so any component can call switchCamera() */
-  setSessionRef: (session: ARSessionManager | null) => void;
-
-  /** Update the reflected facing mode (called after a successful switchCamera()) */
-  setFacingMode: (facing: FacingMode) => void;
 }
 
 const initialState: ARUIState = {
   modalOpen: false,
   hasCameraPermission: false,
   deviceClass: null,
-  arState: ARSessionState.IDLE,
+  arState: 'idle',
   activeFallbackMode: 'NONE',
   isLoading: false,
   modelLoadingProgress: 0,
   errorMessage: null,
   snapshotRef: { current: null },
-  sessionRef: null,
-  currentFacingMode: 'environment',
   ringScale: 1.0,
 };
 
@@ -101,7 +88,7 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
 
   setARState: (state) => {
     set({ arState: state });
-    if (state === ARSessionState.ERROR) {
+    if (state === 'error') {
       set({ errorMessage: 'AR session encountered an error' });
       get().activateFallback('CAMERA_ERROR');
     }
@@ -119,7 +106,7 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
   setError: (message) => {
     set({
       errorMessage: message,
-      arState: message ? ARSessionState.ERROR : get().arState,
+      arState: message ? 'error' : get().arState,
     });
     if (message) get().activateFallback('CAMERA_ERROR');
   },
@@ -129,27 +116,21 @@ export const useARStore = create<ARUIState & ARUIActions>()((set, get) => ({
   setSnapshotRef: (fn) => set({ snapshotRef: { current: fn } }),
 
   setRingScale: (scale) => set({ ringScale: scale }),
-
-  setSessionRef: (session) => set({ sessionRef: session }),
-
-  setFacingMode: (facing) => set({ currentFacingMode: facing }),
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Selectors
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const selectModalOpen          = (s: ARUIState & ARUIActions) => s.modalOpen;
-export const selectHasPermission      = (s: ARUIState & ARUIActions) => s.hasCameraPermission;
-export const selectDeviceClass        = (s: ARUIState & ARUIActions) => s.deviceClass;
-export const selectARState            = (s: ARUIState & ARUIActions) => s.arState;
-export const selectFallbackMode       = (s: ARUIState & ARUIActions) => s.activeFallbackMode;
-export const selectIsLoading          = (s: ARUIState & ARUIActions) => s.isLoading;
-export const selectModelLoadingProgress=(s: ARUIState & ARUIActions) => s.modelLoadingProgress;
-export const selectErrorMessage       = (s: ARUIState & ARUIActions) => s.errorMessage;
-export const selectShouldShowFallback = (s: ARUIState & ARUIActions) =>
+export const selectModalOpen            = (s: ARUIState & ARUIActions) => s.modalOpen;
+export const selectHasPermission        = (s: ARUIState & ARUIActions) => s.hasCameraPermission;
+export const selectDeviceClass          = (s: ARUIState & ARUIActions) => s.deviceClass;
+export const selectARState              = (s: ARUIState & ARUIActions) => s.arState;
+export const selectFallbackMode         = (s: ARUIState & ARUIActions) => s.activeFallbackMode;
+export const selectIsLoading            = (s: ARUIState & ARUIActions) => s.isLoading;
+export const selectModelLoadingProgress = (s: ARUIState & ARUIActions) => s.modelLoadingProgress;
+export const selectErrorMessage         = (s: ARUIState & ARUIActions) => s.errorMessage;
+export const selectShouldShowFallback   = (s: ARUIState & ARUIActions) =>
   s.activeFallbackMode !== 'NONE';
-export const selectSnapshotRef        = (s: ARUIState & ARUIActions) => s.snapshotRef;
-export const selectRingScale          = (s: ARUIState & ARUIActions) => s.ringScale;
-export const selectSessionRef         = (s: ARUIState & ARUIActions) => s.sessionRef;
-export const selectCurrentFacingMode  = (s: ARUIState & ARUIActions) => s.currentFacingMode;
+export const selectSnapshotRef          = (s: ARUIState & ARUIActions) => s.snapshotRef;
+export const selectRingScale            = (s: ARUIState & ARUIActions) => s.ringScale;
