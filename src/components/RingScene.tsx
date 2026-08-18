@@ -36,6 +36,13 @@ import {
 } from '../utils/coordinateMapping';
 import { RingTrackingStabilizer } from '../utils/trackingStabilizer';
 
+const FINGER_OCCLUDER_RENDER_ORDER = -1;
+const RING_RENDER_ORDER = 0;
+const FINGER_OCCLUDER_DEBUG_COLOR = '#D5FD50';
+const FINGER_OCCLUDER_RADIAL_SEGMENTS = 24;
+const FINGER_OCCLUDER_RADIUS_FRACTION = 0.18;
+const FINGER_OCCLUDER_HEIGHT_FRACTION = 1.18;
+
 interface RingSceneProps {
   resultRef: React.RefObject<HandTrackingResult | null>;
 }
@@ -46,6 +53,7 @@ interface RingSceneProps {
 function RingMesh({ resultRef }: RingSceneProps) {
   const { camera, gl } = useThree();
   const groupRef   = useRef<THREE.Group>(null);
+  const occluderRef = useRef<THREE.Mesh>(null);
   const { scene }  = useRingModel();
 
   // Tracking stabilizer — state machine + outlier rejection + adaptive filters
@@ -63,7 +71,8 @@ function RingMesh({ resultRef }: RingSceneProps) {
   // ── Per-frame ring positioning (mutated refs — no React state, no re-renders)
   useFrame(() => {
     const group = groupRef.current;
-    if (!group) return;
+    const occluder = occluderRef.current;
+    if (!group || !occluder) return;
 
     // We need a valid video element to project 2D landmarks → 3D world space.
     // The canvas's domElement gives us the rendering surface dimensions.
@@ -75,6 +84,7 @@ function RingMesh({ resultRef }: RingSceneProps) {
     if (!result || !result.detected || result.hands.length === 0) {
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
+      occluder.visible = stabilized.visible;
       return;
     }
 
@@ -100,6 +110,7 @@ function RingMesh({ resultRef }: RingSceneProps) {
     if (!projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) {
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
+      occluder.visible = stabilized.visible;
       return;
     }
 
@@ -114,6 +125,7 @@ function RingMesh({ resultRef }: RingSceneProps) {
     if (poseScale === null) {
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
+      occluder.visible = stabilized.visible;
       return;
     }
 
@@ -130,7 +142,17 @@ function RingMesh({ resultRef }: RingSceneProps) {
     });
 
     group.visible = stabilized.visible;
+    occluder.visible = stabilized.visible;
     if (!stabilized.visible) return;
+
+    const mcpToPip = projectedLandmarks.current[LM.RING_MCP].distanceTo(projectedLandmarks.current[LM.RING_PIP]);
+    const occluderRadius = Math.max(mcpToPip * FINGER_OCCLUDER_RADIUS_FRACTION, 0.004);
+    const occluderHeight = Math.max(mcpToPip * FINGER_OCCLUDER_HEIGHT_FRACTION, occluderRadius * 3);
+
+    occluder.position.copy(stabilized.position);
+    occluder.quaternion.copy(stabilized.quaternion);
+    occluder.scale.set(occluderRadius * 2, occluderHeight, occluderRadius * 2);
+
     group.position.copy(stabilized.position);
     group.quaternion.copy(stabilized.quaternion);
     group.scale.setScalar(stabilized.scale * RING_SCALE);
@@ -138,6 +160,10 @@ function RingMesh({ resultRef }: RingSceneProps) {
 
   // Dispose cloned geometry/materials on unmount to prevent GPU memory leaks.
   useEffect(() => {
+    scene.traverse((object) => {
+      object.renderOrder = RING_RENDER_ORDER;
+    });
+
     return () => {
       disposeRingScene(scene);
     };
@@ -151,7 +177,12 @@ function RingMesh({ resultRef }: RingSceneProps) {
       <rectAreaLight position={[0, 1.4, 1.6]} width={1.6} height={0.9} intensity={1.7} />
 
       {/* Ring mesh — hidden until a hand is detected */}
-      <group ref={groupRef} visible={false}>
+      <mesh ref={occluderRef} visible={false} renderOrder={FINGER_OCCLUDER_RENDER_ORDER} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.5, 0.5, 1, FINGER_OCCLUDER_RADIAL_SEGMENTS, 1, false]} />
+        <meshBasicMaterial color={FINGER_OCCLUDER_DEBUG_COLOR} colorWrite={false} depthWrite={true} depthTest={true} />
+      </mesh>
+
+      <group ref={groupRef} visible={false} renderOrder={RING_RENDER_ORDER}>
         <primitive object={scene} dispose={null} />
       </group>
     </>
