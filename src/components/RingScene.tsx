@@ -17,10 +17,17 @@
  */
 
 import React, { Suspense, useRef, useEffect, useContext } from 'react';
+import { Environment } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ModelErrorBoundary } from './ModelErrorBoundary';
-import { useRingModel, RING_SCALE, OFFSET_Y, OFFSET_Z } from '../hook/useRingModel';
+import {
+  disposeRingScene,
+  useRingModel,
+  RING_SCALE,
+  OFFSET_Y,
+  OFFSET_Z,
+} from '../hook/useRingModel';
 import type { HandTrackingResult } from '../types/ar.types';
 import { LM } from '../types/ar.types';
 import {
@@ -132,26 +139,16 @@ function RingMesh({ resultRef }: RingSceneProps) {
   // Dispose cloned geometry/materials on unmount to prevent GPU memory leaks.
   useEffect(() => {
     return () => {
-      scene.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (mesh.isMesh) {
-          mesh.geometry?.dispose();
-          if (Array.isArray(mesh.material)) {
-            mesh.material.forEach((m) => m.dispose());
-          } else {
-            (mesh.material as THREE.Material)?.dispose();
-          }
-        }
-      });
+      disposeRingScene(scene);
     };
   }, [scene]);
 
   return (
     <>
-      {/* Lighting for the ring — adjust intensities to match your scene */}
-      <ambientLight intensity={1.2} />
-      <directionalLight position={[2, 4, 3]}   intensity={2.0} castShadow={false} />
-      <directionalLight position={[-2, 1, -1]} intensity={0.6} />
+      <Environment preset="city" background={false} environmentIntensity={0.85} />
+      <ambientLight intensity={0.35} />
+      <hemisphereLight args={['#fff7e8', '#24222a', 0.55]} />
+      <rectAreaLight position={[0, 1.4, 1.6]} width={1.6} height={0.9} intensity={1.7} />
 
       {/* Ring mesh — hidden until a hand is detected */}
       <group ref={groupRef} visible={false}>
