@@ -53,6 +53,9 @@ export function useHandTracking(): UseHandTrackingReturn {
   const isPausedRef = useRef(false);
   const resultRef = useRef<HandTrackingResult | null>(null);
   const metricsRef = useRef<TrackingMetrics | null>(null);
+  const workerReadyRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const inferenceTimerRef = useRef<number | null>(null);
 
   const [loadingState, setLoadingState] = useState<LoadingState>({
     mediapipe: 0,
@@ -86,15 +89,17 @@ export function useHandTracking(): UseHandTrackingReturn {
         }
 
         case 'READY':
+          workerReadyRef.current = true;
           setLoadingState((prev) => ({
             ...prev,
             mediapipe: 100,
-            ready: prev.model >= 100,
+            ready: true,
           }));
           break;
 
         case 'RESULT':
           resultRef.current = msg.payload;
+          inFlightRef.current = false;
           break;
 
         case 'PAUSED':
@@ -114,6 +119,7 @@ export function useHandTracking(): UseHandTrackingReturn {
             error: errorMessage,
             ready: false,
           }));
+          inFlightRef.current = false;
           break;
         }
       }
@@ -138,13 +144,19 @@ export function useHandTracking(): UseHandTrackingReturn {
         },
         { once: true },
       );
+      if (inferenceTimerRef.current !== null) {
+        window.clearInterval(inferenceTimerRef.current);
+        inferenceTimerRef.current = null;
+      }
+      workerReadyRef.current = false;
+      inFlightRef.current = false;
       workerRef.current = null;
     };
   }, []);
 
   // ── Frame processing callback (called by CameraSystem) ───────────────────
   const processFrame = useCallback(() => {
-    if (!activeRef.current || isPausedRef.current) return;
+    if (!activeRef.current || isPausedRef.current || !workerReadyRef.current || inFlightRef.current) return;
 
     const video = videoRef.current;
     const worker = workerRef.current;
@@ -153,6 +165,8 @@ export function useHandTracking(): UseHandTrackingReturn {
 
     const frame = captureVideoFrame(video);
     if (!frame) return;
+
+    inFlightRef.current = true;
 
     // Transfer the buffer to avoid copying pixel data every frame.
     worker.postMessage(
@@ -169,16 +183,16 @@ export function useHandTracking(): UseHandTrackingReturn {
     );
   }, []);
 
-  // ── Register frame callback with camera system when worker is ready ──────
+  // ── Decoupled inference cadence: worker tracks at ~30 FPS while R3F renders independently.
   useEffect(() => {
-    if (loadingState.mediapipe >= 100 && loadingState.ready) {
-      // Camera system will call this function when frames are available
-      (window as any).__AR_FRAME_CALLBACK__ = processFrame;
-    }
+    inferenceTimerRef.current = window.setInterval(processFrame, 1000 / 30);
     return () => {
-      delete (window as any).__AR_FRAME_CALLBACK__;
+      if (inferenceTimerRef.current !== null) {
+        window.clearInterval(inferenceTimerRef.current);
+        inferenceTimerRef.current = null;
+      }
     };
-  }, [processFrame, loadingState.mediapipe, loadingState.ready]);
+  }, [processFrame]);
 
   // ── Public API ────────────────────────────────────────────────────────────
 
@@ -188,7 +202,7 @@ export function useHandTracking(): UseHandTrackingReturn {
       activeRef.current = true;
       isPausedRef.current = false;
       setLoadingState((prev) => ({ ...prev, camera: true }));
-      // Frame loop is now managed by CameraSystem
+      // Inference is paced by this hook's ~30 FPS interval; R3F renders independently.
     },
     [],
   );
