@@ -21,8 +21,6 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import type { HandTrackingResult, LoadingState, WorkerOutMessage, TrackingMetrics } from '../types/ar.types';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 
-// Vite worker import — bundled as a separate chunk for code splitting
-import MediapipeWorker from '../workers/mediapipe.worker?worker';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Hook return type
@@ -66,7 +64,7 @@ export function useHandTracking(): UseHandTrackingReturn {
 
   // ── Spawn worker and wire up message handler ─────────────────────────────
   useEffect(() => {
-    const worker = new MediapipeWorker();
+    const worker = new Worker(new URL('../workers/mediapipe.worker.ts', import.meta.url));
     workerRef.current = worker;
 
     worker.addEventListener('message', (e: MessageEvent<WorkerOutMessage>) => {

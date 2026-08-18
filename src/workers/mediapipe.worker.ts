@@ -3,17 +3,8 @@
  *
  * Web Worker for MediaPipe Hand Landmark detection.
  * 
- * PRODUCTION-READY IMPLEMENTATION:
- * - Deterministic lifecycle: initialization, ready, processing, pause/resume, destroy, error
- * - Backpressure: at most one active inference + one newest pending frame
- * - Frame queue management: drops obsolete frames instead of processing stale data
- * - Memory safety: proper cleanup, no leaks, transferable objects
- * - Confidence-aware output: normalized tracking result structure
- * 
- * TARGET CONFIGURATION:
- * - One hand tracking (optimized for performance)
- * - Ring finger focus: landmarks 0, 5, 13, 14, 15, 16, 17
- * - High-confidence thresholds for reliable detection
+ * Runs as a classic worker so MediaPipe can use importScripts() internally
+ * while resolving its WASM assets from the CDN.
  */
 
 import {
@@ -57,7 +48,7 @@ interface WorkerOutMessage {
 // Constants
 // ──────────────────────────────────────────────────────────────────────────────
 
-const MEDIAPIPE_WASM_CDN_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+const MEDIAPIPE_WASM_CDN_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
 const HAND_LANDMARKER_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 // Production-tuned confidence thresholds for ring finger tracking
@@ -156,23 +147,12 @@ async function initializeMediaPipe(): Promise<void> {
       payload: { phase: 'wasm', progress: 0 },
     });
 
-    // Step 1: Resolve the vision tasks file set structure from CDN
+    // Step 1: Resolve the vision tasks file set structure from CDN.
+    // This worker is instantiated as a classic worker so MediaPipe can call
+    // importScripts() internally while loading the WASM wrapper.
     const wasmFileset = await FilesetResolver.forVisionTasks(
       MEDIAPIPE_WASM_CDN_URL
     );
-
-    // CRITICAL WORKAROUND: For Vite + ES Module workers, importScripts inside MediaPipe fails.
-    // We manually fetch the loader script and evaluate it so `self.ModuleFactory` gets populated.
-    if (!(self as any).ModuleFactory && wasmFileset.wasmLoaderPath) {
-      try {
-        const response = await fetch(wasmFileset.wasmLoaderPath);
-        const loaderText = await response.text();
-        // Evaluate the loader script in the worker scope to initialize ModuleFactory
-        (0, eval)(loaderText);
-      } catch (evalErr) {
-        console.warn('[MediaPipe Worker] Manual loader injection warning:', evalErr);
-      }
-    }
 
     postMessageSafe({
       type: 'PROGRESS',
