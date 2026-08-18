@@ -24,7 +24,6 @@ import { ModelErrorBoundary } from './ModelErrorBoundary';
 import {
   disposeRingScene,
   useRingModel,
-  RING_SCALE,
   OFFSET_Y,
   OFFSET_Z,
 } from '../hook/useRingModel';
@@ -40,7 +39,8 @@ import type { RingPoseSample } from '../utils/trackingStabilizer';
 import { useRayTracingPipeline } from './RayTracingPipeline';
 
 const FINGER_OCCLUDER_RENDER_ORDER = -1;
-const RING_RENDER_ORDER = 0;
+const RING_RENDER_ORDER = 20;
+const MOBILE_SAFE_RING_SCALE = 0.015;
 const FINGER_OCCLUDER_DEBUG_COLOR = '#D5FD50';
 const FINGER_OCCLUDER_RADIAL_SEGMENTS = 24;
 const FINGER_OCCLUDER_RADIUS_FRACTION = 0.18;
@@ -66,6 +66,7 @@ interface RingSceneProps {
 function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false, ambientLight }: RingSceneProps) {
   const { camera, gl } = useThree();
   const groupRef   = useRef<THREE.Group>(null);
+  const debugBoxRef = useRef<THREE.Mesh>(null);
   const occluderRef = useRef<THREE.Mesh>(null);
   const { scene }  = useRingModel();
   useRayTracingPipeline({ enabled: enableRayTracing, ringRoot: scene });
@@ -105,8 +106,9 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
   // ── Per-frame ring positioning (mutated refs — no React state, no re-renders)
   useFrame(() => {
     const group = groupRef.current;
+    const debugBox = debugBoxRef.current;
     const occluder = occluderRef.current;
-    if (!group || !occluder) return;
+    if (!group || !debugBox || !occluder) return;
 
     const canvas = gl.domElement;
     if (!canvas) return;
@@ -117,6 +119,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
       occluder.visible = stabilized.visible;
+      debugBox.visible = stabilized.visible;
       return;
     }
 
@@ -139,6 +142,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
       occluder.visible = stabilized.visible;
+      debugBox.visible = stabilized.visible;
       return;
     }
 
@@ -154,6 +158,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
       occluder.visible = stabilized.visible;
+      debugBox.visible = stabilized.visible;
       return;
     }
 
@@ -170,6 +175,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
 
     group.visible = stabilized.visible;
     occluder.visible = stabilized.visible;
+    debugBox.visible = stabilized.visible;
     if (!stabilized.visible) return;
 
     const mcpToPip = projectedLandmarks.current[LM.RING_MCP].distanceTo(projectedLandmarks.current[LM.RING_PIP]);
@@ -180,9 +186,13 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
     occluder.quaternion.copy(stabilized.quaternion);
     occluder.scale.set(occluderRadius * 2, occluderHeight, occluderRadius * 2);
 
+    debugBox.position.copy(stabilized.position);
+    debugBox.quaternion.copy(stabilized.quaternion);
+    debugBox.scale.set(1, 1, 1);
+
     group.position.copy(stabilized.position);
     group.quaternion.copy(stabilized.quaternion);
-    group.scale.setScalar(stabilized.scale * RING_SCALE);
+    group.scale.set(MOBILE_SAFE_RING_SCALE, MOBILE_SAFE_RING_SCALE, MOBILE_SAFE_RING_SCALE);
   });
 
   // Dispose cloned geometry/materials on unmount to prevent GPU memory leaks.
@@ -207,6 +217,11 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
       <mesh ref={occluderRef} visible={false} renderOrder={FINGER_OCCLUDER_RENDER_ORDER} rotation={[Math.PI / 2, 0, 0]}>
         <cylinderGeometry args={[0.5, 0.5, 1, FINGER_OCCLUDER_RADIAL_SEGMENTS, 1, false]} />
         <meshBasicMaterial color={FINGER_OCCLUDER_DEBUG_COLOR} colorWrite={false} depthWrite={true} depthTest={true} />
+      </mesh>
+
+      <mesh ref={debugBoxRef} visible={false} renderOrder={RING_RENDER_ORDER + 1}>
+        <boxGeometry args={[0.02, 0.02, 0.02]} />
+        <meshBasicMaterial color="#ff0000" wireframe depthTest={false} depthWrite={false} transparent />
       </mesh>
 
       <group ref={groupRef} visible={false} renderOrder={RING_RENDER_ORDER}>

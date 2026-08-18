@@ -212,7 +212,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
       <div className="relative h-full w-full max-w-[480px] overflow-hidden bg-black" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <video
           ref={videoRef}
-          className="absolute inset-0 h-full w-full object-cover"
+          className="absolute inset-0 z-0 h-full w-full object-cover"
           style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)' }}
           aria-label="Local camera preview for virtual ring try-on"
           playsInline

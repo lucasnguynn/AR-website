@@ -103,7 +103,14 @@ export class WebXRManager {
     if (!this.referenceSpace) throw new Error('WebXRManager.update called before start().');
     const pose = frame.getViewerPose(this.referenceSpace) ?? null;
     let depth: XRDepthInformationLike | null = null;
-    if (pose && frame.getDepthInformation && pose.views.length > 0) depth = frame.getDepthInformation(pose.views[0]) ?? null;
+    if (pose && frame.getDepthInformation && pose.views.length > 0) {
+      try {
+        depth = frame.getDepthInformation(pose.views[0]) ?? null;
+      } catch (error) {
+        console.warn('WebXR depth unavailable; continuing without true-depth occlusion.', error);
+        depth = null;
+      }
+    }
     this.handCount = 0;
     if (this.session) {
       for (const source of this.session.inputSources as Iterable<XRInputSourceWithHand>) {
