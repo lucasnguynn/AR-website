@@ -43,7 +43,7 @@ import * as THREE from 'three';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
-import { useHandTracking } from '../hooks/useHandTracking';
+import { useHandTracking } from '../hook/useHandTracking';
 import {
   landmarkToWorld,
   computeRingQuaternion,
