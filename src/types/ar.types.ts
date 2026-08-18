@@ -21,6 +21,8 @@ export type WorkerInMessage =
         timestamp: number;
       };
     }
+  | { type: 'PAUSE' }
+  | { type: 'RESUME' }
   | { type: 'DESTROY' };
 
 /** Messages sent FROM the worker TO the main thread */
@@ -36,7 +38,9 @@ export type WorkerOutMessage =
       };
     }
   | { type: 'RESULT'; payload: HandTrackingResult }
-  | { type: 'ERROR'; payload: { message: string } };
+  | { type: 'ERROR'; payload: { message: string } }
+  | { type: 'PAUSED' }
+  | { type: 'DESTROYED' };
 
 // --------------------------------------------------------------------------
 // Hand tracking data
@@ -54,7 +58,7 @@ export interface NormalisedLandmark {
   visibility?: number;
 }
 
-/** Per-hand result: 21 landmarks + handedness label */
+/** Per-hand result with normalized structure */
 export interface HandResult {
   /** All 21 MediaPipe landmarks */
   landmarks: NormalisedLandmark[];
@@ -70,6 +74,8 @@ export interface HandTrackingResult {
   hands: HandResult[];
   /** Whether any hand was detected */
   detected: boolean;
+  /** Timestamp of the processed frame */
+  frameTimestamp?: number;
 }
 
 // --------------------------------------------------------------------------
@@ -118,3 +124,22 @@ export const LM = {
   RING_DIP: 15, RING_TIP: 16,
   PINKY_MCP: 17, PINKY_PIP: 18, PINKY_DIP: 19, PINKY_TIP: 20,
 } as const;
+
+// --------------------------------------------------------------------------
+// Performance metrics (optional, for debugging/profiling)
+// --------------------------------------------------------------------------
+
+export interface TrackingMetrics {
+  /** Total frames received */
+  frameCount: number;
+  /** Frames dropped due to backpressure or staleness */
+  droppedFrames: number;
+  /** Frames successfully processed */
+  processedFrames: number;
+  /** Last inference time in milliseconds */
+  lastInferenceMs: number;
+  /** Running average inference time */
+  avgInferenceMs: number;
+  /** Estimated inference FPS */
+  inferenceFps: number;
+}

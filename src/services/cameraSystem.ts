@@ -27,7 +27,7 @@ import type { FacingMode } from './cameraTypes';
 // Types
 // ──────────────────────────────────────────────────────────────────────────────
 
-export { FacingMode } from './cameraTypes';
+export type { FacingMode } from './cameraTypes';
 
 export interface CameraMetadata {
   videoWidth: number;

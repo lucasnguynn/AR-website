@@ -10,6 +10,7 @@
 import {
   FilesetResolver,
   HandLandmarker,
+  type NormalizedLandmark as MPLandmark,
 } from '@mediapipe/tasks-vision';
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -17,7 +18,7 @@ import {
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface WorkerInMessage {
-  type: 'INIT' | 'DETECT' | 'DESTROY';
+  type: 'INIT' | 'DETECT' | 'DESTROY' | 'PAUSE' | 'RESUME';
   payload?: {
     buffer: ArrayBuffer;
     width: number;
@@ -26,12 +27,21 @@ interface WorkerInMessage {
   };
 }
 
+interface TrackingResult {
+  handedness: string;
+  landmarks: Array<{ x: number; y: number; z: number; visibility?: number }>;
+  worldLandmarks: Array<{ x: number; y: number; z: number; visibility?: number }> | null;
+  confidence: number;
+  timestamp: number;
+}
+
 interface WorkerOutMessage {
-  type: 'READY' | 'PROGRESS' | 'RESULT' | 'ERROR' | 'DESTROYED';
+  type: 'READY' | 'PROGRESS' | 'RESULT' | 'ERROR' | 'DESTROYED' | 'PAUSED';
   payload?:
     | { phase: 'wasm' | 'model'; progress: number }
-    | { hands: Array<{ landmarks: unknown[]; handedness: string; score: number }>; detected: boolean }
-    | { message: string };
+    | { hands: TrackingResult[]; detected: boolean; frameTimestamp: number }
+    | { message: string }
+    | { frameTimestamp: number };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -41,6 +51,25 @@ interface WorkerOutMessage {
 const MEDIAPIPE_WASM_CDN_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
 const HAND_LANDMARKER_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
+// Production-tuned confidence thresholds for ring finger tracking
+const CONFIG = {
+  NUM_HANDS: 1,                    // Single hand for performance
+  MIN_DETECTION_CONFIDENCE: 0.8,   // High confidence for reliable detection
+  MIN_PRESENCE_CONFIDENCE: 0.8,    // High confidence for hand presence
+  MIN_TRACKING_CONFIDENCE: 0.85,   // Very high confidence for stable tracking
+} as const;
+
+// Ring finger landmark indices (MediaPipe convention)
+const RING_FINGER_LANDMARKS = [
+  0,  // Wrist
+  5,  // Index MCP (for orientation reference)
+  13, // Ring MCP
+  14, // Ring PIP
+  15, // Ring DIP
+  16, // Ring TIP
+  17, // Pinky MCP (for hand width reference)
+] as const;
+
 // ──────────────────────────────────────────────────────────────────────────────
 // State
 // ──────────────────────────────────────────────────────────────────────────────
@@ -48,6 +77,26 @@ const HAND_LANDMARKER_MODEL_URL = 'https://storage.googleapis.com/mediapipe-mode
 let handLandmarker: HandLandmarker | null = null;
 let isInitialized = false;
 let isDestroyed = false;
+let isPaused = false;
+
+// Backpressure state: track pending frame and processing state
+let isProcessing = false;
+let pendingFrame: {
+  buffer: ArrayBuffer;
+  width: number;
+  height: number;
+  timestamp: number;
+} | null = null;
+let lastProcessedTimestamp: number = -1;
+
+// Performance metrics
+const metrics = {
+  frameCount: 0,
+  droppedFrames: 0,
+  processedFrames: 0,
+  lastInferenceTime: 0,
+  avgInferenceMs: 0,
+};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helper: Post message with error handling
@@ -56,6 +105,34 @@ let isDestroyed = false;
 function postMessageSafe(msg: WorkerOutMessage): void {
   if (!isDestroyed) {
     self.postMessage(msg);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Helper: Process pending frame (backpressure management)
+// ──────────────────────────────────────────────────────────────────────────────
+
+function processPendingFrame(): void {
+  if (pendingFrame && !isProcessing && !isPaused && handLandmarker) {
+    const frame = pendingFrame;
+    pendingFrame = null;
+    isProcessing = true;
+    
+    // Drop stale frames: only process if newer than last processed
+    if (frame.timestamp <= lastProcessedTimestamp) {
+      metrics.droppedFrames++;
+      isProcessing = false;
+      // Check for next pending frame
+      setTimeout(processPendingFrame, 0);
+      return;
+    }
+    
+    processFrame(
+      frame.buffer,
+      frame.width,
+      frame.height,
+      frame.timestamp
+    );
   }
 }
 
@@ -94,10 +171,10 @@ async function initializeMediaPipe(): Promise<void> {
         delegate: 'GPU',
       },
       runningMode: 'VIDEO',
-      numHands: 2,
-      minHandDetectionConfidence: 0.7,
-      minHandPresenceConfidence: 0.7,
-      minTrackingConfidence: 0.7,
+      numHands: CONFIG.NUM_HANDS,
+      minHandDetectionConfidence: CONFIG.MIN_DETECTION_CONFIDENCE,
+      minHandPresenceConfidence: CONFIG.MIN_PRESENCE_CONFIDENCE,
+      minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
     });
 
     postMessageSafe({
@@ -130,11 +207,14 @@ function processFrame(
   height: number,
   timestamp: number
 ): void {
+  const startTime = performance.now();
+  
   if (!isInitialized || !handLandmarker) {
     return;
   }
 
   try {
+    // Use OffscreenCanvas for efficient frame processing
     const imageData = new ImageData(
       new Uint8ClampedArray(buffer),
       width,
@@ -142,7 +222,7 @@ function processFrame(
     );
 
     const canvas = new OffscreenCanvas(width, height);
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) {
       throw new Error('Failed to get 2D context from OffscreenCanvas');
     }
@@ -150,32 +230,65 @@ function processFrame(
 
     const result = handLandmarker.detectForVideo(canvas, timestamp);
 
-    const hands = result.landmarks.map((landmarks, index) => ({
-      landmarks: landmarks.map((lm) => ({
-        x: lm.x,
-        y: lm.y,
-        z: lm.z ?? 0,
-        visibility: lm.visibility ?? 1,
-      })),
-      handedness: result.handedness?.[index]?.[0]?.displayName ?? 'Unknown',
-      score: 1.0,
-    }));
+    // Normalize tracking output into consistent structure
+    const hands: TrackingResult[] = result.landmarks.map((landmarks, index) => {
+      // Extract confidence from detection scores (MediaPipe provides handedness scores)
+      const handednessScore = result.handedness?.[index]?.[0]?.score ?? 0;
+      const detectionConfidence = handednessScore;
+
+      return {
+        handedness: result.handedness?.[index]?.[0]?.displayName ?? 'Unknown',
+        landmarks: landmarks.map((lm) => ({
+          x: lm.x,
+          y: lm.y,
+          z: lm.z ?? 0,
+          visibility: lm.visibility ?? 1,
+        })),
+        worldLandmarks: result.worldLandmarks?.[index]?.map((lm) => ({
+          x: lm.x,
+          y: lm.y,
+          z: lm.z ?? 0,
+          visibility: lm.visibility ?? 1,
+        })) ?? null,
+        confidence: detectionConfidence,
+        timestamp: timestamp,
+      };
+    });
+
+    const inferenceTime = performance.now() - startTime;
+    metrics.lastInferenceTime = inferenceTime;
+    metrics.processedFrames++;
+    metrics.avgInferenceMs = 
+      (metrics.avgInferenceMs * (metrics.processedFrames - 1) + inferenceTime) / 
+      metrics.processedFrames;
+    lastProcessedTimestamp = timestamp;
+    isProcessing = false;
 
     postMessageSafe({
       type: 'RESULT',
       payload: {
         hands,
         detected: hands.length > 0,
+        frameTimestamp: timestamp,
       },
     });
+
+    // Process any pending frame that arrived during inference
+    setTimeout(processPendingFrame, 0);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Detection failed';
     console.error('[MediaPipe Worker] Detection error:', errorMessage);
     
+    metrics.droppedFrames++;
+    isProcessing = false;
+
     postMessageSafe({
       type: 'RESULT',
-      payload: { hands: [], detected: false },
+      payload: { hands: [], detected: false, frameTimestamp: timestamp },
     });
+    
+    // Process any pending frame
+    setTimeout(processPendingFrame, 0);
   }
 }
 
@@ -193,13 +306,48 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
 
     case 'DETECT':
       if (msg.payload) {
-        processFrame(
-          msg.payload.buffer,
-          msg.payload.width,
-          msg.payload.height,
-          msg.payload.timestamp
-        );
+        metrics.frameCount++;
+        
+        // Backpressure: store newest frame, drop obsolete
+        if (isProcessing) {
+          // If currently processing, update pending frame with newer data
+          if (!pendingFrame || msg.payload.timestamp > pendingFrame.timestamp) {
+            // Release old buffer if exists
+            if (pendingFrame?.buffer) {
+              // Buffer is transferred, no need to free
+            }
+            pendingFrame = {
+              buffer: msg.payload.buffer,
+              width: msg.payload.width,
+              height: msg.payload.height,
+              timestamp: msg.payload.timestamp,
+            };
+            metrics.droppedFrames++;
+          } else {
+            // Frame is stale, drop it
+            metrics.droppedFrames++;
+          }
+        } else {
+          // Not processing, start immediately
+          pendingFrame = {
+            buffer: msg.payload.buffer,
+            width: msg.payload.width,
+            height: msg.payload.height,
+            timestamp: msg.payload.timestamp,
+          };
+          processPendingFrame();
+        }
       }
+      break;
+
+    case 'PAUSE':
+      isPaused = true;
+      postMessageSafe({ type: 'PAUSED' });
+      break;
+
+    case 'RESUME':
+      isPaused = false;
+      processPendingFrame();
       break;
 
     case 'DESTROY':
@@ -213,6 +361,8 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
         handLandmarker = null;
       }
       isInitialized = false;
+      isProcessing = false;
+      pendingFrame = null;
       postMessageSafe({ type: 'DESTROYED' });
       break;
   }

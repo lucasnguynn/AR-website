@@ -18,7 +18,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { HandTrackingResult, LoadingState, WorkerOutMessage } from '../types/ar.types';
+import type { HandTrackingResult, LoadingState, WorkerOutMessage, TrackingMetrics } from '../types/ar.types';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 
 
@@ -35,6 +35,11 @@ export interface UseHandTrackingReturn {
   startTracking: (video: HTMLVideoElement) => void;
   /** Pause/resume frame dispatch (e.g. when modal is hidden) */
   setActive: (active: boolean) => void;
+  /** Explicit pause/resume control for the worker */
+  pause: () => void;
+  resume: () => void;
+  /** Get performance metrics (for debugging/profiling) */
+  getMetrics: () => TrackingMetrics | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -45,7 +50,9 @@ export function useHandTracking(): UseHandTrackingReturn {
   const workerRef = useRef<Worker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeRef = useRef(false);
+  const isPausedRef = useRef(false);
   const resultRef = useRef<HandTrackingResult | null>(null);
+  const metricsRef = useRef<TrackingMetrics | null>(null);
 
   const [loadingState, setLoadingState] = useState<LoadingState>({
     mediapipe: 0,
@@ -90,6 +97,10 @@ export function useHandTracking(): UseHandTrackingReturn {
           resultRef.current = msg.payload;
           break;
 
+        case 'PAUSED':
+          isPausedRef.current = true;
+          break;
+
         case 'ERROR': {
           const errorMessage = msg.payload.message;
           console.error(
@@ -120,7 +131,6 @@ export function useHandTracking(): UseHandTrackingReturn {
       worker.addEventListener(
         'message',
         (e: MessageEvent<WorkerOutMessage>) => {
-          // @ts-expect-error — DESTROYED is an internal ack not in the union type
           if (e.data?.type === 'DESTROYED') {
             clearTimeout(killTimer);
             worker.terminate();
@@ -134,7 +144,7 @@ export function useHandTracking(): UseHandTrackingReturn {
 
   // ── Frame processing callback (called by CameraSystem) ───────────────────
   const processFrame = useCallback(() => {
-    if (!activeRef.current) return;
+    if (!activeRef.current || isPausedRef.current) return;
 
     const video = videoRef.current;
     const worker = workerRef.current;
@@ -176,6 +186,7 @@ export function useHandTracking(): UseHandTrackingReturn {
     (video: HTMLVideoElement) => {
       videoRef.current = video;
       activeRef.current = true;
+      isPausedRef.current = false;
       setLoadingState((prev) => ({ ...prev, camera: true }));
       // Frame loop is now managed by CameraSystem
     },
@@ -185,9 +196,30 @@ export function useHandTracking(): UseHandTrackingReturn {
   const setActive = useCallback(
     (active: boolean) => {
       activeRef.current = active;
+      if (active && isPausedRef.current) {
+        // Resume if we were paused
+        isPausedRef.current = false;
+        workerRef.current?.postMessage({ type: 'RESUME' });
+      }
     },
     [],
   );
 
-  return { resultRef, loadingState, startTracking, setActive };
+  const pause = useCallback(() => {
+    isPausedRef.current = true;
+    workerRef.current?.postMessage({ type: 'PAUSE' });
+  }, []);
+
+  const resume = useCallback(() => {
+    isPausedRef.current = false;
+    workerRef.current?.postMessage({ type: 'RESUME' });
+  }, []);
+
+  const getMetrics = useCallback(() => {
+    // Note: Metrics are tracked in the worker; this would require a GET_METRICS message
+    // For now, return cached metrics if available
+    return metricsRef.current;
+  }, []);
+
+  return { resultRef, loadingState, startTracking, setActive, pause, resume, getMetrics };
 }
