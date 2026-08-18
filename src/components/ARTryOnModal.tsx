@@ -47,7 +47,7 @@ import {
   computeAnatomicalRingPose,
   projectRingLandmarks,
 } from '../utils/coordinateMapping';
-import { VelocityAdaptiveEMAFilter, ScalarEMAFilter } from '../utils/emaFilter';
+import { RingTrackingStabilizer } from '../utils/trackingStabilizer';
 import { LM } from '../types/ar.types';
 import type { HandTrackingResult } from '../types/ar.types';
 import { ModelErrorBoundary } from './ModelErrorBoundary';
@@ -273,10 +273,8 @@ function RingScene({ resultRef, facingMode }: RingSceneProps) {
   const groupRef       = useRef<THREE.Group>(null);
   const { scene }      = useRingModel();
 
-  // Filters — new instance per session mount
-  const emaFilter   = useRef(new VelocityAdaptiveEMAFilter());
-  const scaleFilter = useRef(new ScalarEMAFilter(0.35));
-  const wasDetected = useRef(false);
+  // Tracking stabilizer — state machine + outlier rejection + adaptive filters
+  const stabilizer = useRef(new RingTrackingStabilizer());
   const projectedLandmarks = useRef<Record<number, THREE.Vector3>>({
     [LM.INDEX_MCP]: new THREE.Vector3(),
     [LM.RING_MCP]: new THREE.Vector3(),
@@ -297,16 +295,10 @@ function RingScene({ resultRef, facingMode }: RingSceneProps) {
     const result = resultRef.current;
 
     if (!result || !result.detected || result.hands.length === 0) {
-      group.visible = false;
-      if (wasDetected.current) {
-        emaFilter.current.reset();
-        scaleFilter.current.reset();
-        wasDetected.current = false;
-      }
+      const stabilized = stabilizer.current.update(null);
+      group.visible = stabilized.visible;
       return;
     }
-
-    wasDetected.current = true;
 
     const hand = result.hands[0];
     const projParams = {
@@ -316,7 +308,11 @@ function RingScene({ resultRef, facingMode }: RingSceneProps) {
       isMirrored:    facingMode === 'user',
     };
 
-    if (!projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) return;
+    if (!projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) {
+      const stabilized = stabilizer.current.update(null);
+      group.visible = stabilized.visible;
+      return;
+    }
 
     const poseScale = computeAnatomicalRingPose(
       projectedLandmarks.current,
@@ -326,19 +322,29 @@ function RingScene({ resultRef, facingMode }: RingSceneProps) {
         scale: rawScale.current,
       },
     );
-    if (poseScale === null) return;
+    if (poseScale === null) {
+      const stabilized = stabilizer.current.update(null);
+      group.visible = stabilized.visible;
+      return;
+    }
 
     rawPosition.current.y += OFFSET_Y;
     rawPosition.current.z += OFFSET_Z;
 
-    const { position: filteredPos, quaternion: filteredQuat } =
-      emaFilter.current.update(rawPosition.current, rawQuaternion.current);
-    const filteredScale = scaleFilter.current.update(rawScale.current.x);
+    const stabilized = stabilizer.current.update({
+      position: rawPosition.current,
+      quaternion: rawQuaternion.current,
+      scale: rawScale.current.x,
+      confidence: hand.confidence,
+      timestamp: result.frameTimestamp ?? hand.timestamp,
+      landmarks: hand.landmarks,
+    });
 
-    group.visible = true;
-    group.position.copy(filteredPos);
-    group.quaternion.copy(filteredQuat);
-    group.scale.setScalar(filteredScale * RING_SCALE);
+    group.visible = stabilized.visible;
+    if (!stabilized.visible) return;
+    group.position.copy(stabilized.position);
+    group.quaternion.copy(stabilized.quaternion);
+    group.scale.setScalar(stabilized.scale * RING_SCALE);
   });
 
   // Dispose on unmount
