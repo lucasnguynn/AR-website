@@ -69,7 +69,7 @@ async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, reque
     try {
       // Three.js >=0.170 exposes examples modules through the `three/addons/*` alias.
       // @ts-expect-error The installed Three.js type declarations may omit this addon module.
-      const { default: WebGPURenderer } = await import(/* @vite-ignore */'three/addons/renderers/webgpu/WebGPURenderer.js') as { default: WebGPURendererConstructor };
+      const { default: WebGPURenderer } = await import(/* @vite-ignore */'three/examples/jsm/renderers/webgpu/WebGPURenderer.js')
       const renderer = new WebGPURenderer({
         canvas,
         alpha: true,
