@@ -68,7 +68,6 @@ async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, reque
   if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
     try {
       // Three.js >=0.170 exposes examples modules through the `three/examples/jsm/*` path.
-      // @ts-expect-error The installed Three.js type declarations may omit this addon module.
       const { default: WebGPURenderer } = await import(/* @vite-ignore */'three/examples/jsm/renderers/webgpu/WebGPURenderer.js') as { default: WebGPURendererConstructor };
       const renderer = new WebGPURenderer({
         canvas,
