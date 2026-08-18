@@ -52,7 +52,7 @@ export type WorkerOutMessage =
  * z:    relative depth in "hand-width" units (negative = closer to camera).
  */
 export interface NormalisedLandmark {
-  /** Original MediaPipe hand-landmark index. Ring tracking emits 0, 5, 13, 14, 15, 16, and 17 only. */
+  /** Original MediaPipe hand-landmark index. Ring tracking emits 0, 4, 5, 8, 13, 14, 15, 16, and 17 only. */
   index?: number;
   x: number;
   y: number;
