@@ -319,7 +319,8 @@ export function captureVideoFrame(
   // Lazily create / resize the offscreen canvas
   if (!_captureCanvas || _captureCanvas.width !== w || _captureCanvas.height !== h) {
     _captureCanvas = new OffscreenCanvas(w, h);
-    _captureCtx = _captureCanvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
+    // Bật chế độ tối ưu đọc dữ liệu liên tục cho AI
+    _captureCtx = _captureCanvas.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
   }
 
   _captureCtx!.drawImage(video, 0, 0, w, h);
