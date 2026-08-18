@@ -1,214 +1,167 @@
 /**
- * mediapipe.worker.ts — UPGRADED
+ * useHandTracking.ts
  *
- * Key changes vs original:
- *  - Default minDetectionConfidence / minTrackingConfidence raised to 0.7
- *    (matches ARVideoCanvas config; this file respects whatever the main thread sends,
- *     but 0.7 is the validated enterprise default).
- *  - numHands stays at 1 — ring placement only needs one hand; tracking two
- *    doubles CPU cost with no benefit.
- *  - GPU delegate tried first; CPU fallback on failure (same as before, kept intact).
- *  - Added landmark confidence gate: landmarks with visibility < 0.5 are zeroed
- *    rather than forwarded, preventing wild pose jumps from partially occluded hands.
- *  - Explicit GC hints on result objects (same pattern, kept for compatibility).
+ * Manages the full lifecycle of the MediaPipe Web Worker:
+ *   • Spawns the worker exactly once on mount
+ *   • Sends INIT and tracks PROGRESS from both the WASM phase and the model phase
+ *   • Dispatches video frames to the worker on a requestAnimationFrame loop
+ *   • Returns the latest HandTrackingResult via a ref (not state — avoids
+ *     triggering a React re-render on every frame)
+ *   • Reports combined loading progress as a single 0-100 number
+ *
+ * WHY REF INSTEAD OF STATE FOR LANDMARKS?
+ *   setState → re-render → all children reconcile → DOM diff → at 30 fps this
+ *   is 30 full React render cycles per second for the entire AR subtree.
+ *   Instead we store the result in a ref and let the R3F useFrame hook read it
+ *   directly each render without touching React at all.
  */
 
-/// <reference lib="webworker" />
+import { useEffect, useRef, useCallback, useState } from 'react';
+import type { HandTrackingResult, LoadingState, WorkerOutMessage } from '../types/ar.types';
+import { captureVideoFrame } from '../utils/coordinateMapping';
 
-import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+// Vite worker import — bundled as a separate chunk for code splitting
+import MediapipeWorker from '../workers/mediapipe.worker?worker';
 
-let handLandmarker: HandLandmarker | null = null;
+// ──────────────────────────────────────────────────────────────────────────────
+// Hook return type
+// ──────────────────────────────────────────────────────────────────────────────
 
-// These are overwritten by the INIT message; 0.7 is the hardened default.
-let minDetectionConfidence = 0.7;
-let minTrackingConfidence  = 0.7;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Message interfaces (unchanged — keep protocol compatibility)
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface InitMessage {
-  type: 'INIT';
-  wasmPath: string;
-  minDetectionConfidence: number;
-  minTrackingConfidence: number;
+export interface UseHandTrackingReturn {
+  /** Latest tracking result — read in useFrame, never causes React re-renders */
+  resultRef: React.RefObject<HandTrackingResult | null>;
+  /** Loading progress 0-100 and status flags */
+  loadingState: LoadingState;
+  /** Call this once the camera stream is available to start frame dispatch */
+  startTracking: (video: HTMLVideoElement) => void;
+  /** Pause/resume frame dispatch (e.g. when modal is hidden) */
+  setActive: (active: boolean) => void;
 }
 
-interface ProcessMessage {
-  type: 'PROCESS';
-  buffer: ArrayBuffer;
-  width: number;
-  height: number;
-  timestamp: number;
-}
+// ──────────────────────────────────────────────────────────────────────────────
+// Hook
+// ──────────────────────────────────────────────────────────────────────────────
 
-interface StopMessage {
-  type: 'STOP';
-}
+export function useHandTracking(): UseHandTrackingReturn {
+  const workerRef = useRef<Worker | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const rafRef = useRef<number>(0);
+  const activeRef = useRef(false);
+  const resultRef = useRef<HandTrackingResult | null>(null);
 
-type IncomingMessage = InitMessage | ProcessMessage | StopMessage;
+  const [loadingState, setLoadingState] = useState<LoadingState>({
+    mediapipe: 0,
+    model: 0,
+    camera: false,
+    ready: false,
+    error: null,
+  });
 
-interface ReadyResponse  { type: 'READY'; }
-interface HandResultResponse {
-  type: 'HAND_RESULT';
-  result: {
-    landmarks: Array<{ x: number; y: number; z: number; visibility?: number; confidence?: number }>;
-    handedness: 'Left' | 'Right';
-    confidence: number;
-  } | null;
-  timestamp: number;
-}
-interface ErrorResponse { type: 'ERROR'; error: string; }
+  // ── Spawn worker and wire up message handler ─────────────────────────────
+  useEffect(() => {
+    const worker = new MediapipeWorker();
+    workerRef.current = worker;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Worker message handler
-// ─────────────────────────────────────────────────────────────────────────────
+    worker.addEventListener('message', (e: MessageEvent<WorkerOutMessage>) => {
+      const msg = e.data;
 
-self.onmessage = async (event: MessageEvent<IncomingMessage>) => {
-  const { type } = event.data;
-
-  // ── INIT ─────────────────────────────────────────────────────────────────
-  if (type === 'INIT') {
-    try {
-      const {
-        wasmPath,
-        minDetectionConfidence: detConf,
-        minTrackingConfidence: trackConf,
-      } = event.data as InitMessage;
-
-      // Apply caller values (or keep upgraded defaults)
-      minDetectionConfidence = detConf  ?? 0.7;
-      minTrackingConfidence  = trackConf ?? 0.7;
-
-      const filesetResolver = await FilesetResolver.forVisionTasks(wasmPath);
-
-      const handLandmarkerOptions = {
-        baseOptions: {
-          modelAssetPath:
-            'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-          delegate: 'GPU' as const,
-        },
-        runningMode: 'VIDEO' as const,
-        numHands: 1,
-        // ── Hardened confidence thresholds ─────────────────────────────
-        // 0.7 prevents false-positive detections in poor lighting.
-        // minHandPresenceConfidence gates frame-to-frame continuity —
-        // raising it reduces ghost landmarks when hand exits the frame.
-        minHandDetectionConfidence: minDetectionConfidence,
-        minHandPresenceConfidence:  minTrackingConfidence,
-        minTrackingConfidence:      minTrackingConfidence,
-      };
-
-      try {
-        handLandmarker = await HandLandmarker.createFromOptions(
-          filesetResolver,
-          handLandmarkerOptions,
-        );
-      } catch (gpuError) {
-        console.warn('[Worker] GPU delegate failed, falling back to CPU:', gpuError);
-        handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
-          ...handLandmarkerOptions,
-          baseOptions: {
-            ...handLandmarkerOptions.baseOptions,
-            delegate: 'CPU' as const,
-          },
-        });
-      }
-
-      self.postMessage({ type: 'READY' } as ReadyResponse);
-
-    } catch (error) {
-      self.postMessage({
-        type: 'ERROR',
-        error: error instanceof Error ? error.message : 'Unknown initialization error',
-      } as ErrorResponse);
-    }
-
-  // ── PROCESS ──────────────────────────────────────────────────────────────
-  } else if (type === 'PROCESS') {
-    if (!handLandmarker) {
-      self.postMessage({
-        type: 'ERROR',
-        error: 'Hand landmarker not initialized',
-      } as ErrorResponse);
-      return;
-    }
-
-    try {
-      const { buffer, width, height, timestamp } = event.data as ProcessMessage;
-
-      // Reconstruct ImageData from the transferred ArrayBuffer
-      const imgData = new ImageData(new Uint8ClampedArray(buffer), width, height);
-
-      // Run synchronous landmark detection (MediaPipe Tasks Vision VIDEO mode)
-      const results = handLandmarker.detectForVideo(imgData, timestamp);
-
-      if (results.landmarks && results.landmarks.length > 0) {
-        const rawLandmarks = results.landmarks[0];
-
-        // ── Landmark confidence gate ──────────────────────────────────
-        // Landmarks with very low visibility cause sudden position jumps.
-        // We pass visibility through to the main thread so RingPoseEstimator
-        // can apply its own per-landmark confidence check, but we also perform
-        // a quick sanity check here: if the overall hand confidence drops below
-        // our threshold we treat it as "no hand" to prevent ghost ring flicker.
-        const handConfidence = results.handednesses?.[0]?.[0]?.score ?? 1.0;
-
-        if (handConfidence < minDetectionConfidence) {
-          // Below threshold — treat as no detection
-          self.postMessage({
-            type: 'HAND_RESULT',
-            result: null,
-            timestamp,
-          } as HandResultResponse);
-        } else {
-          const landmarks = rawLandmarks.map((lm) => ({
-            x: lm.x,
-            y: lm.y,
-            z: lm.z,
-            visibility: lm.visibility,
-            // MediaPipe Tasks Vision doesn't expose per-landmark confidence
-            // — we use visibility as a proxy in RingPoseEstimator
-            confidence: lm.visibility,
+      switch (msg.type) {
+        case 'PROGRESS': {
+          const { phase, progress } = msg.payload;
+          setLoadingState((prev) => ({
+            ...prev,
+            // WASM (0→100) accounts for the first half of the combined bar.
+            // Model (0→100) accounts for the second half.
+            mediapipe:
+              phase === 'wasm'
+                ? Math.round(progress / 2)         // 0-50
+                : Math.round(50 + progress / 2),   // 50-100
           }));
-
-          const handedness =
-            results.handednesses?.[0]?.[0]?.categoryName === 'Left' ? 'Left' : 'Right';
-
-          self.postMessage({
-            type: 'HAND_RESULT',
-            result: { landmarks, handedness, confidence: handConfidence },
-            timestamp,
-          } as HandResultResponse);
+          break;
         }
-      } else {
-        self.postMessage({
-          type: 'HAND_RESULT',
-          result: null,
-          timestamp,
-        } as HandResultResponse);
+
+        case 'READY':
+          setLoadingState((prev) => ({ ...prev, mediapipe: 100, ready: prev.model >= 100 }));
+          break;
+
+        case 'RESULT':
+          resultRef.current = msg.payload;
+          break;
+
+        case 'ERROR':
+          setLoadingState((prev) => ({
+            ...prev,
+            error: msg.payload.message,
+          }));
+          console.error('[MediaPipe Worker]', msg.payload.message);
+          break;
       }
+    });
 
-      // Free MediaPipe result arrays immediately (zero-upload privacy + GC)
-      // @ts-ignore
-      results.landmarks   = null;
-      // @ts-ignore
-      results.handednesses = null;
+    // ── Send INIT — the worker immediately starts fetching WASM + model ──────
+    worker.postMessage({ type: 'INIT' });
 
-    } catch (error) {
-      self.postMessage({
-        type: 'ERROR',
-        error: error instanceof Error ? error.message : 'Unknown processing error',
-      } as ErrorResponse);
-    }
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      worker.postMessage({ type: 'DESTROY' });
+      worker.terminate();
+      workerRef.current = null;
+    };
+  }, []); // runs once
 
-  // ── STOP ─────────────────────────────────────────────────────────────────
-  } else if (type === 'STOP') {
-    if (handLandmarker) {
-      handLandmarker.close();
-      handLandmarker = null;
-    }
-  }
-};
+  // ── Frame dispatch loop ──────────────────────────────────────────────────
+  const dispatchFrame = useCallback(() => {
+    if (!activeRef.current) return;
+    rafRef.current = requestAnimationFrame(dispatchFrame);
 
-export default {} as Record<string, never>;
+    const video = videoRef.current;
+    const worker = workerRef.current;
+    if (!video || !worker) return;
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+
+    const frame = captureVideoFrame(video);
+    if (!frame) return;
+
+    // Transfer the buffer to avoid copying ~1.2 MB of pixel data every frame.
+    worker.postMessage(
+      {
+        type: 'DETECT',
+        payload: {
+          buffer: frame.buffer,
+          width: frame.width,
+          height: frame.height,
+          timestamp: performance.now(),
+        },
+      },
+      [frame.buffer], // transferable — the buffer is detached in the sender
+    );
+  }, []);
+
+  // ── Public API ────────────────────────────────────────────────────────────
+
+  const startTracking = useCallback(
+    (video: HTMLVideoElement) => {
+      videoRef.current = video;
+      activeRef.current = true;
+      setLoadingState((prev) => ({ ...prev, camera: true }));
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(dispatchFrame);
+    },
+    [dispatchFrame],
+  );
+
+  const setActive = useCallback(
+    (active: boolean) => {
+      activeRef.current = active;
+      if (active && videoRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(dispatchFrame);
+      } else {
+        cancelAnimationFrame(rafRef.current);
+      }
+    },
+    [dispatchFrame],
+  );
+
+  return { resultRef, loadingState, startTracking, setActive };
+}
