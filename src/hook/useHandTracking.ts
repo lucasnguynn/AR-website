@@ -9,11 +9,11 @@
  *     triggering a React re-render on every frame)
  *   • Reports combined loading progress as a single 0-100 number
  *
- * FIXED BUG:
- *   The previous file was a raw useEffect snippet pasted at the top level of the
- *   module — not inside any function. This is syntactically invalid TypeScript and
- *   caused the build to fail with "Expression expected" / "Unexpected token" errors.
- *   The entire hook has been rewritten as a proper named export function.
+ * CRITICAL FIXES FOR GITHUB PAGES:
+ *   • ERROR event handling: Listens for ERROR messages from the worker and
+ *     updates the loadingState.error field to prevent infinite loading loops.
+ *   • The UI can now display error states and recovery options when WASM
+ *     or model loading fails.
  *
  * WHY REF INSTEAD OF STATE FOR LANDMARKS?
  *   setState → re-render → all children reconcile → DOM diff → at 30 fps this
@@ -50,17 +50,17 @@ export interface UseHandTrackingReturn {
 
 export function useHandTracking(): UseHandTrackingReturn {
   const workerRef = useRef<Worker | null>(null);
-  const videoRef  = useRef<HTMLVideoElement | null>(null);
-  const rafRef    = useRef<number>(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const rafRef = useRef<number>(0);
   const activeRef = useRef(false);
   const resultRef = useRef<HandTrackingResult | null>(null);
 
   const [loadingState, setLoadingState] = useState<LoadingState>({
     mediapipe: 0,
-    model:     0,
-    camera:    false,
-    ready:     false,
-    error:     null,
+    model: 0,
+    camera: false,
+    ready: false,
+    error: null,
   });
 
   // ── Spawn worker and wire up message handler ─────────────────────────────
@@ -98,13 +98,23 @@ export function useHandTracking(): UseHandTrackingReturn {
           resultRef.current = msg.payload;
           break;
 
-        case 'ERROR':
+        case 'ERROR': {
+          // CRITICAL: Handle worker initialization errors gracefully
+          // This prevents the UI from hanging in an infinite loading loop
+          const errorMessage = msg.payload.message;
+          console.error(
+            '%c[MediaPipe Worker] Initialization Error: %s',
+            'color: #D5FD50; font-weight: bold;',
+            errorMessage
+          );
+          
           setLoadingState((prev) => ({
             ...prev,
-            error: msg.payload.message,
+            error: errorMessage,
+            ready: false,
           }));
-          console.error('[MediaPipe Worker]', msg.payload.message);
           break;
+        }
       }
     });
 
@@ -143,7 +153,7 @@ export function useHandTracking(): UseHandTrackingReturn {
     if (!activeRef.current) return;
     rafRef.current = requestAnimationFrame(dispatchFrame);
 
-    const video  = videoRef.current;
+    const video = videoRef.current;
     const worker = workerRef.current;
     if (!video || !worker) return;
     if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
@@ -156,9 +166,9 @@ export function useHandTracking(): UseHandTrackingReturn {
       {
         type: 'DETECT',
         payload: {
-          buffer:    frame.buffer,
-          width:     frame.width,
-          height:    frame.height,
+          buffer: frame.buffer,
+          width: frame.width,
+          height: frame.height,
           timestamp: performance.now(),
         },
       },
@@ -170,7 +180,7 @@ export function useHandTracking(): UseHandTrackingReturn {
 
   const startTracking = useCallback(
     (video: HTMLVideoElement) => {
-      videoRef.current  = video;
+      videoRef.current = video;
       activeRef.current = true;
       setLoadingState((prev) => ({ ...prev, camera: true }));
       cancelAnimationFrame(rafRef.current);
