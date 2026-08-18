@@ -52,7 +52,13 @@ export class WebXRDepthManager {
   }
 
   update(frame: XRFrameWithDepthData, view: XRView): boolean {
-    const depth = frame.getDepthInformation?.(view);
+    let depth: XRDepthInformationWithData | null | undefined;
+    try {
+      depth = frame.getDepthInformation?.(view);
+    } catch (error) {
+      console.warn('WebXR depth information failed; disabling true-depth occlusion for this frame.', error);
+      return false;
+    }
     if (!depth?.data || depth.width <= 0 || depth.height <= 0) return false;
 
     this.ensureSize(depth.width, depth.height);

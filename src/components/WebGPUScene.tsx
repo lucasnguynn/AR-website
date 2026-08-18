@@ -27,8 +27,24 @@ export function hasWebGPUSupport(): boolean {
   return typeof navigator !== 'undefined' && Boolean(navigator.gpu);
 }
 
+function createWebGLFallbackRenderer(canvas: HTMLCanvasElement | OffscreenCanvas): ThreeRenderer {
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    alpha: true,
+    antialias: true,
+    powerPreference: 'high-performance',
+  }) as ThreeRenderer;
+
+  renderer.setClearColor(0x000000, 0);
+  return renderer;
+}
+
 async function createHighPerformanceRenderer(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<ThreeRenderer> {
-  if (hasWebGPUSupport()) {
+  if (!hasWebGPUSupport()) {
+    return createWebGLFallbackRenderer(canvas);
+  }
+
+  try {
     const { default: WebGPURenderer } = await import('three/examples/jsm/renderers/webgpu/WebGPURenderer.js') as WebGPURendererModule;
     const renderer = new WebGPURenderer({
       canvas,
@@ -37,15 +53,12 @@ async function createHighPerformanceRenderer(canvas: HTMLCanvasElement | Offscre
       powerPreference: 'high-performance',
     }) as unknown as ThreeRenderer;
     await renderer.init?.();
+    renderer.setClearColor?.(0x000000, 0);
     return renderer;
+  } catch (error) {
+    console.warn('WebGPU renderer failed; falling back to transparent WebGL.', error);
+    return createWebGLFallbackRenderer(canvas);
   }
-
-  return new THREE.WebGLRenderer({
-    canvas,
-    alpha: true,
-    antialias: true,
-    powerPreference: 'high-performance',
-  }) as ThreeRenderer;
 }
 
 function AdaptiveToneMapping({ ambientLight }: { ambientLight?: AmbientLightState }) {
@@ -71,10 +84,12 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
 
   return (
     <Canvas
-      className="absolute inset-0"
-      style={{ background: 'transparent' }}
+      className="absolute inset-0 z-10"
+      style={{ background: 'transparent', zIndex: 10, pointerEvents: 'none' }}
       gl={glFactory}
       onCreated={({ gl, scene }) => {
+        gl.setClearColor(0x000000, 0);
+        gl.autoClear = true;
         gl.outputColorSpace = THREE.SRGBColorSpace;
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = ambientLight?.exposure ?? (rendererMode === 'webgpu' ? 1.05 : 1.0);
