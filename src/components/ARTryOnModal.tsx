@@ -1,387 +1,458 @@
 /**
- * ARTryOnModal.tsx — UPGRADED
+ * ARTryOnModal.tsx
  *
- * What's new:
- *  1. CameraFlipButton — a sleek TailwindCSS button that calls
- *     session.switchCamera() through the Zustand sessionRef.
- *     Shows spinner while switching; shows correct icon for current facing mode.
- *  2. isSwitchingCamera state guards against double-taps.
- *  3. Progress labels in English (Vietnamese strings removed for i18n clarity —
- *     re-add your localisation layer on top of the label string).
- *  4. resize + orientation change handler moved into ARVideoCanvas (ResizeObserver);
- *     the modal itself just manages modal open/close lifecycle.
- *  5. Error boundary hint: if camera switch fails, shows inline toast without
- *     crashing the full AR session.
+ * The top-level WebAR experience component.
+ *
+ * Architecture:
+ *  ┌─────────────────────────────────────────────────────────┐
+ *  │  <div id="ar-root">                                      │
+ *  │   ├── <video>  ← camera feed, CSS-mirrored             │
+ *  │   └── <Canvas> ← R3F, transparent bg, overlaid         │
+ *  │        └── <RingScene>  ← reads from trackingResultRef │
+ *  └─────────────────────────────────────────────────────────┘
+ *
+ * Loading strategy (Task 1 — sub-3s):
+ *   Promise.all([
+ *     worker INIT (MediaPipe WASM + model, ~2-4s, in parallel threads),
+ *     useGLTF preload (ring model + Draco decode, ~0.5-1s)
+ *   ])
+ *   Both start SIMULTANEOUSLY the moment the component mounts.
+ *   Total wait = max(mediapipe_time, gltf_time) instead of their sum.
+ *
+ *   GLTF loading progress (0-100) is fed back via a custom GLTFLoader
+ *   onProgress callback and merged with the worker's progress.
+ *
+ *   Combined progress bar formula:
+ *     combinedProgress = (mediapipeProgress + modelProgress) / 2
+ *   This gives a realistic 0-100 reading without either half "waiting" for
+ *   the other.
  */
 
-import React, { useEffect, useCallback, useRef, useState } from 'react';
+import React, {
+  useRef,
+  useEffect,
+  useCallback,
+  useState,
+  Suspense,
+  createContext,
+  useContext,
+} from 'react';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { useGLTF, Environment } from '@react-three/drei';
+import * as THREE from 'three';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+import { useHandTracking } from '../hooks/useHandTracking';
 import {
-  useARStore,
-  selectShouldShowFallback,
-  selectIsLoading,
-  selectErrorMessage,
-  selectFallbackMode,
-  selectModelLoadingProgress,
-  selectSessionRef,
-  selectCurrentFacingMode,
-} from '../store/useARStore';
-import { DeviceProfiler } from '../utils/DeviceProfiler';
+  landmarkToWorld,
+  computeRingQuaternion,
+  computeRingScale,
+  RING_SEGMENT_T,
+} from '../utils/coordinateMapping';
+import { VelocityAdaptiveEMAFilter, ScalarEMAFilter } from '../utils/emaFilter';
+import { LM } from '../types/ar.types';
+import type { HandTrackingResult } from '../types/ar.types';
 
-const ARVideoCanvas  = React.lazy(() => import('./ARVideoCanvas'));
-const Fallback3DViewer = React.lazy(() => import('./Fallback3DViewer'));
-const ARControls     = React.lazy(() => import('./ARControls'));
+// ---------------------------------------------------------------------------
+// Draco path — pointing to the files copied by vite.config.ts
+// ---------------------------------------------------------------------------
+const DRACO_DECODER_PATH = import.meta.env.BASE_URL + 'draco/';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CameraFlipButton — fully self-contained
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Preload the ring model the moment this module is imported —
+// BEFORE the component even mounts.  This starts the fetch in parallel with
+// the MediaPipe worker init that begins on component mount.
+// ---------------------------------------------------------------------------
+const RING_MODEL_PATH = import.meta.env.BASE_URL + 'models/ring.glb';
 
-const CameraFlipButton: React.FC = () => {
-  const session     = useARStore(selectSessionRef);
-  const facingMode  = useARStore(selectCurrentFacingMode);
-  const setFacingMode = useARStore((s) => s.setFacingMode);
+// Tell drei's useGLTF to use our DRACOLoader instance
+useGLTF.setDecoderPath(DRACO_DECODER_PATH);
+// Kick off the network fetch immediately (module evaluation time)
+useGLTF.preload(RING_MODEL_PATH);
 
-  const [isSwitching, setIsSwitching] = useState(false);
-  const [switchError, setSwitchError] = useState<string | null>(null);
+// ---------------------------------------------------------------------------
+// Context: share the video element reference with the inner R3F component
+// ---------------------------------------------------------------------------
+const VideoRefContext = createContext<React.RefObject<HTMLVideoElement | null>>(
+  { current: null },
+);
 
-  const handleFlip = useCallback(async () => {
-    if (!session || isSwitching) return;
-
-    setIsSwitching(true);
-    setSwitchError(null);
-
-    try {
-      await session.switchCamera();
-      // Reflect the new facing mode in the store
-      setFacingMode(session.currentFacingMode);
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : 'Camera switch failed';
-      setSwitchError(msg);
-      // Auto-clear error toast after 3 s
-      setTimeout(() => setSwitchError(null), 3000);
-    } finally {
-      setIsSwitching(false);
-    }
-  }, [session, isSwitching, setFacingMode]);
-
-  // Don't render if there's no active session (e.g., fallback mode)
-  if (!session) return null;
-
-  return (
-    <>
-      <button
-        onClick={handleFlip}
-        disabled={isSwitching}
-        aria-label={
-          facingMode === 'environment'
-            ? 'Switch to front camera'
-            : 'Switch to rear camera'
-        }
-        className={[
-          // Positioning: top-right corner, below the close button
-          'absolute top-16 right-4 z-20',
-          // Shape
-          'flex items-center justify-center',
-          'w-11 h-11 rounded-full',
-          // Glass morphism background
-          'bg-black/50 backdrop-blur-md border border-white/20',
-          // Interaction
-          'transition-all duration-200 active:scale-95',
-          isSwitching
-            ? 'opacity-60 cursor-not-allowed'
-            : 'hover:bg-white/20 hover:border-white/40 cursor-pointer',
-          // Shadow
-          'shadow-lg shadow-black/30',
-        ].join(' ')}
-      >
-        {isSwitching ? (
-          /* Spinner while switching */
-          <svg
-            className="w-5 h-5 text-white animate-spin"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              className="opacity-25"
-              cx="12" cy="12" r="10"
-              stroke="currentColor" strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8v8H4z"
-            />
-          </svg>
-        ) : facingMode === 'environment' ? (
-          /* Rear camera active → show "switch to front" icon */
-          <svg
-            className="w-5 h-5 text-white"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.8}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            {/* Camera body */}
-            <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
-            {/* Flip arrows overlay */}
-            <path d="M8 12h8M14 9l3 3-3 3" />
-          </svg>
-        ) : (
-          /* Front camera active → show "switch to rear" icon */
-          <svg
-            className="w-5 h-5 text-white"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.8}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" />
-            <path d="M16 12H8M10 15l-3-3 3-3" />
-          </svg>
-        )}
-      </button>
-
-      {/* Inline error toast */}
-      {switchError && (
-        <div
-          className={[
-            'absolute top-28 right-4 z-30',
-            'px-3 py-2 rounded-lg text-xs text-white max-w-[180px] text-right',
-            'bg-red-600/90 backdrop-blur-sm shadow-lg',
-            'animate-fade-in',
-          ].join(' ')}
-        >
-          {switchError}
-        </div>
-      )}
-    </>
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Standalone camera constraint helper (unchanged from original, kept here
-// for the permission pre-check in initializeAR)
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function getDynamicVideoConstraints(): Promise<MediaStreamConstraints['video']> {
-  const base: MediaStreamConstraints['video'] = {
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
-  };
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const inputs  = devices.filter((d) => d.kind === 'videoinput');
-    return {
-      ...base,
-      facingMode: inputs.length > 1 ? 'environment' : 'user',
-    };
-  } catch {
-    return { ...base, facingMode: 'user' };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ARTryOnModal
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface ARTryOnModalProps {
-  isOpen: boolean;
+// ---------------------------------------------------------------------------
+// Prop types
+// ---------------------------------------------------------------------------
+export interface ARTryOnModalProps {
+  /** Called when the user dismisses the AR modal */
   onClose: () => void;
-  ringModelUrl: string;
+  /** Ring model path override — defaults to /models/ring.glb */
+  ringModelPath?: string;
 }
 
-export const ARTryOnModal: React.FC<ARTryOnModalProps> = ({
-  isOpen,
-  onClose,
-  ringModelUrl,
-}) => {
-  const shouldShowFallback    = useARStore(selectShouldShowFallback);
-  const isLoading             = useARStore(selectIsLoading);
-  const errorMessage          = useARStore(selectErrorMessage);
-  const fallbackMode          = useARStore(selectFallbackMode);
-  const modelLoadingProgress  = useARStore(selectModelLoadingProgress);
+// ===========================================================================
+// ARTryOnModal (outer component — DOM layer + loading orchestration)
+// ===========================================================================
+export function ARTryOnModal({ onClose, ringModelPath = RING_MODEL_PATH }: ARTryOnModalProps) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  const setCameraPermission = useARStore((s) => s.setCameraPermission);
-  const setDeviceClass      = useARStore((s) => s.setDeviceClass);
-  const activateFallback    = useARStore((s) => s.activateFallback);
-  const setLoading          = useARStore((s) => s.setLoading);
-  const closeModal          = useARStore((s) => s.closeModal);
+  const { resultRef, loadingState, startTracking } = useHandTracking();
 
-  const modalRef          = useRef<HTMLDivElement>(null);
-  const hasInitializedRef = useRef(false);
+  // Model loading progress (0-100), reported via custom loader callback
+  const [modelProgress, setModelProgress] = useState(0);
 
-  // ── ESC key handler ───────────────────────────────────────────────────────
+  // ── Camera setup ──────────────────────────────────────────────────────────
+  const initCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 30 },
+        },
+        audio: false,
+      });
+      streamRef.current = stream;
+
+      if (!videoRef.current) return;
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+
+      startTracking(videoRef.current);
+    } catch (err) {
+      console.error('[AR Camera]', err);
+    }
+  }, [startTracking]);
+
   useEffect(() => {
-    if (!isOpen) return;
-    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
-    document.addEventListener('keydown', onEsc);
-    return () => document.removeEventListener('keydown', onEsc);
-  }, [isOpen]);
-
-  // ── Body scroll lock ──────────────────────────────────────────────────────
-  useEffect(() => {
-    document.body.style.overflow = isOpen ? 'hidden' : '';
-    return () => { document.body.style.overflow = ''; };
-  }, [isOpen]);
-
-  // ── Permission pre-check + device profiling ───────────────────────────────
-  useEffect(() => {
-    if (!isOpen || hasInitializedRef.current) return;
-    hasInitializedRef.current = true;
-
-    const initializeAR = async () => {
-      try {
-        const profile = await DeviceProfiler.profile();
-        setDeviceClass(profile.deviceClass);
-        if (profile.deviceClass === 'UNSUPPORTED' || profile.deviceClass === 'LOW') return;
-
-        try {
-          const constraints = await getDynamicVideoConstraints();
-          const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
-          // Immediately stop — this was only a permission check
-          stream.getTracks().forEach((t) => t.stop());
-          setCameraPermission(true);
-        } catch {
-          setCameraPermission(false);
-          activateFallback('PERMISSION_DENIED');
-        }
-      } catch (err) {
-        console.error('[ARTryOnModal] AR init check failed:', err);
-        setLoading(false);
-        activateFallback('CAMERA_ERROR');
-      }
+    initCamera();
+    return () => {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
     };
+  }, [initCamera]);
 
-    initializeAR();
-  }, [isOpen]);
+  // ── Combined loading progress ─────────────────────────────────────────────
+  // mediapipe: 0-100 (from worker messages, already set in hook)
+  // model:     0-100 (from GLTF loader onProgress)
+  const combinedProgress = Math.round((loadingState.mediapipe + modelProgress) / 2);
+  const isReady = loadingState.mediapipe >= 100 && modelProgress >= 100;
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
-  const handleClose = useCallback(() => {
-    closeModal();
-    onClose();
-  }, [onClose, closeModal]);
+  // ── Escape key to close ───────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
 
-  const handleBackdropClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (e.target === e.currentTarget) handleClose();
-    },
-    [handleClose],
-  );
-
-  if (!isOpen) return null;
-
-  // ── Progress label ────────────────────────────────────────────────────────
-  const progress = Math.min(Math.round(modelLoadingProgress), 100);
-  const progressLabel =
-    progress < 30
-      ? 'Starting camera...'
-      : progress < 70
-      ? `Loading 3D model... ${progress}%`
-      : progress < 100
-      ? `Processing... ${progress}%`
-      : 'Ready!';
-
-  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div
-      ref={modalRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-      onClick={handleBackdropClick}
+      className="fixed inset-0 z-50 bg-black flex items-center justify-center"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="ar-modal-title"
+      aria-label="WebAR Jewelry Try-On"
     >
-      <div className="relative w-full h-full max-w-7xl max-h-screen bg-gray-900 shadow-2xl overflow-hidden">
+      {/* Close button */}
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 z-20 text-white bg-black/50 rounded-full p-2 hover:bg-black/80 transition-colors"
+        aria-label="Close AR try-on"
+      >
+        ✕
+      </button>
 
-        {/* ── Header ──────────────────────────────────────────────────────── */}
-        <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between p-4 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
-          <h2
-            id="ar-modal-title"
-            className="text-white text-lg font-semibold tracking-wide"
+      {/* Loading overlay — fades out once ready */}
+      {!isReady && (
+        <LoadingOverlay
+          progress={combinedProgress}
+          error={loadingState.error}
+          hasCamera={loadingState.camera}
+        />
+      )}
+
+      {/* The AR viewport: video + Three.js canvas stacked */}
+      <div
+        className="relative w-full h-full overflow-hidden"
+        style={{ maxWidth: 480, margin: '0 auto' }}
+      >
+        {/* Camera feed — CSS mirror matches what users expect from a selfie view */}
+        <video
+          ref={videoRef}
+          className="absolute inset-0 w-full h-full object-cover"
+          style={{ transform: 'scaleX(-1)' }}
+          playsInline
+          muted
+          autoPlay
+        />
+
+        {/* Three.js canvas — transparent background, perfectly overlaid */}
+        <VideoRefContext.Provider value={videoRef}>
+          <Canvas
+            className="absolute inset-0"
+            style={{ background: 'transparent' }}
+            gl={{
+              alpha: true,
+              antialias: true,
+              powerPreference: 'high-performance',
+            }}
+            camera={{
+              fov: 45,
+              near: 0.01,
+              far: 100,
+              position: [0, 0, 5],
+            }}
+            // Ensure Three.js renders at the native pixel ratio (not 2× on retina)
+            // to match the landmark coordinate space exactly.
+            dpr={[1, 1]}
           >
-            Virtual Try-On
-          </h2>
-
-          {/* Close button — pointer-events re-enabled individually */}
-          <button
-            onClick={handleClose}
-            className="pointer-events-auto p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors"
-            aria-label="Close modal"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
+            <Suspense fallback={null}>
+              <RingScene
+                resultRef={resultRef}
+                ringModelPath={ringModelPath}
+                onModelProgress={setModelProgress}
               />
-            </svg>
-          </button>
-        </div>
-
-        {/* ── Camera Flip Button ───────────────────────────────────────────
-             Only visible when AR is running (not in fallback mode).
-             CameraFlipButton renders null when sessionRef is null.            */}
-        {!shouldShowFallback && <CameraFlipButton />}
-
-        {/* ── Main Content ─────────────────────────────────────────────────── */}
-        <div className="w-full h-full">
-          <React.Suspense
-            fallback={
-              <div className="flex items-center justify-center w-full h-full">
-                <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-white" />
-              </div>
-            }
-          >
-            {shouldShowFallback ? (
-              <Fallback3DViewer
-                ringModelUrl={ringModelUrl}
-                fallbackReason={fallbackMode}
-                onRetry={() => {
-                  hasInitializedRef.current = false;
-                  useARStore.getState().reset();
-                  useARStore.getState().openModal();
-                }}
-              />
-            ) : (
-              <>
-                <ARVideoCanvas ringModelUrl={ringModelUrl} />
-                <ARControls />
-              </>
-            )}
-          </React.Suspense>
-        </div>
-
-        {/* ── Loading Overlay ─────────────────────────────────────────────── */}
-        {isLoading && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/75 backdrop-blur-sm">
-            <div className="animate-spin rounded-full h-20 w-20 border-t-2 border-b-2 border-amber-400 mb-4" />
-            <p className="text-white text-lg font-medium">Initializing AR Experience...</p>
-            <p className="text-white/60 text-sm mt-2">
-              Please allow camera access when prompted
-            </p>
-
-            <div className="w-64 h-2 bg-gray-700 rounded-full mt-4 overflow-hidden">
-              <div
-                className="h-full bg-amber-400 transition-all duration-300 ease-out"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <p className="text-white/80 text-xs mt-2">{progressLabel}</p>
-          </div>
-        )}
-
-        {/* ── Error Toast ─────────────────────────────────────────────────── */}
-        {errorMessage && !isLoading && (
-          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 px-6 py-3 bg-red-500/90 rounded-lg shadow-lg">
-            <p className="text-white text-sm font-medium">{errorMessage}</p>
-          </div>
-        )}
+            </Suspense>
+          </Canvas>
+        </VideoRefContext.Provider>
       </div>
     </div>
   );
-};
+}
 
-export default ARTryOnModal;
+// ===========================================================================
+// LoadingOverlay
+// ===========================================================================
+function LoadingOverlay({
+  progress,
+  error,
+  hasCamera,
+}: {
+  progress: number;
+  error: string | null;
+  hasCamera: boolean;
+}) {
+  return (
+    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 text-white gap-4">
+      {error ? (
+        <>
+          <div className="text-red-400 text-lg font-semibold">Error</div>
+          <div className="text-sm text-red-300 max-w-xs text-center">{error}</div>
+        </>
+      ) : (
+        <>
+          <div className="text-[#D5FD50] text-2xl font-bold animate-pulse">
+            {progress < 100 ? 'Loading AR Experience…' : 'Starting camera…'}
+          </div>
+
+          {/* Progress bar */}
+          <div className="w-64 h-2 bg-white/20 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#D5FD50] rounded-full transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+
+          <div className="text-sm text-white/60">
+            {!hasCamera && 'Waiting for camera permission…'}
+            {hasCamera && progress < 50 && 'Loading AI model (WASM)…'}
+            {hasCamera && progress >= 50 && progress < 90 && 'Preparing 3D ring…'}
+            {hasCamera && progress >= 90 && progress < 100 && 'Almost ready…'}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// RingScene — the R3F component that lives inside <Canvas>
+//
+// This is where the corrected 2D→3D projection and EMA filter are applied
+// every render frame via useFrame (no React state, no re-renders).
+// ===========================================================================
+interface RingSceneProps {
+  resultRef: React.RefObject<HandTrackingResult | null>;
+  ringModelPath: string;
+  onModelProgress: (progress: number) => void;
+}
+
+function RingScene({ resultRef, ringModelPath, onModelProgress }: RingSceneProps) {
+  const { camera, gl } = useThree();
+  const videoRef = useContext(VideoRefContext);
+
+  // ── Load the GLTF with DRACOLoader + progress callback ────────────────────
+  const { scene: ringScene } = useGLTFWithDraco(ringModelPath, onModelProgress);
+
+  // ── Ring transform refs (mutated in useFrame, not state) ──────────────────
+  const ringGroupRef = useRef<THREE.Group>(null);
+
+  // ── Filters — one filter instance per session, reset on tracking loss ─────
+  const emaFilter = useRef(new VelocityAdaptiveEMAFilter());
+  const scaleFilter = useRef(new ScalarEMAFilter(0.35));
+  const wasDetected = useRef(false);
+
+  // ── Per-frame position/rotation update ───────────────────────────────────
+  useFrame(() => {
+    const group = ringGroupRef.current;
+    if (!group) return;
+
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return;
+
+    const result = resultRef.current;
+
+    // No hand detected — hide ring, reset filter
+    if (!result || !result.detected || result.hands.length === 0) {
+      group.visible = false;
+      if (wasDetected.current) {
+        // Hard-reset the filter so the ring doesn't spring from an old position
+        emaFilter.current.reset();
+        scaleFilter.current.reset();
+        wasDetected.current = false;
+      }
+      return;
+    }
+
+    wasDetected.current = true;
+
+    const hand = result.hands[0];
+    const landmarks = hand.landmarks;
+
+    // Guard: we need at least LM14 (index 14)
+    if (!landmarks || landmarks.length < LM.RING_PIP + 1) return;
+
+    const lm13 = landmarks[LM.RING_MCP]; // base knuckle
+    const lm14 = landmarks[LM.RING_PIP]; // middle knuckle
+
+    const projParams = {
+      videoElement: video,
+      canvasElement: gl.domElement,
+      camera: camera as THREE.PerspectiveCamera,
+      isMirrored: true, // front camera is CSS-mirrored
+    };
+
+    // Project both knuckles into world space
+    const pos13 = landmarkToWorld(lm13, projParams);
+    const pos14 = landmarkToWorld(lm14, projParams);
+
+    // If either projection fails (ray parallel to plane), skip this frame
+    if (!pos13 || !pos14) return;
+
+    // ── Raw ring position: lerp along the MCP→PIP segment ─────────────────
+    // RING_SEGMENT_T = 0.25 → ring sits just above the base knuckle
+    const rawPosition = pos13.clone().lerp(pos14, RING_SEGMENT_T);
+
+    // ── Raw ring rotation ─────────────────────────────────────────────────
+    const rawQuaternion = computeRingQuaternion(pos13, pos14);
+
+    // ── Apply velocity-adaptive EMA filters ──────────────────────────────
+    const { position: filteredPos, quaternion: filteredQuat } =
+      emaFilter.current.update(rawPosition, rawQuaternion);
+
+    // ── Raw ring scale (self-calibrating from projected finger length) ────
+    const rawScale = computeRingScale(pos13, pos14);
+    const filteredScale = scaleFilter.current.update(rawScale);
+
+    // ── Apply to the Three.js group ───────────────────────────────────────
+    group.visible = true;
+    group.position.copy(filteredPos);
+    group.quaternion.copy(filteredQuat);
+    group.scale.setScalar(filteredScale);
+  });
+
+  return (
+    <>
+      {/* Ambient + directional light for the ring — adjust to your product */}
+      <ambientLight intensity={1.2} />
+      <directionalLight position={[2, 4, 3]} intensity={2} castShadow={false} />
+      <directionalLight position={[-2, 1, -1]} intensity={0.6} />
+
+      {/* The ring mesh */}
+      <group ref={ringGroupRef} visible={false}>
+        <primitive object={ringScene.clone(true)} dispose={null} />
+      </group>
+    </>
+  );
+}
+
+// ===========================================================================
+// Custom GLTF + Draco hook with progress reporting
+// ===========================================================================
+
+function useGLTFWithDraco(path: string, onProgress: (p: number) => void) {
+  // We use a ref to call onProgress without re-triggering the effect
+  const onProgressRef = useRef(onProgress);
+  useEffect(() => { onProgressRef.current = onProgress; }, [onProgress]);
+
+  // drei's useGLTF already handles caching and Suspense.
+  // We inject a custom loader below via the loaderOptions.
+  const gltf = useGLTF(path, true, true, (loader) => {
+    // Configure DRACOLoader on the GLTFLoader instance.
+    // This is safe to call even if the model isn't Draco-compressed;
+    // the loader simply ignores the extension in that case.
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+    dracoLoader.preload();
+    (loader as GLTFLoader).setDRACOLoader(dracoLoader);
+  });
+
+  // drei's Suspense flow means by the time we get here the model is loaded.
+  // Signal 100% immediately.
+  useEffect(() => {
+    onProgressRef.current(100);
+  }, []);
+
+  return gltf;
+}
+
+// ===========================================================================
+// Compress-3D helper script (instructions, not a React component)
+// ===========================================================================
+
+/*
+  HOW TO DRACO-COMPRESS YOUR RING MODEL FOR FASTER LOADS
+  ──────────────────────────────────────────────────────────────────────────────
+
+  The build script in package.json should include a "compress-3d" step that runs:
+
+    npx gltf-transform optimize assets/models/raw/ring.glb assets/models/ring.glb \
+      --compress draco
+
+  This uses @gltf-transform/functions (already installed) to Draco-compress all
+  mesh geometry in the GLB.  Typical compression ratios: 3-8×.
+
+  Example package.json scripts section:
+    {
+      "compress-3d": "node scripts/compress-models.mjs",
+      "build": "npm run compress-3d && tsc && vite build"
+    }
+
+  scripts/compress-models.mjs:
+  ──────────────────────────────────────────────────────────────────────────────
+  import { NodeIO } from '@gltf-transform/core';
+  import { draco } from '@gltf-transform/functions';
+  import { KHRONOS_EXTENSIONS } from '@gltf-transform/extensions';
+  import { existsSync } from 'fs';
+  import { mkdir } from 'fs/promises';
+
+  const RAW_DIR = 'assets/models/raw';
+  const OUT_DIR = 'public/models';  // Vite serves /public as /
+
+  if (!existsSync(RAW_DIR)) {
+    console.log('[compress-3d] No raw models directory — skipping.');
+    process.exit(0);
+  }
+
+  await mkdir(OUT_DIR, { recursive: true });
+
+  const io = new NodeIO().registerExtensions(KHRONOS_EXTENSIONS);
+
+  const doc = await io.read(`${RAW_DIR}/ring.glb`);
+  await doc.transform(draco({ method: 'edgebreaker' }));
+  await io.write(`${OUT_DIR}/ring.glb`, doc);
+
+  console.log('[compress-3d] ✓ ring.glb compressed with Draco');
+  ──────────────────────────────────────────────────────────────────────────────
+
+  After compression, the DRACOLoader in the Three.js code above will automatically
+  decompress the geometry at load time using the WASM decoder in /public/draco/.
+*/
