@@ -4,22 +4,17 @@
  * Manages the full lifecycle of the MediaPipe Web Worker:
  *   • Spawns the worker exactly once on mount
  *   • Sends INIT and tracks PROGRESS from both the WASM phase and the model phase
- *   • Dispatches video frames to the worker on a requestAnimationFrame loop
+ *   • Receives frame callbacks from CameraSystem for processing
  *   • Returns the latest HandTrackingResult via a ref (not state — avoids
  *     triggering a React re-render on every frame)
  *   • Reports combined loading progress as a single 0-100 number
  *
- * CRITICAL FIXES FOR GITHUB PAGES:
- *   • ERROR event handling: Listens for ERROR messages from the worker and
- *     updates the loadingState.error field to prevent infinite loading loops.
- *   • The UI can now display error states and recovery options when WASM
- *     or model loading fails.
- *
- * WHY REF INSTEAD OF STATE FOR LANDMARKS?
- *   setState → re-render → all children reconcile → DOM diff → at 30 fps this
- *   is 30 full React render cycles per second for the entire AR subtree.
- *   Instead we store the result in a ref and let the R3F useFrame hook read it
- *   directly each render without touching React at all.
+ * INTEGRATION WITH CAMERA SYSTEM:
+ *   This hook receives frame callbacks from the CameraSystem instead of
+ *   running its own RAF loop. This ensures:
+ *     • Single frame loop authority (no duplicate loops)
+ *     • Proper session guards against stale frames
+ *     • Backpressure handling when worker is busy
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
@@ -51,7 +46,6 @@ export interface UseHandTrackingReturn {
 export function useHandTracking(): UseHandTrackingReturn {
   const workerRef = useRef<Worker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const rafRef = useRef<number>(0);
   const activeRef = useRef(false);
   const resultRef = useRef<HandTrackingResult | null>(null);
 
@@ -99,8 +93,6 @@ export function useHandTracking(): UseHandTrackingReturn {
           break;
 
         case 'ERROR': {
-          // CRITICAL: Handle worker initialization errors gracefully
-          // This prevents the UI from hanging in an infinite loading loop
           const errorMessage = msg.payload.message;
           console.error(
             '%c[MediaPipe Worker] Initialization Error: %s',
@@ -122,14 +114,8 @@ export function useHandTracking(): UseHandTrackingReturn {
     worker.postMessage({ type: 'INIT' });
 
     // ── Cleanup: graceful DESTROY then hard terminate ──────────────────────
-    // Without terminate(), the MediaPipe WASM runtime keeps running after the
-    // component unmounts (e.g. during HMR or modal close), consuming CPU and
-    // holding the camera stream lock.
     return () => {
-      cancelAnimationFrame(rafRef.current);
       worker.postMessage({ type: 'DESTROY' });
-      // Hard-terminate after 300 ms regardless of whether DESTROY was acked,
-      // so a hung worker never blocks the next session init.
       const killTimer = setTimeout(() => {
         worker.terminate();
       }, 300);
@@ -146,12 +132,11 @@ export function useHandTracking(): UseHandTrackingReturn {
       );
       workerRef.current = null;
     };
-  }, []); // runs exactly once per mount
+  }, []);
 
-  // ── Frame dispatch loop ──────────────────────────────────────────────────
-  const dispatchFrame = useCallback(() => {
+  // ── Frame processing callback (called by CameraSystem) ───────────────────
+  const processFrame = useCallback(() => {
     if (!activeRef.current) return;
-    rafRef.current = requestAnimationFrame(dispatchFrame);
 
     const video = videoRef.current;
     const worker = workerRef.current;
@@ -161,7 +146,7 @@ export function useHandTracking(): UseHandTrackingReturn {
     const frame = captureVideoFrame(video);
     if (!frame) return;
 
-    // Transfer the buffer to avoid copying ~1.2 MB of pixel data every frame.
+    // Transfer the buffer to avoid copying pixel data every frame.
     worker.postMessage(
       {
         type: 'DETECT',
@@ -172,9 +157,20 @@ export function useHandTracking(): UseHandTrackingReturn {
           timestamp: performance.now(),
         },
       },
-      [frame.buffer], // transferable — detached in sender, zero-copy in worker
+      [frame.buffer],
     );
   }, []);
+
+  // ── Register frame callback with camera system when worker is ready ──────
+  useEffect(() => {
+    if (loadingState.mediapipe >= 100 && loadingState.ready) {
+      // Camera system will call this function when frames are available
+      (window as any).__AR_FRAME_CALLBACK__ = processFrame;
+    }
+    return () => {
+      delete (window as any).__AR_FRAME_CALLBACK__;
+    };
+  }, [processFrame, loadingState.mediapipe, loadingState.ready]);
 
   // ── Public API ────────────────────────────────────────────────────────────
 
@@ -183,23 +179,16 @@ export function useHandTracking(): UseHandTrackingReturn {
       videoRef.current = video;
       activeRef.current = true;
       setLoadingState((prev) => ({ ...prev, camera: true }));
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(dispatchFrame);
+      // Frame loop is now managed by CameraSystem
     },
-    [dispatchFrame],
+    [],
   );
 
   const setActive = useCallback(
     (active: boolean) => {
       activeRef.current = active;
-      if (active && videoRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = requestAnimationFrame(dispatchFrame);
-      } else {
-        cancelAnimationFrame(rafRef.current);
-      }
     },
-    [dispatchFrame],
+    [],
   );
 
   return { resultRef, loadingState, startTracking, setActive };

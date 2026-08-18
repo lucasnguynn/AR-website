@@ -42,6 +42,7 @@ import * as THREE from 'three';
 
 import { useHandTracking } from '../hook/useHandTracking';
 import { useLoadingState } from '../hook/useLoadingState';
+import { useCamera, startCameraFromRef } from '../hook/useCamera';
 import {
   landmarkToWorld,
   computeRingQuaternion,
@@ -54,6 +55,7 @@ import type { HandTrackingResult } from '../types/ar.types';
 import { ModelErrorBoundary } from './ModelErrorBoundary';
 import { useRingModel, RING_SCALE, OFFSET_Y, OFFSET_Z } from '../hook/useRingModel';
 import { useFrame, useThree } from '@react-three/fiber';
+import { FacingMode } from '../services/cameraSystem';
 
 // ---------------------------------------------------------------------------
 // Context: share the video element reference with the inner R3F component
@@ -80,35 +82,47 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
 
   const { resultRef, loadingState, startTracking } = useHandTracking();
   const { isLoading, markLoaded } = useLoadingState();
+  const {
+    cameraState,
+    facingMode,
+    isReady: cameraIsReady,
+    hasError: cameraHasError,
+    lastError: cameraLastError,
+    metadata: cameraMetadata,
+    switchCamera,
+    recoverCamera,
+  } = useCamera();
 
   // ── Camera setup ──────────────────────────────────────────────────────────
-  const initCamera = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'user',
-          width:     { ideal: 640 },
-          height:    { ideal: 480 },
-          frameRate: { ideal: 30 },
-        },
-        audio: false,
-      });
-      streamRef.current = stream;
-      if (!videoRef.current) return;
-      videoRef.current.srcObject = stream;
-      await videoRef.current.play();
-      startTracking(videoRef.current);
-    } catch (err) {
-      console.error('[AR Camera]', err);
-    }
-  }, [startTracking]);
-
   useEffect(() => {
-    initCamera();
-    return () => {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-    };
-  }, [initCamera]);
+    if (videoRef.current && cameraState === 'IDLE') {
+      startCameraFromRef(videoRef.current, 'user')
+        .then(() => {
+          // Camera started successfully, now start tracking
+          if (videoRef.current) {
+            startTracking(videoRef.current);
+          }
+        })
+        .catch((err) => {
+          console.error('[AR Camera] Failed to start:', err);
+        });
+    }
+  }, [cameraState, startTracking]);
+
+  // ── Sync camera readiness with loading state ──────────────────────────────
+  useEffect(() => {
+    if (cameraIsReady && !loadingState.camera) {
+      // Camera is ready but loadingState doesn't know yet
+      // This is handled by useHandTracking's startTracking call
+    }
+  }, [cameraIsReady, loadingState.camera]);
+
+  // ── Handle camera errors ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (cameraHasError && cameraLastError) {
+      console.error('[AR Camera] Error:', cameraLastError.message);
+    }
+  }, [cameraHasError, cameraLastError]);
 
   // ── Escape key to close ───────────────────────────────────────────────────
   useEffect(() => {
@@ -117,11 +131,23 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  // ── Cleanup on unmount ────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
   // ── Combined loading progress ─────────────────────────────────────────────
   // mediapipe 0-100 (from worker PROGRESS messages)
   // isLoading: false once OnMountNotifier fires inside Canvas (= GLB resolved)
   const combinedProgress = Math.round(loadingState.mediapipe / 2);
   const isReady          = !isLoading && loadingState.mediapipe >= 100;
+
+  // Determine display mirroring based on facing mode
+  const videoStyle: React.CSSProperties = {
+    transform: facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)',
+  };
 
   return (
     <div
@@ -157,11 +183,37 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
         <video
           ref={videoRef}
           className="absolute inset-0 w-full h-full object-cover"
-          style={{ transform: 'scaleX(-1)' }}
+          style={videoStyle}
           playsInline
           muted
           autoPlay
         />
+
+        {/* Camera switching button (for rear camera support) */}
+        {cameraIsReady && (
+          <button
+            onClick={() => switchCamera(facingMode === 'user' ? 'environment' : 'user')}
+            disabled={cameraState === 'SWITCHING'}
+            className="absolute top-4 left-4 z-20 text-white bg-black/50 rounded-full p-2 hover:bg-black/80 transition-colors disabled:opacity-50"
+            aria-label={`Switch to ${facingMode === 'user' ? 'rear' : 'front'} camera`}
+            title="Switch camera"
+          >
+            {cameraState === 'SWITCHING' ? '⟳' : '⇄'}
+          </button>
+        )}
+
+        {/* Camera error recovery UI */}
+        {cameraHasError && cameraLastError?.recoverable && (
+          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 text-white px-4 py-2 rounded-lg flex items-center gap-3">
+            <span className="text-sm">{cameraLastError.message}</span>
+            <button
+              onClick={recoverCamera}
+              className="px-3 py-1 bg-white text-red-900 rounded-md text-sm font-medium hover:bg-gray-100"
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Three.js canvas — transparent overlay */}
         <VideoRefContext.Provider value={videoRef}>
