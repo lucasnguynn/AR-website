@@ -8,8 +8,10 @@
 
 import React, { Suspense, useState, useCallback, useRef, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, Stage, ContactShadows, useGLTF } from '@react-three/drei';
+import { OrbitControls, Environment, ContactShadows, useGLTF } from '@react-three/drei';
+import * as THREE from 'three';
 import { FallbackMode } from '../store/useARStore';
+import { disposeRingScene, useRingModel } from '../hook/useRingModel';
 
 interface Fallback3DViewerProps {
   ringModelUrl: string;
@@ -22,8 +24,15 @@ interface RingModelProps {
 }
 
 const RingModel: React.FC<RingModelProps> = ({ url }) => {
-  const { scene } = useGLTF(url);
-  return <primitive object={scene} />;
+  const { scene } = useRingModel(url);
+
+  useEffect(() => {
+    return () => {
+      disposeRingScene(scene);
+    };
+  }, [scene]);
+
+  return <primitive object={scene} dispose={null} />;
 };
 
 RingModel.displayName = 'RingModel';
@@ -36,29 +45,19 @@ RingModel.displayName = 'RingModel';
 interface ViewerSceneProps {
   ringModelUrl: string;
   orbitRef: React.MutableRefObject<any>;
+  autoRotate: boolean;
 }
 
-const ViewerScene: React.FC<ViewerSceneProps> = ({ ringModelUrl, orbitRef }) => {
+const ViewerScene: React.FC<ViewerSceneProps> = ({ ringModelUrl, orbitRef, autoRotate }) => {
   return (
     <>
-      {/* Lighting & Environment */}
-      <Environment preset="studio" background={false} blur={0.8} />
-      
-      {/* Stage provides professional lighting and shadows */}
-      <Stage
-        environment="studio"
-        intensity={0.5}
-        shadows={{
-          type: 'contact',
-          opacity: 0.4,
-          width: 2,
-          height: 2,
-          blur: 0.5,
-          far: 0.5,
-        }}
-      >
+      <Environment preset="studio" background={false} blur={0.35} environmentIntensity={1.0} />
+      <ambientLight intensity={0.3} />
+      <hemisphereLight args={['#fff5df', '#1f2330', 0.65]} />
+      <rectAreaLight position={[0, 1.8, 2.5]} width={2.2} height={1.1} intensity={2.2} />
+      <group rotation={[0, -0.25, 0]}>
         <RingModel url={ringModelUrl} />
-      </Stage>
+      </group>
       
       {/* Additional Contact Shadows for grounding */}
       <ContactShadows
@@ -80,7 +79,7 @@ const ViewerScene: React.FC<ViewerSceneProps> = ({ ringModelUrl, orbitRef }) => 
         maxDistance={6}
         minPolarAngle={Math.PI / 6}
         maxPolarAngle={Math.PI / 2}
-        autoRotate={true}
+        autoRotate={autoRotate}
         autoRotateSpeed={0.5}
         makeDefault
       />
@@ -170,7 +169,12 @@ export const Fallback3DViewer: React.FC<Fallback3DViewerProps> = ({
           camera={{ position: [3, 2, 3], fov: 45 }}
           shadows
           dpr={[1, 2]}
-          gl={{ antialias: true, alpha: true }}
+          gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
+          onCreated={({ gl }) => {
+            gl.outputColorSpace = THREE.SRGBColorSpace;
+            gl.toneMapping = THREE.ACESFilmicToneMapping;
+            gl.toneMappingExposure = 1.0;
+          }}
         >
           <color attach="background" args={['#1a1a2e']} />
           <Suspense
@@ -178,12 +182,12 @@ export const Fallback3DViewer: React.FC<Fallback3DViewerProps> = ({
               <group>
                 <mesh>
                   <boxGeometry args={[0.5, 0.5, 0.5]} />
-                  <meshStandardMaterial color="#4a4a6a" />
+                  <meshStandardMaterial color="#D5FD50" emissive="#D5FD50" emissiveIntensity={0.18} />
                 </mesh>
               </group>
             }
           >
-            <ViewerScene ringModelUrl={ringModelUrl} orbitRef={orbitRef} />
+            <ViewerScene ringModelUrl={ringModelUrl} orbitRef={orbitRef} autoRotate={isAutoRotating} />
           </Suspense>
         </Canvas>
       </div>
