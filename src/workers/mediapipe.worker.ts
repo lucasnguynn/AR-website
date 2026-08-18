@@ -3,15 +3,12 @@
  *
  * Web Worker for MediaPipe Hand Landmark detection.
  * 
- * CRITICAL FIXES FOR GITHUB PAGES DEPLOYMENT:
- * 1. CDN Fallback for WASM: FilesetResolver.forVisionTasks now uses an explicit
- *    CDN URL (https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm)
- *    to bypass GitHub Pages MIME-type and path resolution issues.
- * 2. Worker Error Boundary: All initialization logic is wrapped in try/catch.
- *    Any failure in HandLandmarker.createFromOptions posts an ERROR message
- *    back to the main thread with a descriptive error payload.
- * 3. Progress Reporting: Reports PROGRESS events for both WASM loading and
- *    model loading phases so the UI can show accurate loading state.
+ * CRITICAL FIXES FOR GITHUB PAGES & VITE MODULE WORKER:
+ * 1. Manual WASM Loader Injection: Fetches the MediaPipe loader script directly 
+ *    and evaluates it in the worker scope to safely register `ModuleFactory`, 
+ *    bypassing the `importScripts` limitation inside ES module workers.
+ * 2. CDN Fallback for WASM: Explicitly points to jsDelivr CDN URLs.
+ * 3. Worker Error Boundary: Try/catch wrapper ensuring graceful error reporting.
  */
 
 import {
@@ -45,7 +42,6 @@ interface WorkerOutMessage {
 // Constants
 // ──────────────────────────────────────────────────────────────────────────────
 
-// FIXED: Force CDN path for WASM binaries to bypass GitHub Pages MIME/path issues
 const MEDIAPIPE_WASM_CDN_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
 const HAND_LANDMARKER_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
@@ -68,20 +64,33 @@ function postMessageSafe(msg: WorkerOutMessage): void {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Initialize MediaPipe HandLandmarker with CDN WASM
+// Initialize MediaPipe HandLandmarker with ModuleFactory patch for ES Modules
 // ──────────────────────────────────────────────────────────────────────────────
 
 async function initializeMediaPipe(): Promise<void> {
   try {
-    // Step 1: Load WASM from CDN (bypasses GitHub Pages issues)
     postMessageSafe({
       type: 'PROGRESS',
       payload: { phase: 'wasm', progress: 0 },
     });
 
+    // Step 1: Resolve the vision tasks file set structure from CDN
     const wasmFileset = await FilesetResolver.forVisionTasks(
       MEDIAPIPE_WASM_CDN_URL
     );
+
+    // CRITICAL WORKAROUND: For Vite + ES Module workers, importScripts inside MediaPipe fails.
+    // We manually fetch the loader script and evaluate it so `self.ModuleFactory` gets populated.
+    if (!(self as any).ModuleFactory && wasmFileset.wasmLoaderPath) {
+      try {
+        const response = await fetch(wasmFileset.wasmLoaderPath);
+        const loaderText = await response.text();
+        // Evaluate the loader script in the worker scope to initialize ModuleFactory
+        (0, eval)(loaderText);
+      } catch (evalErr) {
+        console.warn('[MediaPipe Worker] Manual loader injection warning:', evalErr);
+      }
+    }
 
     postMessageSafe({
       type: 'PROGRESS',
@@ -94,7 +103,6 @@ async function initializeMediaPipe(): Promise<void> {
       payload: { phase: 'model', progress: 0 },
     });
 
-    // Create HandLandmarker with options optimized for video stream
     handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
       baseOptions: {
         modelAssetPath: HAND_LANDMARKER_MODEL_URL,
@@ -118,13 +126,11 @@ async function initializeMediaPipe(): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : 'Unknown initialization error';
     console.error('[MediaPipe Worker] Initialization failed:', errorMessage);
     
-    // CRITICAL: Post ERROR message so main thread can handle the failure
     postMessageSafe({
       type: 'ERROR',
       payload: { message: `MediaPipe initialization failed: ${errorMessage}` },
     });
     
-    // Re-throw to ensure the promise rejects
     throw error;
   }
 }
@@ -144,14 +150,12 @@ function processFrame(
   }
 
   try {
-    // Create ImageData from the transferred buffer
     const imageData = new ImageData(
       new Uint8ClampedArray(buffer),
       width,
       height
     );
 
-    // Create a canvas to draw the image data
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
     if (!ctx) {
@@ -159,10 +163,8 @@ function processFrame(
     }
     ctx.putImageData(imageData, 0, 0);
 
-    // Detect hand landmarks
     const result = handLandmarker.detectForVideo(canvas, timestamp);
 
-    // Transform result to our format
     const hands = result.landmarks.map((landmarks, index) => ({
       landmarks: landmarks.map((lm) => ({
         x: lm.x,
@@ -171,7 +173,7 @@ function processFrame(
         visibility: lm.visibility ?? 1,
       })),
       handedness: result.handedness?.[index]?.[0]?.displayName ?? 'Unknown',
-      score: 1.0, // Default confidence score since handLandmarksScore doesn't exist
+      score: 1.0,
     }));
 
     postMessageSafe({
@@ -185,7 +187,6 @@ function processFrame(
     const errorMessage = error instanceof Error ? error.message : 'Detection failed';
     console.error('[MediaPipe Worker] Detection error:', errorMessage);
     
-    // Still send result with empty hands on error to keep pipeline flowing
     postMessageSafe({
       type: 'RESULT',
       payload: { hands: [], detected: false },
@@ -232,5 +233,4 @@ self.onmessage = async (event: MessageEvent<WorkerInMessage>) => {
   }
 };
 
-// Export empty object to satisfy module requirements
 export {};
