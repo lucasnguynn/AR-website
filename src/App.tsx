@@ -1,56 +1,57 @@
-import { useState } from 'react';
-import ARTryOnModal from './components/ARTryOnModal';
-import { DEFAULT_CATALOG } from './components/RingCatalog';
-
 /**
- * Public glTF-Binary ring model from the official Khronos sample repo.
- * Using the first item from the catalog as the default ring.
+ * App.tsx
+ *
+ * Root component.  Shows a product page with a "Try On" CTA that opens the
+ * ARTryOnModal.  Lazy-imports the modal so the heavy Three.js + R3F bundle
+ * is NOT in the initial page load — it only loads when the user clicks "Try On".
+ *
+ * This is an important optimisation: users browsing products don't pay the
+ * Three.js download cost until they actually start the AR experience.
  */
-const RING_MODEL_URL = DEFAULT_CATALOG[0].modelUrl
 
-function App() {
-  const [isOpen, setIsOpen] = useState(false)
+import { lazy, Suspense, useState } from 'react';
+
+// Lazy import — Three.js + R3F + MediaPipe are in a separate chunk and only
+// downloaded when the modal is first rendered.
+const ARTryOnModal = lazy(() =>
+  import('./components/ARTryOnModal').then((m) => ({ default: m.ARTryOnModal })),
+);
+
+export default function App() {
+  const [showAR, setShowAR] = useState(false);
 
   return (
-    <div className="flex flex-col items-center justify-center w-full min-h-screen bg-black gap-6">
-      {/* Hero label */}
-      <h1 className="text-brand-neon text-4xl font-bold tracking-tight text-center px-4">
-        WebAR Jewelry Try-On
-      </h1>
+    <div className="min-h-screen bg-neutral-950 text-white">
+      {/* ── Product page ─────────────────────────────────────────────── */}
+      <main className="max-w-md mx-auto p-6 flex flex-col gap-6">
+        <h1 className="text-3xl font-bold text-[#D5FD50]">WebAR Jewelry Try-On</h1>
 
-      <p className="text-white/60 text-sm text-center max-w-xs px-4">
-        Point your camera at your hand and see how the ring looks in real time.
-      </p>
+        {/* Sample product card */}
+        <div className="bg-neutral-900 rounded-2xl overflow-hidden shadow-xl">
+          <div className="w-full aspect-square bg-neutral-800 flex items-center justify-center text-6xl">
+            💍
+          </div>
+          <div className="p-4 flex flex-col gap-3">
+            <h2 className="text-xl font-semibold">Classic Gold Band</h2>
+            <p className="text-neutral-400 text-sm">
+              18k gold, comfort-fit, 4mm width. Available in sizes 5–12.
+            </p>
+            <button
+              onClick={() => setShowAR(true)}
+              className="w-full py-3 rounded-xl bg-[#D5FD50] text-black font-bold text-base hover:bg-[#c0e840] active:scale-95 transition-all"
+            >
+              Try On
+            </button>
+          </div>
+        </div>
+      </main>
 
-      {/* Primary CTA — opens the real ARTryOnModal */}
-      <button
-        onClick={() => setIsOpen(true)}
-        className="
-          mt-4 px-10 py-4
-          bg-brand-neon text-black
-          text-lg font-bold rounded-full
-          hover:opacity-90 active:scale-95
-          transition-all duration-150
-          shadow-[0_0_24px_rgba(213,253,80,0.35)]
-        "
-      >
-        Try On Ring
-      </button>
-
-      {/*
-        Real ARTryOnModal — previously this was an inline mock that:
-          • lacked the required `onClose` and `ringModelUrl` props,
-          • duplicated component logic already defined in ARTryOnModal.tsx,
-          • and used hardcoded arbitrary Tailwind colour values.
-        All three issues are resolved here.
-      */}
-      <ARTryOnModal
-        isOpen={isOpen}
-        onClose={() => setIsOpen(false)}
-        ringModelUrl={RING_MODEL_URL}
-      />
+      {/* ── AR Modal — lazy loaded ─────────────────────────────────── */}
+      {showAR && (
+        <Suspense fallback={null}>
+          <ARTryOnModal onClose={() => setShowAR(false)} />
+        </Suspense>
+      )}
     </div>
-  )
+  );
 }
-
-export default App
