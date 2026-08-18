@@ -64,7 +64,7 @@ const DRACO_DECODER_PATH = 'https://www.gstatic.com/draco/versioned/decoders/1.5
 // BEFORE the component even mounts.  This starts the fetch in parallel with
 // the MediaPipe worker init that begins on component mount.
 // ---------------------------------------------------------------------------
-const RING_MODEL_PATH = import.meta.env.BASE_URL + 'models/ring.glb';
+const RING_MODEL_PATH = import.meta.env.BASE_URL + 'models/nhan.glb';
 
 // Tell drei's useGLTF to use our DRACOLoader instance
 useGLTF.setDecoderPath(DRACO_DECODER_PATH);
