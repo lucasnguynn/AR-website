@@ -392,8 +392,8 @@ function useGLTFWithDraco(path: string, onProgress: (p: number) => void) {
     const dracoLoader = new DRACOLoader();
     dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
     dracoLoader.preload();
-    (loader as GLTFLoader).setDRACOLoader(dracoLoader);
-  });
+    // Ép kiểu qua unknown trước để vượt qua xung đột type giữa three-stdlib và three gốc
+    (loader as unknown as GLTFLoader).setDRACOLoader(dracoLoader);
 
   // drei's Suspense flow means by the time we get here the model is loaded.
   // Signal 100% immediately.
