@@ -57,7 +57,7 @@ import type { HandTrackingResult } from '../types/ar.types';
 // ---------------------------------------------------------------------------
 // Draco path — pointing to the files copied by vite.config.ts
 // ---------------------------------------------------------------------------
-const DRACO_DECODER_PATH = import.meta.env.BASE_URL + 'draco/';
+const DRACO_DECODER_PATH = 'https://www.gstatic.com/draco/versioned/decoders/1.5.6/';
 
 // ---------------------------------------------------------------------------
 // Preload the ring model the moment this module is imported —
