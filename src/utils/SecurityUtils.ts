@@ -1,3 +1,5 @@
+import { WORKER_SRI_HASHES } from '../generated/sri-hashes';
+
 export interface PremiumAssetRequest {
   url: string;
   audience?: string;
@@ -9,10 +11,18 @@ const encoder = new TextEncoder();
 const PREMIUM_ASSET_PATTERN = /\.(glb|gltf|ktx2|hdr|bin|webp|png|jpg|jpeg)$/i;
 const MAX_TTL_SECONDS = 300;
 
-function base64Url(bytes: Uint8Array): string {
+function bytesToBinary(bytes: Uint8Array): string {
   let binary = '';
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+  return binary;
+}
+
+function standardBase64(bytes: Uint8Array): string {
+  return btoa(bytesToBinary(bytes));
+}
+
+function base64Url(bytes: Uint8Array): string {
+  return standardBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
 }
 
 async function importSigningKey(secret: string): Promise<CryptoKey> {
@@ -50,6 +60,35 @@ export async function signedAssetFetch(input: RequestInfo | URL, init: RequestIn
   headers.set('X-AR-Privacy', 'local-camera-processing-only');
   headers.set('X-Requested-With', 'ARWebsite');
   return fetch(url, { ...init, headers, credentials: 'same-origin', referrerPolicy: 'strict-origin-when-cross-origin' });
+}
+
+export async function verifyWorkerBlobIntegrity(workerUrl: string): Promise<boolean> {
+  const assetKey = new URL(workerUrl, window.location.href).pathname.split('/').slice(-2).join('/');
+  const expected = (WORKER_SRI_HASHES as Record<string, string>)[assetKey];
+
+  if (!expected) {
+    console.warn(`[SecurityUtils] No SRI hash registered for ${assetKey}; continuing without blocking startup.`);
+    return false;
+  }
+
+  try {
+    const response = await fetch(workerUrl, { cache: 'no-store', credentials: 'same-origin' });
+    const bytes = await response.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-384', bytes);
+    const actual = `sha384-${standardBase64(new Uint8Array(digest))}`;
+    const verified = actual === expected;
+    if (!verified) console.warn(`[SecurityUtils] Worker SRI mismatch for ${assetKey}; continuing with degraded trust.`);
+    return verified;
+  } catch (error) {
+    console.warn('[SecurityUtils] Worker SRI verification failed; continuing without blocking startup.', error);
+    return false;
+  }
+}
+
+export function createVerifiedWorker(workerUrl: string | URL, options?: WorkerOptions): Worker {
+  const url = workerUrl.toString();
+  void verifyWorkerBlobIntegrity(url);
+  return new Worker(url, options);
 }
 
 export function assertLocalCameraPrivacy(video: HTMLVideoElement | null): void {

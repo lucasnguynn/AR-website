@@ -1,3 +1,4 @@
+import { createVerifiedWorker } from '../utils/SecurityUtils';
 export interface MonocularDepthResult {
   readonly frameId: number;
   readonly width: number;
@@ -21,7 +22,7 @@ export class MonocularDepthEstimator {
 
   async initialize(): Promise<void> {
     if (this.worker) return;
-    this.worker = new Worker(new URL('../workers/depth.worker.ts', import.meta.url), { type: 'module' });
+    this.worker = createVerifiedWorker(new URL('../workers/depth.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.handleMessage(event.data);
     this.worker.postMessage({ type: 'init', modelUrl: this.modelUrl });
   }
