@@ -34,12 +34,12 @@ export default defineConfig({
     assetsInlineLimit: 0,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'vendor-three': ['three'],
-          'vendor-r3f': ['@react-three/fiber', '@react-three/drei'],
-          'vendor-mediapipe': ['@mediapipe/tasks-vision'],
-          'vendor-tfjs': ['@tensorflow/tfjs-core', '@tensorflow/tfjs-backend-webgpu', '@tensorflow/tfjs-converter'],
-          'vendor-react': ['react', 'react-dom'],
+        manualChunks(id) {
+          if (id.includes('node_modules/three')) return 'three-core';
+          if (id.includes('node_modules/@react-three')) return 'r3f';
+          if (id.includes('/src/tracking/') || id.includes('@mediapipe') || id.includes('@tensorflow')) return 'tracking';
+          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) return 'vendor-react';
+          return undefined;
         },
       },
     },

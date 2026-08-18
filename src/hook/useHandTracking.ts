@@ -10,6 +10,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import type { HandTrackingResult, LoadingState, WorkerOutMessage, TrackingMetrics } from '../types/ar.types';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
+import { createVerifiedWorker } from '../utils/SecurityUtils';
 
 export interface UseHandTrackingReturn {
   resultRef: React.RefObject<HandTrackingResult | null>;
@@ -74,7 +75,7 @@ export function useHandTracking(): UseHandTrackingReturn {
   }, []);
 
   useEffect(() => {
-    const worker = new Worker(new URL('../workers/mediapipe.worker.ts', import.meta.url));
+    const worker = createVerifiedWorker(new URL('../workers/mediapipe.worker.ts', import.meta.url), { type: 'module' });
     workerRef.current = worker;
 
     worker.addEventListener('message', (event: MessageEvent<WorkerOutMessage>) => {

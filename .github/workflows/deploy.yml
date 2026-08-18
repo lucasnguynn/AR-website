@@ -13,7 +13,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: true
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-# ... các dòng trước đó ...
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,21 +31,40 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: npm
 
-      # SỬA DÒNG NÀY: Thay vì dùng npm ci, hãy dùng npm install để tự sinh lại lock file khớp với package.json
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache generated models
+        uses: actions/cache@v4
+        with:
+          path: public/models
+          key: ${{ runner.os }}-models-${{ hashFiles('assets/models/raw/**') }}
+          restore-keys: |
+            ${{ runner.os }}-models-
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Build
+      - name: Build production assets
+        run: npm run build:assets
+
+      - name: Build application
         run: npm run build
-# ... các dòng sau đó ...
+
+      - name: Generate worker SRI hashes
+        run: npm run generate:sri
+
+      - name: Rebuild application with SRI manifest
+        run: npm run build
 
       - name: Create 404.html for SPA routing
-        # GitHub Pages serves a 404 page for any URL that doesn't match a file.
-        # For a SPA deployed at /AR-website/, direct URL access (e.g. refreshing
-        # a deep route) would 404. Copying index.html as 404.html lets GitHub Pages
-        # serve the app shell for any unmatched path, allowing client-side routing to work.
         run: cp dist/index.html dist/404.html
 
       - name: Setup Pages
@@ -54,7 +73,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './dist'
+          path: ./dist
 
       - name: Deploy to GitHub Pages
         id: deployment
