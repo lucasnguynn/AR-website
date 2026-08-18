@@ -1,24 +1,44 @@
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App'
-import './index.css'
+/**
+ * main.tsx
+ *
+ * Entry point.  Removes the static DOM loading screen (defined in index.html)
+ * after React hydrates, with a short fade-out transition.
+ */
 
-// NOTE: React.StrictMode intentionally omitted — it causes WebGL context loss
-// because it double-invokes effects in development, which tears down and
-// re-creates the Three.js renderer, exhausting the browser's WebGL context limit.
-// See: https://react.dev/reference/react/StrictMode#fixing-bugs-found-by-strict-mode
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <App />
-)
+import { StrictMode, useEffect, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import './index.css';
 
-// Remove the static HTML loading screen after React has mounted.
-// This is the #loading div in index.html — it is completely separate from the
-// React-managed loading overlay in ARTryOnModal (which is driven by Zustand state).
-// The 500ms delay gives React time to paint its first frame so there's no flash.
-const loadingElement = document.getElementById('loading')
-if (loadingElement) {
-  setTimeout(() => {
-    loadingElement.style.opacity = '0'
-    setTimeout(() => loadingElement.remove(), 500)
-  }, 500)
+// ---------------------------------------------------------------------------
+// Remove the static loading screen injected by index.html once React is live
+// ---------------------------------------------------------------------------
+function AppWithLoadingCleanup() {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    const loader = document.getElementById('loading');
+    if (loader) {
+      // Start fade-out
+      loader.style.opacity = '0';
+      // Remove from DOM after transition completes
+      const timer = setTimeout(() => {
+        loader.style.display = 'none';
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
+  if (!mounted) return null;
+  return <App />;
 }
+
+const rootEl = document.getElementById('root');
+if (!rootEl) throw new Error('Root element #root not found in index.html');
+
+createRoot(rootEl).render(
+  <StrictMode>
+    <AppWithLoadingCleanup />
+  </StrictMode>,
+);
