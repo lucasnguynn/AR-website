@@ -1,5 +1,5 @@
 // src/components/ModelErrorBoundary.tsx
-import React, { Component, ErrorInfo, ReactNode } from 'react';
+import React, { Component, ReactNode } from 'react';
 
 interface Props {
   children: ReactNode;
@@ -22,11 +22,8 @@ export class ModelErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    // Surface the real error — not "something went wrong" — so debugging
-    // the Draco / 404 / CORS issue is immediate.
-    console.error('[ModelErrorBoundary] 3D model failed to load:', error);
-    console.error('[ModelErrorBoundary] Component stack:', info.componentStack);
+  componentDidCatch() {
+    this.setState({ hasError: true });
   }
 
   render() {

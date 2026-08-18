@@ -18,10 +18,6 @@ export function useLoadingState() {
   useEffect(() => {
     // Safety-net: if GLB never resolves, dismiss the overlay anyway.
     timerRef.current = setTimeout(() => {
-      console.warn(
-        '[useLoadingState] Timeout reached — forcing loading overlay off. ' +
-        'Check Draco config or model path if the ring is missing.'
-      );
       setIsLoading(false);
     }, LOADING_TIMEOUT_MS);
 

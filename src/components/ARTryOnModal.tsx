@@ -1,13 +1,12 @@
 /**
  * ARTryOnModal.tsx
  *
- * Top-level WebAR experience. This file is intentionally lazy-imported by
- * App.tsx, so no Three.js, R3F, MediaPipe worker, WASM, or GLB model request is
- * made during the storefront's initial load. Those assets start only after the
- * user opens the TRY ON modal and this component mounts.
+ * Lazy-loaded top-level WebAR experience with premium mobile UX, accessible
+ * recovery controls, and explicit teardown paths for camera, worker, RAF, and
+ * Three.js resources when the modal closes.
  */
 
-import React, { Suspense, useEffect, useMemo, useRef } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -20,9 +19,29 @@ export interface ARTryOnModalProps {
   onClose: () => void;
 }
 
+type CriticalError = {
+  title: string;
+  message: string;
+  retryable: boolean;
+};
+
+const TRACKING_TIMEOUT_MS = 12_000;
+
+function hasWebGLSupport(): boolean {
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+  if (!gl) return false;
+  const loseContext = gl.getExtension('WEBGL_lose_context');
+  loseContext?.loseContext();
+  return true;
+}
+
 export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const { resultRef, loadingState, startTracking, setActive } = useHandTracking();
+  const closeRequestedRef = useRef(false);
+  const trackingTimeoutRef = useRef<number | null>(null);
+  const [criticalError, setCriticalError] = useState<CriticalError | null>(null);
+  const { resultRef, loadingState, startTracking, setActive, destroy } = useHandTracking();
   const { isLoading, markLoaded } = useLoadingState();
   const {
     cameraState,
@@ -32,108 +51,138 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     lastError: cameraLastError,
     switchCamera,
     recoverCamera,
+    stopCamera,
   } = useCamera();
 
-  const adaptiveDpr = useMemo<[number, number]>(() => {
-    return [1, Math.min(window.devicePixelRatio, 1.75)];
-  }, []);
+  const adaptiveDpr = useMemo<[number, number]>(() => [1, Math.min(window.devicePixelRatio, 1.75)], []);
+
+  const closeAR = useCallback(() => {
+    if (closeRequestedRef.current) return;
+    closeRequestedRef.current = true;
+    if (trackingTimeoutRef.current !== null) {
+      window.clearTimeout(trackingTimeoutRef.current);
+      trackingTimeoutRef.current = null;
+    }
+    setActive(false);
+    destroy();
+    stopCamera();
+    resetCamera();
+    onClose();
+  }, [destroy, onClose, setActive, stopCamera]);
+
+  const retryExperience = useCallback(async () => {
+    setCriticalError(null);
+    (resultRef as React.MutableRefObject<typeof resultRef.current>).current = null;
+    if (cameraHasError) {
+      await recoverCamera();
+      return;
+    }
+    if (videoRef.current) {
+      await startCameraFromRef(videoRef.current, facingMode);
+      startTracking(videoRef.current);
+    }
+  }, [cameraHasError, facingMode, recoverCamera, resultRef, startTracking]);
 
   useEffect(() => {
+    if (!hasWebGLSupport()) {
+      setCriticalError({
+        title: 'WebGL unavailable',
+        message: 'This device or browser cannot render the AR preview. Try another browser or close this view.',
+        retryable: false,
+      });
+      return;
+    }
+
     setActive(true);
     return () => {
+      if (trackingTimeoutRef.current !== null) window.clearTimeout(trackingTimeoutRef.current);
       setActive(false);
+      destroy();
       resetCamera();
     };
-  }, [setActive]);
+  }, [destroy, setActive]);
 
   useEffect(() => {
-    if (videoRef.current && cameraState === 'IDLE') {
-      startCameraFromRef(videoRef.current, 'user')
-        .then(() => {
-          if (videoRef.current) startTracking(videoRef.current);
-        })
-        .catch((err) => {
-          console.error('[AR Camera] Failed to start:', err);
+    if (criticalError || !videoRef.current || cameraState !== 'IDLE') return;
+
+    startCameraFromRef(videoRef.current, 'user')
+      .then(() => {
+        if (videoRef.current) startTracking(videoRef.current);
+      })
+      .catch(() => {
+        setCriticalError({
+          title: 'Camera unavailable',
+          message: 'Allow camera access in your browser settings, then retry. Your camera feed stays on this device only.',
+          retryable: true,
         });
-    }
-  }, [cameraState, startTracking]);
+      });
+  }, [cameraState, criticalError, startTracking]);
 
   useEffect(() => {
-    if (cameraHasError && cameraLastError) {
-      console.error('[AR Camera] Error:', cameraLastError.message);
-    }
+    if (!cameraHasError || !cameraLastError) return;
+    setCriticalError({
+      title: cameraLastError.code === 'PERMISSION_DENIED' ? 'Camera permission needed' : 'Camera interrupted',
+      message:
+        cameraLastError.code === 'PERMISSION_DENIED'
+          ? 'Enable camera access for this site, then retry. Video is processed locally and never uploaded.'
+          : `${cameraLastError.message}. Retry the camera or close this view.`,
+      retryable: cameraLastError.recoverable || cameraLastError.code === 'PERMISSION_DENIED',
+    });
   }, [cameraHasError, cameraLastError]);
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+    if (!loadingState.error) return;
+    setCriticalError({
+      title: 'AR model did not load',
+      message: 'The hand-tracking engine could not start. Check your connection and retry.',
+      retryable: true,
+    });
+  }, [loadingState.error]);
+
+  useEffect(() => {
+    if (!loadingState.ready || !loadingState.camera || resultRef.current?.detected) return;
+    trackingTimeoutRef.current = window.setTimeout(() => {
+      if (!resultRef.current?.detected) {
+        setCriticalError({
+          title: 'Hand not detected',
+          message: 'Place your hand in the frame and move naturally, or retry the AR session.',
+          retryable: true,
+        });
+      }
+    }, TRACKING_TIMEOUT_MS);
+    return () => {
+      if (trackingTimeoutRef.current !== null) window.clearTimeout(trackingTimeoutRef.current);
+    };
+  }, [loadingState.camera, loadingState.ready, resultRef]);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeAR();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
+  }, [closeAR]);
 
-  const combinedProgress = Math.min(
-    100,
-    Math.round(loadingState.mediapipe * 0.7 + (isLoading ? 0 : 30)),
-  );
-  const isReady = !isLoading && loadingState.mediapipe >= 100 && loadingState.camera;
+  const combinedProgress = Math.min(100, Math.round(loadingState.mediapipe * 0.7 + (isLoading ? 0 : 30)));
+  const isReady = !isLoading && loadingState.mediapipe >= 100 && loadingState.camera && !criticalError;
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black flex items-center justify-center"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black text-white antialiased"
       role="dialog"
       aria-modal="true"
-      aria-label="WebAR Jewelry Try-On"
+      aria-label="WebAR jewelry try-on"
     >
-      <button
-        onClick={onClose}
-        className="absolute top-4 right-4 z-20 text-white bg-black/50 rounded-full p-2 hover:bg-black/80 transition-colors"
-        aria-label="Close AR try-on"
-      >
-        ✕
-      </button>
-
-      {!isReady && (
-        <LoadingOverlay
-          progress={combinedProgress}
-          error={loadingState.error}
-          hasCamera={loadingState.camera}
-        />
-      )}
-
-      <div className="relative w-full h-full overflow-hidden" style={{ maxWidth: 480, margin: '0 auto' }}>
+      <div className="relative h-full w-full max-w-[480px] overflow-hidden bg-black" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <video
           ref={videoRef}
-          className="absolute inset-0 w-full h-full object-cover"
+          className="absolute inset-0 h-full w-full object-cover"
           style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)' }}
+          aria-label="Local camera preview for virtual ring try-on"
           playsInline
           muted
           autoPlay
         />
-
-        {cameraIsReady && (
-          <button
-            onClick={() => switchCamera(facingMode === 'user' ? 'environment' : 'user')}
-            disabled={cameraState === 'SWITCHING'}
-            className="absolute top-4 left-4 z-20 text-white bg-black/50 rounded-full p-2 hover:bg-black/80 transition-colors disabled:opacity-50"
-            aria-label={`Switch to ${facingMode === 'user' ? 'rear' : 'front'} camera`}
-            title="Switch camera"
-          >
-            {cameraState === 'SWITCHING' ? '⟳' : '⇄'}
-          </button>
-        )}
-
-        {cameraHasError && cameraLastError?.recoverable && (
-          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 bg-red-900/90 text-white px-4 py-2 rounded-lg flex items-center gap-3">
-            <span className="text-sm">{cameraLastError.message}</span>
-            <button
-              onClick={recoverCamera}
-              className="px-3 py-1 bg-[#D5FD50] text-black rounded-md text-sm font-medium hover:bg-[#c0e840]"
-            >
-              Retry
-            </button>
-          </div>
-        )}
 
         <Canvas
           className="absolute inset-0"
@@ -152,6 +201,31 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
             <RingScene resultRef={resultRef} videoRef={videoRef} facingMode={facingMode} />
           </Suspense>
         </Canvas>
+
+        <div className="pointer-events-none absolute inset-x-4 top-[calc(env(safe-area-inset-top)+1rem)] z-20 flex items-start justify-between gap-3">
+          {cameraIsReady && (
+            <button
+              onClick={() => switchCamera(facingMode === 'user' ? 'environment' : 'user')}
+              disabled={cameraState === 'SWITCHING'}
+              className="pointer-events-auto min-h-12 min-w-12 rounded-full border border-white/15 bg-black/45 px-4 text-lg font-semibold backdrop-blur-xl transition active:bg-[#D5FD50] active:text-black disabled:opacity-50"
+              aria-label={`Switch to ${facingMode === 'user' ? 'rear' : 'front'} camera`}
+              title="Switch camera"
+            >
+              {cameraState === 'SWITCHING' ? '⟳' : '⇄'}
+            </button>
+          )}
+          <button
+            onClick={closeAR}
+            className="pointer-events-auto ml-auto min-h-12 min-w-12 rounded-full border border-white/15 bg-black/45 text-xl font-light backdrop-blur-xl transition active:bg-[#D5FD50] active:text-black"
+            aria-label="Close AR try-on"
+          >
+            ×
+          </button>
+        </div>
+
+        {isReady && <GuidanceOverlay />}
+        {!isReady && !criticalError && <LoadingOverlay progress={combinedProgress} hasCamera={loadingState.camera} />}
+        {criticalError && <RecoveryOverlay error={criticalError} onRetry={retryExperience} onClose={closeAR} />}
       </div>
     </div>
   );
@@ -164,30 +238,51 @@ function OnMountNotifier({ onMount }: { onMount: () => void }) {
   return null;
 }
 
-function LoadingOverlay({ progress, error, hasCamera }: { progress: number; error: string | null; hasCamera: boolean }) {
+function GuidanceOverlay() {
   return (
-    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 text-white gap-4">
-      {error ? (
-        <>
-          <div className="text-red-400 text-lg font-semibold">Error</div>
-          <div className="text-sm text-red-300 max-w-xs text-center">{error}</div>
-        </>
-      ) : (
-        <>
-          <div className="text-[#D5FD50] text-2xl font-bold animate-pulse">
-            {progress < 100 ? 'Loading AR Experience…' : 'Starting camera…'}
-          </div>
-          <div className="w-64 h-2 bg-white/20 rounded-full overflow-hidden">
-            <div className="h-full bg-[#D5FD50] rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
-          </div>
-          <div className="text-sm text-white/60">
-            {!hasCamera && 'Waiting for camera permission…'}
-            {hasCamera && progress < 50 && 'Loading AI model (WASM)…'}
-            {hasCamera && progress >= 50 && progress < 90 && 'Preparing 3D ring…'}
-            {hasCamera && progress >= 90 && progress < 100 && 'Almost ready…'}
-          </div>
-        </>
-      )}
+    <div className="pointer-events-none absolute inset-x-6 bottom-[calc(env(safe-area-inset-bottom)+2rem)] z-20 rounded-3xl border border-white/10 bg-black/35 px-5 py-4 text-center backdrop-blur-xl">
+      <p className="text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">Live try-on</p>
+      <p className="mt-2 text-lg font-light tracking-[-0.02em]">Place your hand in the frame</p>
+      <p className="mt-1 text-sm text-white/70">Move your hand naturally for a precise fit.</p>
+    </div>
+  );
+}
+
+function LoadingOverlay({ progress, hasCamera }: { progress: number; hasCamera: boolean }) {
+  return (
+    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 bg-black/85 px-8 text-center backdrop-blur-sm" aria-live="polite">
+      <div className="h-12 w-12 rounded-full border-2 border-white/15 border-t-[#D5FD50] animate-spin" aria-hidden="true" />
+      <div>
+        <p className="text-xl font-light tracking-[-0.03em]">Preparing your private AR preview</p>
+        <p className="mt-2 text-sm text-white/60">
+          {!hasCamera ? 'Allow camera access to begin.' : progress < 90 ? 'Loading hand tracking securely on-device.' : 'Place your hand in the frame.'}
+        </p>
+      </div>
+      <div className="h-1.5 w-64 overflow-hidden rounded-full bg-white/15" aria-label={`Loading ${progress}%`}>
+        <div className="h-full rounded-full bg-[#D5FD50] transition-all duration-300" style={{ width: `${progress}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function RecoveryOverlay({ error, onRetry, onClose }: { error: CriticalError; onRetry: () => void; onClose: () => void }) {
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/88 px-6 backdrop-blur-md" role="alertdialog" aria-label={error.title}>
+      <div className="w-full max-w-sm rounded-[2rem] border border-white/10 bg-neutral-950/95 p-6 text-center shadow-2xl">
+        <p className="text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">Try-on paused</p>
+        <h2 className="mt-3 text-2xl font-light tracking-[-0.04em]">{error.title}</h2>
+        <p className="mt-3 text-sm leading-6 text-white/70">{error.message}</p>
+        <div className="mt-6 flex flex-col gap-3">
+          {error.retryable && (
+            <button onClick={onRetry} className="min-h-12 rounded-full bg-[#D5FD50] px-5 font-semibold text-black transition active:scale-[0.98]" aria-label="Retry AR try-on">
+              Retry
+            </button>
+          )}
+          <button onClick={onClose} className="min-h-12 rounded-full border border-white/15 px-5 font-semibold text-white transition active:bg-[#D5FD50] active:text-black" aria-label="Close AR try-on">
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
