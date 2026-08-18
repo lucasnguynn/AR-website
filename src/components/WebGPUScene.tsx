@@ -67,8 +67,8 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
 async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<ThreeRenderer> {
   if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
     try {
-      // Three.js >=0.170 exposes examples modules through the `three/examples/jsm/*` path.
-      const { default: WebGPURenderer } = await import(/* @vite-ignore */'three/examples/jsm/renderers/webgpu/WebGPURenderer.js') as { default: WebGPURendererConstructor };
+      // Sử dụng subpath export chính thức của Three.js để tương thích với Rollup/Vite
+      const { WebGPURenderer } = await import(/* @vite-ignore */'three/webgpu') as { WebGPURenderer: WebGPURendererConstructor };
       const renderer = new WebGPURenderer({
         canvas,
         alpha: true,
