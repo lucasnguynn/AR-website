@@ -1,3 +1,4 @@
+// FILE: src/components/WebGPUScene.tsx
 import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type CanvasProps } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -18,6 +19,9 @@ declare global {
   }
 }
 
+/**
+ * Props for the adaptive WebGPU/WebGL AR scene renderer.
+ */
 export interface WebGPUSceneProps {
   resultRef: React.RefObject<HandTrackingResult | null>;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
@@ -35,6 +39,9 @@ const QUALITY: Record<QualityTier, { dpr: number; shadows: boolean }> = {
 
 const DOWNGRADE_ORDER: QualityTier[] = ['HIGH', 'MEDIUM', 'LOW'];
 
+/**
+ * Returns whether the current browser exposes the WebGPU adapter API.
+ */
 export function hasWebGPUSupport(): boolean {
   return typeof navigator !== 'undefined' && Boolean(navigator.gpu);
 }
@@ -63,8 +70,7 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
 
 async function resolveWebGPURenderer(): Promise<WebGPUModule | null> {
   try {
-    const importWebGPU = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<unknown>;
-    const mod = await importWebGPU('three/' + 'webgpu') as WebGPUModule;
+    const mod = await import('three/webgpu') as unknown as WebGPUModule;
     if (typeof mod.WebGPURenderer === 'function') return mod;
   } catch (error) {
     console.warn('three/webgpu is unavailable; falling back to WebGL2.', error);
@@ -149,6 +155,9 @@ function FrameTimeMonitor({ tier, quality, onDowngrade }: { tier: RenderTier; qu
   return null;
 }
 
+/**
+ * Renders the jewelry AR scene with WebGPU first and safe WebGL fallbacks.
+ */
 export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount, dpr, ambientLight }: WebGPUSceneProps) {
   const [renderTier, setRenderTier] = useState<RenderTier>(() => (hasWebGPUSupport() ? 'webgpu' : 'webgl2'));
   const [qualityTier, setQualityTier] = useState<QualityTier>('HIGH');
@@ -201,3 +210,4 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
     </Canvas>
   );
 }
+// VERIFY: console.log('WebGPU renderer resolves without CSP dynamic-code construction')

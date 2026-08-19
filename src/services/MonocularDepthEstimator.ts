@@ -1,5 +1,9 @@
+// FILE: src/services/MonocularDepthEstimator.ts
 import { createVerifiedWorker } from '../utils/SecurityUtils';
 
+/**
+ * Depth map output for a processed frame.
+ */
 export interface MonocularDepthResult {
   readonly frameId: number;
   readonly width: number;
@@ -13,6 +17,9 @@ type WorkerResponse =
   | { type: 'skipped'; frameId: number }
   | { type: 'error'; frameId?: number; message: string };
 
+/**
+ * Manages verified worker-backed monocular depth inference.
+ */
 export class MonocularDepthEstimator {
   private worker: Worker | null = null;
   private pending = new Map<number, (result: MonocularDepthResult | null) => void>();
@@ -25,10 +32,11 @@ export class MonocularDepthEstimator {
 
   async initialize(): Promise<void> {
     if (this.worker) return this.initializing ?? Promise.resolve();
-    this.worker = createVerifiedWorker(new URL('../workers/depth.worker.ts', import.meta.url), { type: 'module' });
+    this.worker = await createVerifiedWorker(new URL('../workers/depth.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.handleMessage(event.data);
     this.initializing = new Promise((resolve) => {
-      const worker = this.worker!;
+      const worker = this.worker;
+      if (!worker) throw new Error('Depth worker was not created after integrity verification.');
       const previousHandler = worker.onmessage;
       worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
         if (event.data.type === 'ready') resolve();
@@ -83,3 +91,4 @@ export class MonocularDepthEstimator {
     this.lastResult = { frameId: message.frameId, width: message.width, height: message.height, depth: message.depth };
   }
 }
+// VERIFY: console.log('Depth worker constructed after awaited SRI verification')

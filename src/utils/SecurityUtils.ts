@@ -1,9 +1,13 @@
+// FILE: src/utils/SecurityUtils.ts
 import { MODEL_SRI_HASHES, WORKER_SRI_HASHES } from '../generated/sri-hashes';
 
 const ASSET_PATTERN = /\.(?:glb|gltf|ktx2|hdr|bin|js|mjs)$/i;
 
 type SriHashMap = Readonly<Record<string, string>>;
 
+/**
+ * Describes the expected and actual SHA-384 integrity state for a local asset.
+ */
 export interface IntegrityVerificationResult {
   assetKey: string;
   expected: string;
@@ -40,6 +44,9 @@ function expectedHashFor(assetKey: string, hashes: SriHashMap): string | undefin
   return hashes[assetKey];
 }
 
+/**
+ * Fetches a same-origin asset and verifies it against the provided SHA-384 hash map.
+ */
 export async function verifyAssetIntegrity(assetUrl: string | URL, hashes: SriHashMap): Promise<IntegrityVerificationResult | null> {
   const assetKey = normalizedAssetKey(assetUrl);
   const expected = expectedHashFor(assetKey, hashes);
@@ -61,6 +68,9 @@ export async function verifyAssetIntegrity(assetUrl: string | URL, hashes: SriHa
   };
 }
 
+/**
+ * Verifies a worker script before it is spawned.
+ */
 export async function verifyWorkerBlobIntegrity(workerUrl: string | URL): Promise<boolean> {
   try {
     const result = await verifyAssetIntegrity(workerUrl, WORKER_SRI_HASHES);
@@ -73,6 +83,9 @@ export async function verifyWorkerBlobIntegrity(workerUrl: string | URL): Promis
   }
 }
 
+/**
+ * Fetches static assets only after matching their registered SHA-384 hash.
+ */
 export async function verifiedAssetFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const url = typeof input === 'string' || input instanceof URL ? new URL(input, window.location.href) : new URL(input.url);
   if (!ASSET_PATTERN.test(url.pathname)) return fetch(input, init);
@@ -83,19 +96,22 @@ export async function verifiedAssetFetch(input: RequestInfo | URL, init: Request
   return fetch(url, { ...init, credentials: 'same-origin', referrerPolicy: 'strict-origin-when-cross-origin' });
 }
 
-export function createVerifiedWorker(workerUrl: string | URL, options?: WorkerOptions): Worker {
+/**
+ * Creates a Worker only after synchronous call-site awaiting of SRI verification completes.
+ */
+export async function createVerifiedWorker(workerUrl: string | URL, options?: WorkerOptions): Promise<Worker> {
   const url = workerUrl.toString();
-  const worker = new Worker(url, options);
+  const verified = await verifyWorkerBlobIntegrity(url);
+  if (!verified) {
+    throw new Error(`Worker integrity verification failed for ${normalizedAssetKey(url)}.`);
+  }
 
-  if (import.meta.env.DEV) return worker;
-
-  void verifyWorkerBlobIntegrity(url).then((verified) => {
-    if (!verified) worker.terminate();
-  });
-
-  return worker;
+  return new Worker(url, options);
 }
 
+/**
+ * Stops local camera tracks and clears video element state without uploading camera data.
+ */
 export function assertLocalCameraPrivacy(video: HTMLVideoElement | null): void {
   const stream = video?.srcObject instanceof MediaStream ? video.srcObject : null;
   stream?.getTracks().forEach((track) => track.stop());
@@ -106,3 +122,4 @@ export function assertLocalCameraPrivacy(video: HTMLVideoElement | null): void {
     video.load();
   }
 }
+// VERIFY: console.log('SRI verification awaited before Worker construction')
