@@ -9,7 +9,6 @@ import {
 } from '../materials/ringMaterialStrategy';
 import type { JewelryPreset } from '../materials/createJewelryShaderMaterial';
 
-export const RING_SCALE = 0.018;
 export const OFFSET_Y = 0.004;
 export const OFFSET_Z = 0.000;
 

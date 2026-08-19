@@ -13,6 +13,7 @@ import { protocolMessage, validateMediaPipeOutbound } from '../protocol/workerPr
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
 import { createVerifiedAssetBlobUrl, createVerifiedWorker } from '../utils/SecurityUtils';
+import mediapipeWorkerUrl from '../workers/mediapipe.worker.ts?worker&url';
 
 const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
 const MEDIAPIPE_WASM_PATH = 'wasm/vision_wasm_internal.wasm';
@@ -109,7 +110,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     let worker: Worker | null = null;
 
     async function createWorker(): Promise<void> {
-      const workerUrl = new URL('../workers/mediapipe.worker.ts', import.meta.url);
+      const workerUrl = new URL(mediapipeWorkerUrl, window.location.href);
       try {
         worker = await createVerifiedWorker(workerUrl, { type: 'module' });
       } catch (error) {
