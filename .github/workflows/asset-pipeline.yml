@@ -39,30 +39,30 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           from pxr import Usd, UsdGeom
+          import zipfile
 
           model_dir = Path('public/models')
           for glb_path in model_dir.glob('*.glb'):
               usdz_path = glb_path.with_suffix('.usdz')
               usda_path = usdz_path.with_suffix('.usda')
               
-              # 1. Tạo file cấu hình USD
+              # 1. Tạo file USD mô tả asset
               stage = Usd.Stage.CreateNew(str(usda_path))
               root = UsdGeom.Xform.Define(stage, '/Root')
               stage.SetDefaultPrim(root.GetPrim())
               
-              # 2. Sửa lỗi ép kiểu: Truyền thẳng chuỗi string (tên file) thay vì Sdf.AssetPath
+              # Thêm reference trỏ trực tiếp đến tên file GLB nằm cùng trong container
               refs = root.GetPrim().GetReferences()
               refs.AddReference(glb_path.name)
               stage.Save()
               
-              # 3. Đóng gói USDZ: Phải gói cả file cấu hình (.usda) VÀ file 3D (.glb) vào chung
-              zip_writer = Usd.ZipFileWriter.CreateNew(str(usdz_path))
-              zip_writer.AddFile(str(usda_path), 'scene.usda')
-              zip_writer.AddFile(str(glb_path), glb_path.name)
-              zip_writer.Save()
+              # 2. Đóng gói thành file .usdz (Bản chất là file zip không nén) bằng zipfile chuẩn của Python
+              with zipfile.ZipFile(usdz_path, 'w', zipfile.ZIP_STORED) as usdz:
+                  usdz.write(usda_path, arcname='scene.usda')
+                  usdz.write(glb_path, arcname=glb_path.name)
               
               usda_path.unlink(missing_ok=True)
-              print(f'Created {usdz_path}')
+              print(f'Successfully created {usdz_path}')
           PY
 
       - name: Upload optimized AR assets
