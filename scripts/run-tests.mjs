@@ -25,21 +25,29 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const directory = await mkdtemp(join(tmpdir(), 'ar-tests-'));
-try {
-  for (const [source, exported] of [
+const suites = {
+  unit: [
     ['tests/orchestration.test.ts', 'run'], 
     ['tests/webxr.test.ts', 'runWebXRTests'], 
     ['tests/depth-pipeline.test.ts', 'runDepthPipelineTests'], 
     ['tests/integrity.test.ts', 'runIntegrityTests'], 
     ['tests/material-strategy.test.ts', 'runMaterialStrategyTests'],
     ['tests/pose-pipeline.test.ts', 'runPosePipelineTests'],
-    ['tests/performance-accessibility.test.ts', 'runPerformanceAccessibilityTests']
-  ]) {
+    ['tests/performance-accessibility.test.ts', 'runPerformanceAccessibilityTests'],
+    ['tests/coordinate-tracking.test.ts', 'runCoordinateTrackingTests'],
+    ['tests/worker-protocol.test.ts', 'runWorkerProtocolTests'],
+  ],
+  integration: [['tests/browser-contracts.test.ts', 'runBrowserContractTests']],
+};
+const selection = process.argv[2] ?? 'unit';
+if (!(selection in suites)) throw new Error(`Unknown test suite: ${selection}`);
+try {
+  for (const [source, exported] of suites[selection]) {
     const output = join(directory, `${exported}.mjs`);
     await build({ entryPoints: [source], outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node20' });
     await (await import(pathToFileURL(output).href))[exported]();
   }
-  console.log('Orchestration, WebXR lifecycle/depth, protocol, integrity, materials, base-path, and asset-preflight tests passed.');
+  console.log(`${selection} test suite passed (${suites[selection].length} files).`);
 } finally { 
   await rm(directory, { recursive: true, force: true }); 
 }

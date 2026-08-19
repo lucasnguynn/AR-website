@@ -7,8 +7,9 @@ import { gzipSync } from 'node:zlib';
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDirectory = dirname(scriptPath);
 const distAssetsDirectory = resolve(scriptDirectory, '..', 'dist', 'assets');
-const maxChunkBytes = 500_000;
-const maxTotalBytes = 4_000_000;
+const budget = JSON.parse(readFileSync(resolve(scriptDirectory, 'bundle-budget.json'), 'utf8'));
+const maxChunkBytes = budget.maxChunkGzipKiB * 1024;
+const maxTotalBytes = budget.maxTotalJsGzipKiB * 1024;
 
 if (!existsSync(distAssetsDirectory) || !statSync(distAssetsDirectory).isDirectory()) {
   throw new Error(`Missing Vite assets directory: ${distAssetsDirectory}`);
@@ -20,24 +21,33 @@ const javaScriptFiles = readdirSync(distAssetsDirectory)
 
 let totalBytes = 0;
 let failed = false;
+const categories = new Map(Object.keys(budget.categories).map((key) => [key, 0]));
 
 for (const fileName of javaScriptFiles) {
   const buffer = readFileSync(join(distAssetsDirectory, fileName));
   const gzippedBytes = gzipSync(buffer).length;
   totalBytes += gzippedBytes;
+  for (const [category, rule] of Object.entries(budget.categories)) {
+    if (new RegExp(rule.pattern, 'i').test(fileName)) categories.set(category, (categories.get(category) ?? 0) + gzippedBytes);
+  }
 
   if (gzippedBytes > maxChunkBytes) {
-    console.error(`❌ ${fileName}: ${(gzippedBytes / 1024).toFixed(0)}KB gzipped (limit 500KB)`);
+    console.error(`ERROR ${fileName}: ${(gzippedBytes / 1024).toFixed(0)}KiB gzipped (chunk limit ${budget.maxChunkGzipKiB}KiB)`);
     failed = true;
   } else {
     console.log(`✓ ${fileName}: ${(gzippedBytes / 1024).toFixed(0)}KB`);
   }
 }
 
-console.log(`Total: ${(totalBytes / 1024).toFixed(0)}KB gzipped (limit 4MB)`);
+for (const [category, bytes] of categories) {
+  const limit = budget.categories[category].maxGzipKiB * 1024;
+  console.log(`${category}: ${(bytes / 1024).toFixed(0)}KiB gzip (limit ${budget.categories[category].maxGzipKiB}KiB)`);
+  if (bytes > limit) { console.error(`ERROR ${category} bundle budget exceeded`); failed = true; }
+}
+console.log(`Total JS: ${(totalBytes / 1024).toFixed(0)}KiB gzip (limit ${budget.maxTotalJsGzipKiB}KiB)`);
 
 if (totalBytes > maxTotalBytes) {
-  console.error('❌ Total bundle exceeds 4MB');
+  console.error('ERROR total JavaScript bundle budget exceeded');
   failed = true;
 }
 

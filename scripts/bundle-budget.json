@@ -1,0 +1,10 @@
+{
+  "maxChunkGzipKiB": 650,
+  "maxTotalJsGzipKiB": 4096,
+  "categories": {
+    "Three/WebGPU": { "pattern": "three|webgpu", "maxGzipKiB": 750 },
+    "MediaPipe": { "pattern": "mediapipe|vision", "maxGzipKiB": 750 },
+    "ONNX": { "pattern": "onnx|ort", "maxGzipKiB": 900 },
+    "optional ML": { "pattern": "tensorflow|predict|depth", "maxGzipKiB": 1000 }
+  }
+}
