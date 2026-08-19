@@ -8,12 +8,6 @@ import type { AmbientLightState } from '../utils/AmbientLightAdapter';
 type RenderTier = 'webgpu' | 'webgl2' | 'webgl1';
 type QualityTier = 'HIGH' | 'MEDIUM' | 'LOW';
 type ThreeRenderer = THREE.WebGLRenderer & { init?: () => Promise<void> };
-type WebGPURendererConstructor = new (parameters: {
-  canvas: HTMLCanvasElement | OffscreenCanvas;
-  alpha: boolean;
-  antialias: boolean;
-  powerPreference: WebGLPowerPreference;
-}) => ThreeRenderer;
 
 declare global {
   interface Navigator {
@@ -65,7 +59,7 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
 }
 
 async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<ThreeRenderer> {
-if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
+  if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
     try {
       // Dùng ép kiểu qua 'unknown as any' để vượt qua lỗi TS2352 của TypeScript strict mode
       const mod = await import(/* @vite-ignore */'three/webgpu') as unknown as { WebGPURenderer: any };
