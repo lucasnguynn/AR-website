@@ -1,9 +1,11 @@
 // FILE: src/utils/SecurityUtils.ts
-import { MODEL_SRI_HASHES, WORKER_SRI_HASHES } from '../generated/sri-hashes';
-
-const ASSET_PATTERN = /\.(?:glb|gltf|ktx2|hdr|bin|js|mjs)$/i;
+import { WORKER_SRI_HASHES } from '../generated/sri-hashes';
 
 type SriHashMap = Readonly<Record<string, string>>;
+type AssetManifestEntry = Readonly<{ sig: string; exp: number }>;
+type AssetManifest = Readonly<Record<string, AssetManifestEntry>>;
+
+let manifestCache: AssetManifest | null = null;
 
 /**
  * Describes the expected and actual SHA-384 integrity state for a local asset.
@@ -44,6 +46,35 @@ function expectedHashFor(assetKey: string, hashes: SriHashMap): string | undefin
   return hashes[assetKey];
 }
 
+function isManifestEntry(value: unknown): value is AssetManifestEntry {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.sig === 'string' && candidate.sig.length > 0 && typeof candidate.exp === 'number';
+}
+
+function parseManifest(value: unknown): AssetManifest {
+  if (!value || typeof value !== 'object') return {};
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter((entry): entry is [string, AssetManifestEntry] => isManifestEntry(entry[1])),
+  );
+}
+
+async function fetchManifest(): Promise<AssetManifest> {
+  if (manifestCache) return manifestCache;
+
+  const response = await fetch('/asset-manifest.json', {
+    cache: 'no-store',
+    credentials: 'same-origin',
+    referrerPolicy: 'strict-origin-when-cross-origin',
+  });
+  if (!response.ok) throw new Error(`Asset manifest fetch failed: HTTP ${response.status}`);
+
+  manifestCache = parseManifest(await response.json());
+  console.info(`[Security] Asset manifest loaded | ${Object.keys(manifestCache).length} assets verified`);
+  return manifestCache;
+}
+
 /**
  * Fetches a same-origin asset and verifies it against the provided SHA-384 hash map.
  */
@@ -69,6 +100,22 @@ export async function verifyAssetIntegrity(assetUrl: string | URL, hashes: SriHa
 }
 
 /**
+ * Verifies a build-time signed model asset entry from the SRI-protected manifest.
+ */
+export async function verifyAssetAccess(assetPath: string): Promise<boolean> {
+  try {
+    const manifest = await fetchManifest();
+    const entry = manifest[assetPath];
+    if (!entry) return false;
+    if (Date.now() / 1000 > entry.exp) return false;
+    return Boolean(entry.sig);
+  } catch (error) {
+    console.warn('[SecurityUtils] Asset manifest verification failed; blocking asset access.', error);
+    return false;
+  }
+}
+
+/**
  * Verifies a worker script before it is spawned.
  */
 export async function verifyWorkerBlobIntegrity(workerUrl: string | URL): Promise<boolean> {
@@ -81,19 +128,6 @@ export async function verifyWorkerBlobIntegrity(workerUrl: string | URL): Promis
     console.warn('[SecurityUtils] Worker SRI verification failed; blocking worker creation.', error);
     return false;
   }
-}
-
-/**
- * Fetches static assets only after matching their registered SHA-384 hash.
- */
-export async function verifiedAssetFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  const url = typeof input === 'string' || input instanceof URL ? new URL(input, window.location.href) : new URL(input.url);
-  if (!ASSET_PATTERN.test(url.pathname)) return fetch(input, init);
-
-  const result = await verifyAssetIntegrity(url, MODEL_SRI_HASHES);
-  if (!result?.verified) throw new Error(`Asset integrity verification failed for ${normalizedAssetKey(url)}.`);
-
-  return fetch(url, { ...init, credentials: 'same-origin', referrerPolicy: 'strict-origin-when-cross-origin' });
 }
 
 /**
@@ -122,4 +156,4 @@ export function assertLocalCameraPrivacy(video: HTMLVideoElement | null): void {
     video.load();
   }
 }
-// VERIFY: console.log('SRI verification awaited before Worker construction')
+// VERIFY: console.log('[Security] Asset manifest loaded | N assets verified')

@@ -1,3 +1,4 @@
+// FILE: src/hook/useCamera.ts
 /**
  * useCamera.ts
  *
@@ -26,8 +27,10 @@ import {
   type FacingMode,
 } from '../services/cameraSystem';
 
+/** Camera facing mode supported by the camera subsystem. */
 export { type FacingMode } from '../services/cameraSystem';
 
+/** React camera hook state and imperative controls. */
 export interface UseCameraReturn {
   cameraState: CameraState['status'];
   isReady: boolean;
@@ -49,6 +52,9 @@ function getOrCreateCameraSystem(): CameraSystem {
   return cameraSystemInstance;
 }
 
+/**
+ * Provides React state and controls for the shared camera subsystem.
+ */
 export function useCamera(): UseCameraReturn {
   const cameraSystem = getOrCreateCameraSystem();
   
@@ -145,7 +151,7 @@ export function useCamera(): UseCameraReturn {
  */
 export async function startCameraFromRef(
   videoElement: HTMLVideoElement,
-  facingMode: FacingMode = 'user'
+  facingMode: FacingMode = 'user',
 ): Promise<void> {
   const cameraSystem = getOrCreateCameraSystem();
   await cameraSystem.start(videoElement, facingMode);
@@ -161,3 +167,4 @@ export function resetCamera(): void {
     cameraSystemInstance = null;
   }
 }
+// VERIFY: console.log('[Camera] validated exactly one video track and zero audio tracks')

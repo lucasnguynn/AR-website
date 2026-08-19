@@ -11,7 +11,7 @@ import { useEffect, useRef, useCallback, useState, type RefObject } from 'react'
 import type { HandTrackingResult, LoadingState, TrackingMetrics } from '../types/ar.types';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
-import { verifyWorkerBlobIntegrity } from '../utils/SecurityUtils';
+import { createVerifiedWorker } from '../utils/SecurityUtils';
 
 const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
 const MEDIAPIPE_WASM_PATH = 'wasm/vision_wasm_internal.wasm';
@@ -108,15 +108,16 @@ export function useHandTracking(): UseHandTrackingReturn {
 
     async function createWorker(): Promise<void> {
       const workerUrl = new URL('../workers/mediapipe.worker.ts', import.meta.url);
-      const workerVerified = await verifyWorkerBlobIntegrity(workerUrl);
-      if (!workerVerified) {
+      try {
+        worker = await createVerifiedWorker(workerUrl, { type: 'module' });
+      } catch (error) {
         window.dispatchEvent(new CustomEvent('ar:security-violation', {
           detail: { asset: workerUrl.toString(), reason: 'SRI_MISMATCH', ts: Date.now() },
         }));
         setLoadingState((prev) => ({
           ...prev,
           ready: false,
-          error: 'MediaPipe worker integrity verification failed. Refusing to start hand tracking.',
+          error: error instanceof Error ? error.message : 'MediaPipe worker integrity verification failed. Refusing to start hand tracking.',
         }));
         return;
       }
@@ -142,7 +143,6 @@ export function useHandTracking(): UseHandTrackingReturn {
         return;
       }
 
-      worker = new Worker(workerUrl, { type: 'module' });
       workerRef.current = worker;
 
       worker.addEventListener('message', (event: MessageEvent<HandTrackingWorkerOutMessage>) => {

@@ -1,3 +1,4 @@
+// FILE: src/services/cameraSystem.ts
 /**
  * cameraSystem.ts
  *
@@ -27,8 +28,10 @@ import type { FacingMode } from './cameraTypes';
 // Types
 // ──────────────────────────────────────────────────────────────────────────────
 
+/** Camera facing mode values supported by the subsystem. */
 export type { FacingMode } from './cameraTypes';
 
+/** Camera dimensions and device metadata exposed without frame data. */
 export interface CameraMetadata {
   videoWidth: number;
   videoHeight: number;
@@ -38,12 +41,14 @@ export interface CameraMetadata {
   deviceId: string | null;
 }
 
+/** Normalized camera error details. */
 export interface CameraError {
   code: CameraErrorCode;
   message: string;
   recoverable: boolean;
 }
 
+/** Supported normalized camera error codes. */
 export type CameraErrorCode =
   | 'PERMISSION_DENIED'
   | 'NOT_FOUND'
@@ -55,6 +60,7 @@ export type CameraErrorCode =
   | 'METADATA_TIMEOUT'
   | 'UNKNOWN';
 
+/** Camera lifecycle status values. */
 export type CameraStatus =
   | 'IDLE'
   | 'STARTING'
@@ -63,6 +69,7 @@ export type CameraStatus =
   | 'ERROR'
   | 'STOPPED';
 
+/** Current camera subsystem state. */
 export interface CameraState {
   status: CameraStatus;
   isReady: boolean;
@@ -73,6 +80,7 @@ export interface CameraState {
   stream: MediaStream | null;
 }
 
+/** Optional camera subsystem callbacks for UI integration. */
 export interface CameraSystemCallbacks {
   onFrame?: () => void;
   onError?: (error: CameraError) => void;
@@ -139,6 +147,7 @@ function normalizeCameraError(error: unknown): CameraError {
 // Camera System Class
 // ──────────────────────────────────────────────────────────────────────────────
 
+/** Production camera subsystem that validates local media tracks before rendering. */
 export class CameraSystem {
   private currentSessionId: string | null = null;
   private stream: MediaStream | null = null;
@@ -296,9 +305,10 @@ export class CameraSystem {
       return;
     }
 
-    // Attempt to restart the camera
+    const videoElement = this.videoElement;
+    // Attempt to restart the camera after proving the element still exists.
     this.stop();
-    await this.start(this.videoElement!, this.facingMode);
+    await this.start(videoElement, this.facingMode);
   }
 
   public setCallbacks(callbacks: CameraSystemCallbacks): void {
@@ -337,9 +347,9 @@ export class CameraSystem {
   private async _requestStream(facingMode: FacingMode): Promise<void> {
     const constraints: MediaStreamConstraints = {
       video: {
-        facingMode,
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
       },
       audio: false,
     };
@@ -349,6 +359,21 @@ export class CameraSystem {
         throw new DOMException('Camera API unavailable', 'NotFoundError');
       }
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const tracks = stream.getTracks();
+      const audioTracks = tracks.filter((track) => track.kind === 'audio');
+      if (audioTracks.length > 0) {
+        tracks.forEach((track) => track.stop());
+        throw new Error('[Security] Unexpected audio track — aborting');
+      }
+
+      const videoTracks = tracks.filter((track) => track.kind === 'video');
+      if (videoTracks.length !== 1) {
+        tracks.forEach((track) => track.stop());
+        throw new Error('[Security] Expected 1 video track');
+      }
+
+      const settings = videoTracks[0].getSettings();
+      console.info(`[Camera] ${settings.width}×${settings.height} facing=${settings.facingMode}`);
       this.stream = stream;
     } catch (error) {
       throw error;
@@ -477,3 +502,4 @@ export function resetCameraSystem(): void {
     globalCameraSystem = null;
   }
 }
+// VERIFY: console.log('[Camera] validated exactly one video track and zero audio tracks')
