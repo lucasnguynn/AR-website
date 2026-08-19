@@ -21,6 +21,7 @@ import { estimateRingSizeFromPinch, type RingSizeEstimate } from '../utils/Sizin
 import { ARControls } from './ARControls';
 import { WebGPUScene } from './WebGPUScene';
 import { QuickLookViewer } from './QuickLookViewer';
+import { WebXRScene } from './WebXRScene';
 
 /** Props for the top-level AR try-on modal. */
 export interface ARTryOnModalProps {
@@ -78,8 +79,9 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     stopCamera,
   } = useCamera();
 
+  const webxrAdapter = useMemo(() => new WebXRAdapter(), []);
   const orchestrator = useMemo(() => new AROrchestrator([
-    new WebXRAdapter(),
+    webxrAdapter,
     createQuickLookAdapter(() => /iPad|iPhone|iPod/.test(navigator.userAgent) && DeviceProfiler.checkQuickLookSupport()),
     createCameraCompositeAdapter(
       () => typeof navigator.mediaDevices?.getUserMedia === 'function' && hasWebGLSupport(),
@@ -104,7 +106,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
       rendererKind(),
     ),
     createInteractive3DAdapter(rendererKind()),
-  ], setDiagnostics), [destroy, setActive, startTracking, stopCamera]);
+  ], setDiagnostics), [destroy, setActive, startTracking, stopCamera, webxrAdapter]);
 
   const adaptiveDpr = useMemo<[number, number]>(() => [1, Math.min(window.devicePixelRatio, 1.75)], []);
   const combinedProgress = Math.min(100, Math.round(loadingState.mediapipe * 0.7 + (isLoading ? 0 : 30)));
@@ -234,13 +236,17 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     );
   }
 
-  if (diagnostics?.experience === 'interactive-3d' || diagnostics?.experience === 'webxr') {
+  if (diagnostics?.experience === 'webxr') {
+    return <WebXRScene manager={webxrAdapter.manager} onClose={closeAR} />;
+  }
+
+  if (diagnostics?.experience === 'interactive-3d') {
     return (
-      <FallbackModal title={diagnostics.experience === 'webxr' ? 'WebXR session active' : 'Interactive 3D preview'} onClose={closeAR}>
+      <FallbackModal title="Interactive 3D preview" onClose={closeAR}>
         <div className="flex h-52 w-52 items-center justify-center rounded-3xl border border-white/10 bg-neutral-900 text-7xl" aria-label={QUICK_LOOK_PRODUCT_NAME}>
           💍
         </div>
-        <p className="mt-4 text-center text-sm text-white/65">{diagnostics.experience === 'webxr' ? 'The immersive AR session is active. Native rendering integration follows in the WebXR rendering phase.' : 'Camera AR is unavailable, so you can still inspect the product in a static 3D-safe fallback.'}</p>
+        <p className="mt-4 text-center text-sm text-white/65">Camera AR is unavailable, so you can still inspect the product in a static 3D-safe fallback.</p>
       </FallbackModal>
     );
   }

@@ -1,21 +1,14 @@
+import * as THREE from 'three';
+import { WebXRDepthManager, type XRFrameWithDepthData } from './WebXRDepthManager';
+
 export type XRHandedness = 'left' | 'right' | 'none';
 
-export interface XRDepthInformationLike {
-  readonly width?: number;
-  readonly height?: number;
-  readonly rawValueToMeters?: number;
-  getDepthInMeters?(x: number, y: number): number;
-}
-
-export interface XRJointPoseLike {
-  readonly transform: XRRigidTransform;
-  readonly radius?: number;
-}
-
-export interface XRHandPose {
+/** Renderer-independent hand contract consumed by the XR jewelry scene. Values are in the active XR reference space. */
+export interface XRHandMeasurement {
   readonly handedness: XRHandedness;
-  readonly position: Float32Array;
-  readonly orientation: Float32Array;
+  readonly position: readonly [number, number, number];
+  readonly orientation: readonly [number, number, number, number];
+  readonly scaleMeters: number;
   readonly timestamp: number;
   readonly confidence: number;
 }
@@ -23,134 +16,203 @@ export interface XRHandPose {
 export interface WebXRFrameSnapshot {
   readonly timestamp: number;
   readonly viewerPose: XRViewerPose | null;
-  readonly hands: readonly XRHandPose[];
-  readonly activeHandCount: number;
-  readonly depth: XRDepthInformationLike | null;
+  readonly hands: readonly XRHandMeasurement[];
+  readonly depthActive: boolean;
+}
+
+export interface WebXRRuntimeBinding {
+  readonly renderer: THREE.WebGLRenderer;
+  readonly scene: THREE.Scene;
+  readonly camera: THREE.Camera;
 }
 
 type XRSessionInitWithDepth = XRSessionInit & {
   optionalFeatures?: string[];
-  requiredFeatures?: string[];
   depthSensing?: {
-    usagePreference: ['cpu-optimized', 'gpu-optimized'];
-    dataFormatPreference: ['luminance-alpha', 'float32'];
+    usagePreference: string[];
+    dataFormatPreference: string[];
   };
+  domOverlay?: { root: Element };
 };
 
-type XRFrameWithDepth = XRFrame & {
-  getDepthInformation?(view: XRView): XRDepthInformationLike | null | undefined;
-  getJointPose(joint: XRJointSpace, baseSpace: XRSpace): XRJointPoseLike | undefined;
+type XRFrameWithJoints = XRFrameWithDepthData & {
+  getJointPose(joint: XRJointSpace, baseSpace: XRSpace): XRJointPose | undefined;
 };
+type XRHandMap = { get(name: string): XRJointSpace | undefined };
+type XRInputSourceWithHand = XRInputSource & { hand?: XRHandMap };
+type SnapshotListener = (snapshot: WebXRFrameSnapshot) => void;
+type StateListener = () => void;
 
-type XRInputSourceWithHand = XRInputSource & {
-  hand?: Iterable<[unknown, XRJointSpace]> & { get(key: string): XRJointSpace | undefined };
-};
-
-const SESSION_INIT: XRSessionInitWithDepth = {
-  requiredFeatures: ['local-floor'],
-  optionalFeatures: ['hand-tracking', 'depth-sensing', 'dom-overlay'],
+const SESSION_INIT = (): XRSessionInitWithDepth => ({
+  // Every feature is optional: a basic immersive-ar session must remain usable.
+  optionalFeatures: ['local-floor', 'hand-tracking', 'depth-sensing', 'dom-overlay'],
   depthSensing: {
-    usagePreference: ['cpu-optimized', 'gpu-optimized'],
-    dataFormatPreference: ['luminance-alpha', 'float32'],
+    usagePreference: ['cpu-optimized'],
+    dataFormatPreference: ['float32', 'luminance-alpha'],
   },
-};
+  ...(typeof document === 'undefined' ? {} : { domOverlay: { root: document.body } }),
+});
 
+/** Owns one immersive session and its sole Three display loop. */
 export class WebXRManager {
   private session: XRSession | null = null;
   private referenceSpace: XRReferenceSpace | null = null;
-  private readonly handPosePool: XRHandPose[];
-  private readonly handsView: readonly XRHandPose[];
-  private readonly snapshot: WebXRFrameSnapshot;
-  private readonly positionBuffers: Float32Array[];
-  private readonly orientationBuffers: Float32Array[];
-  private handCount = 0;
-
-  constructor(maxHands = 2) {
-    this.positionBuffers = Array.from({ length: maxHands }, () => new Float32Array(3));
-    this.orientationBuffers = Array.from({ length: maxHands }, () => new Float32Array(4));
-    this.handPosePool = this.positionBuffers.map((position, i) => ({
-      handedness: 'none',
-      position,
-      orientation: this.orientationBuffers[i],
-      timestamp: 0,
-      confidence: 0,
-    }));
-    this.handsView = this.handPosePool;
-    this.snapshot = { timestamp: 0, viewerPose: null, hands: this.handsView, activeHandCount: 0, depth: null };
-  }
+  private binding: WebXRRuntimeBinding | null = null;
+  private bindingWaiters: Array<(binding: WebXRRuntimeBinding) => void> = [];
+  private readonly depthManager = new WebXRDepthManager();
+  private readonly frameListeners = new Set<SnapshotListener>();
+  private readonly stateListeners = new Set<StateListener>();
+  private stopping: Promise<void> | null = null;
+  private handAvailable = false;
+  private depthAvailable = false;
+  private snapshot: WebXRFrameSnapshot = { timestamp: 0, viewerPose: null, hands: [], depthActive: false };
 
   get currentSession(): XRSession | null { return this.session; }
-  get isRunning(): boolean { return this.session !== null; }
+  get isRunning(): boolean { return this.session !== null && this.referenceSpace !== null && this.binding !== null; }
+  get hasHandTracking(): boolean { return this.handAvailable; }
+  get hasNativeDepth(): boolean { return this.depthAvailable; }
+
+  bindRuntime(binding: WebXRRuntimeBinding): () => void {
+    this.binding = binding;
+    for (const resolve of this.bindingWaiters.splice(0)) resolve(binding);
+    return () => { if (this.binding === binding) this.binding = null; };
+  }
+
+  subscribeFrames(listener: SnapshotListener): () => void {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
+  }
+
+  subscribeState(listener: StateListener): () => void {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
+  }
 
   async start(): Promise<XRSession> {
     if (this.session) return this.session;
-    if (!navigator.xr) throw new Error('WebXR is not available in this browser.');
-    const supported = await navigator.xr.isSessionSupported('immersive-ar');
-    if (!supported) throw new Error('immersive-ar is not supported on this device.');
-    const session = await navigator.xr.requestSession('immersive-ar', SESSION_INIT);
+    if (!navigator.xr || !(await navigator.xr.isSessionSupported('immersive-ar'))) {
+      throw new Error('immersive-ar is not supported on this device.');
+    }
+
+    // Request while the user activation from the try-on action is still valid.
+    const session = await navigator.xr.requestSession('immersive-ar', SESSION_INIT());
     this.session = session;
+    session.addEventListener('end', this.handleSessionEnd, { once: true });
     try {
-      this.referenceSpace = await session.requestReferenceSpace('local-floor');
-      session.addEventListener('end', this.handleSessionEnd, { once: true });
+      const binding = this.binding ?? await this.waitForBinding();
+      binding.renderer.xr.enabled = true;
+      await binding.renderer.xr.setSession(session);
+      this.referenceSpace = await this.requestBestReferenceSpace(session);
+      // A camera child is not guaranteed to be traversed by Three; scene attachment makes the depth pass real.
+      this.depthManager.attachToScene(binding.scene);
+      binding.renderer.setAnimationLoop(this.onXRFrame);
+      this.notifyState();
       return session;
     } catch (error) {
-      this.handleSessionEnd();
-      await session.end().catch(() => undefined);
+      await this.endSession(session);
       throw error;
     }
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
     const active = this.session;
-    if (active) await active.end();
-    this.handleSessionEnd();
+    this.stopping = (active ? this.endSession(active) : Promise.resolve())
+      .finally(() => { this.stopping = null; });
+    return this.stopping;
   }
 
-  update(frame: XRFrameWithDepth): WebXRFrameSnapshot {
-    if (!this.referenceSpace) throw new Error('WebXRManager.update called before start().');
-    const pose = frame.getViewerPose(this.referenceSpace) ?? null;
-    let depth: XRDepthInformationLike | null = null;
-    if (pose && frame.getDepthInformation && pose.views.length > 0) {
-      try {
-        depth = frame.getDepthInformation(pose.views[0]) ?? null;
-      } catch (error) {
-        console.warn('WebXR depth unavailable; continuing without true-depth occlusion.', error);
-        depth = null;
-      }
+  private async requestBestReferenceSpace(session: XRSession): Promise<XRReferenceSpace> {
+    try { return await session.requestReferenceSpace('local-floor'); }
+    catch { return session.requestReferenceSpace('local'); }
+  }
+
+  private waitForBinding(): Promise<WebXRRuntimeBinding> {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.bindingWaiters = this.bindingWaiters.filter((waiter) => waiter !== complete);
+        reject(new Error('WebXR renderer did not initialize.'));
+      }, 5000);
+      const complete = (binding: WebXRRuntimeBinding): void => { window.clearTimeout(timer); resolve(binding); };
+      this.bindingWaiters.push(complete);
+    });
+  }
+
+  private readonly onXRFrame = (_time: number, frame?: XRFrame): void => {
+    const binding = this.binding;
+    const referenceSpace = this.referenceSpace;
+    if (!frame || !binding || !referenceSpace || !this.session) return;
+    const xrFrame = frame as XRFrameWithJoints;
+    const viewerPose = xrFrame.getViewerPose(referenceSpace) ?? null;
+    const hands = this.readHands(xrFrame, referenceSpace);
+    if (hands[0]) this.depthManager.updateXRHandProxy(hands[0].position, hands[0].orientation, hands[0].scaleMeters);
+    this.handAvailable ||= hands.length > 0;
+    let depthActive = false;
+    if (viewerPose?.views[0]) depthActive = this.depthManager.updateFromWebXR(xrFrame, viewerPose.views[0]);
+    this.depthManager.setGeometricFallbackEnabled(!depthActive && hands.length > 0);
+    this.depthAvailable = depthActive;
+    this.snapshot = { timestamp: frame.predictedDisplayTime, viewerPose, hands, depthActive };
+    for (const listener of this.frameListeners) listener(this.snapshot);
+    binding.renderer.render(binding.scene, binding.camera);
+  };
+
+  private readHands(frame: XRFrameWithJoints, space: XRReferenceSpace): XRHandMeasurement[] {
+    const measurements: XRHandMeasurement[] = [];
+    for (const source of this.session?.inputSources as Iterable<XRInputSourceWithHand> ?? []) {
+      const hand = source.hand;
+      const mcpSpace = hand?.get('ring-finger-metacarpal');
+      const pipSpace = hand?.get('ring-finger-phalanx-proximal');
+      const indexSpace = hand?.get('index-finger-metacarpal');
+      if (!mcpSpace || !pipSpace || !indexSpace) continue;
+      const mcp = frame.getJointPose(mcpSpace, space);
+      const pip = frame.getJointPose(pipSpace, space);
+      const index = frame.getJointPose(indexSpace, space);
+      if (!mcp || !pip || !index) continue;
+      const origin = new THREE.Vector3(mcp.transform.position.x, mcp.transform.position.y, mcp.transform.position.z);
+      const along = new THREE.Vector3(pip.transform.position.x, pip.transform.position.y, pip.transform.position.z).sub(origin);
+      const across = new THREE.Vector3(index.transform.position.x, index.transform.position.y, index.transform.position.z).sub(origin);
+      const scaleMeters = along.length();
+      if (scaleMeters < 0.005) continue;
+      const y = along.normalize();
+      const z = new THREE.Vector3().crossVectors(across, y).normalize();
+      const x = new THREE.Vector3().crossVectors(y, z).normalize();
+      const quaternion = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+      measurements.push({
+        handedness: source.handedness as XRHandedness,
+        position: [origin.x, origin.y, origin.z],
+        orientation: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
+        scaleMeters,
+        timestamp: frame.predictedDisplayTime,
+        confidence: 1,
+      });
     }
-    this.handCount = 0;
-    if (this.session) {
-      for (const source of this.session.inputSources as Iterable<XRInputSourceWithHand>) {
-        if (this.handCount >= this.handPosePool.length || !source.hand) continue;
-        const joint = source.hand.get('wrist') ?? source.hand.get('middle-finger-metacarpal');
-        if (!joint) continue;
-        const jointPose = frame.getJointPose(joint, this.referenceSpace);
-        if (!jointPose) continue;
-        this.writeHandPose(this.handCount++, source.handedness as XRHandedness, jointPose, frame.predictedDisplayTime);
-      }
+    return measurements;
+  }
+
+  private async endSession(session: XRSession): Promise<void> {
+    if (this.session === session) {
+      try { await session.end(); } catch { /* An ended session is already clean. */ }
     }
-    (this.snapshot as { timestamp: number; viewerPose: XRViewerPose | null; hands: readonly XRHandPose[]; activeHandCount: number; depth: XRDepthInformationLike | null }).timestamp = frame.predictedDisplayTime;
-    (this.snapshot as { viewerPose: XRViewerPose | null }).viewerPose = pose;
-    (this.snapshot as { hands: readonly XRHandPose[] }).hands = this.handsView;
-    (this.snapshot as { activeHandCount: number }).activeHandCount = this.handCount;
-    (this.snapshot as { depth: XRDepthInformationLike | null }).depth = depth;
-    return this.snapshot;
+    this.cleanup();
   }
 
-  private writeHandPose(index: number, handedness: XRHandedness, pose: XRJointPoseLike, timestamp: number): void {
-    const out = this.handPosePool[index] as { handedness: XRHandedness; timestamp: number; confidence: number };
-    const p = pose.transform.position;
-    const q = pose.transform.orientation;
-    this.positionBuffers[index][0] = p.x; this.positionBuffers[index][1] = p.y; this.positionBuffers[index][2] = p.z;
-    this.orientationBuffers[index][0] = q.x; this.orientationBuffers[index][1] = q.y; this.orientationBuffers[index][2] = q.z; this.orientationBuffers[index][3] = q.w;
-    out.handedness = handedness;
-    out.timestamp = timestamp;
-    out.confidence = pose.radius && pose.radius > 0 ? 1 : 0.85;
-  }
+  private readonly handleSessionEnd = (): void => { this.cleanup(); };
 
-  private readonly handleSessionEnd = (): void => {
+  private cleanup(): void {
+    const binding = this.binding;
+    binding?.renderer.setAnimationLoop(null);
+    if (binding) {
+      binding.renderer.xr.enabled = false;
+      void binding.renderer.xr.setSession(null);
+    }
+    this.depthManager.detach();
     this.session = null;
     this.referenceSpace = null;
-    this.handCount = 0;
-  };
+    this.handAvailable = false;
+    this.depthAvailable = false;
+    this.snapshot = { timestamp: 0, viewerPose: null, hands: [], depthActive: false };
+    this.notifyState();
+  }
+
+  private notifyState(): void { for (const listener of this.stateListeners) listener(); }
 }

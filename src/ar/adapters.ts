@@ -26,12 +26,27 @@ class LifecycleAdapter implements ARExperienceAdapter {
 
 export class WebXRAdapter implements ARExperienceAdapter {
   readonly kind = 'webxr' as const;
-  constructor(private readonly manager = new WebXRManager()) {}
+  constructor(readonly manager = new WebXRManager()) {}
   async isSupported(): Promise<boolean> { return Boolean(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
   async start(): Promise<void> { await this.manager.start(); }
   async stop(): Promise<void> { await this.manager.stop(); }
+  onUnexpectedStop(listener: () => void): () => void {
+    let wasRunning = false;
+    return this.manager.subscribeState(() => {
+      if (wasRunning && !this.manager.isRunning) listener();
+      wasRunning = this.manager.isRunning;
+    });
+  }
   diagnostics(): ARDiagnostics {
-    return { tracking: 'webxr-hand', filter: 'one-euro', prediction: 'none', depth: 'none', renderer: 'webgl2', experience: this.kind, state: this.manager.isRunning ? 'active' : 'supported' };
+    return {
+      tracking: this.manager.hasHandTracking ? 'webxr-hand' : 'none',
+      filter: 'one-euro',
+      prediction: 'none',
+      depth: this.manager.hasNativeDepth ? 'webxr-depth' : 'geometric-proxy',
+      renderer: 'webgl2',
+      experience: this.kind,
+      state: this.manager.isRunning ? 'active' : 'supported',
+    };
   }
 }
 

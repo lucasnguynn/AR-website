@@ -67,6 +67,7 @@ export class WebXRDepthManager {
   private activeTier: DepthOcclusionTier = 'geometric-proxy';
   private xrDepthAvailable = false;
   private disposed = false;
+  private readonly depthUvTransform = new THREE.Matrix4();
 
   constructor(options: DepthManagerOptions = {}) {
     this.nearMeters = options.nearMeters ?? 0.02;
@@ -82,6 +83,7 @@ export class WebXRDepthManager {
     this.occlusionProxy.name = 'DepthOcclusionTextureProxy';
     this.occlusionProxy.frustumCulled = false;
     this.occlusionProxy.renderOrder = -10;
+    this.occlusionProxy.visible = false;
 
     this.geometricProxy = new THREE.Mesh(
       new THREE.SphereGeometry(0.11, 24, 12),
@@ -151,15 +153,24 @@ export class WebXRDepthManager {
       depth = frame.getDepthInformation?.(view);
     } catch (error) {
       console.warn('WebXR depth information failed; falling back to monocular depth.', error);
+      this.xrDepthAvailable = false;
+      this.setTier('geometric-proxy');
       return false;
     }
-    if (!depth?.data || depth.width <= 0 || depth.height <= 0) return false;
+    if (!depth?.data || depth.width <= 0 || depth.height <= 0) {
+      this.xrDepthAvailable = false;
+      this.setTier('geometric-proxy');
+      return false;
+    }
     this.ensureSize(depth.width, depth.height);
     this.rawValueToMeters = depth.rawValueToMeters ?? 1;
+    this.depthUvTransform.fromArray(depth.normDepthBufferFromNormView?.matrix ?? new THREE.Matrix4().elements);
     const target = this.buffers[this.writeIndex];
     this.decodeDepth(depth, target);
     this.uploadDepth(this.width, this.height, target, true);
     this.writeIndex = 1 - this.writeIndex;
+    this.xrDepthAvailable = true;
+    this.setTier('webxr-depth');
     return true;
   }
 
@@ -171,6 +182,25 @@ export class WebXRDepthManager {
     this.occlusionProxy.quaternion.identity();
     this.occlusionProxy.scale.set(1, 1, 1);
     this.geometricProxy.position.set(0, -0.08, -0.42);
+  }
+
+  /** Attaches full-screen depth and reference-space fallback proxies to a rendered scene graph. */
+  attachToScene(scene: THREE.Scene): void {
+    scene.add(this.occlusionProxy, this.geometricProxy);
+    this.occlusionProxy.position.set(0, 0, 0);
+  }
+
+  /** Removes render objects while retaining reusable buffers for a later XR session. */
+  detach(): void {
+    this.occlusionProxy.removeFromParent();
+    this.geometricProxy.removeFromParent();
+    this.occlusionProxy.visible = false;
+    this.geometricProxy.visible = false;
+    this.xrDepthAvailable = false;
+    this.activeTier = 'geometric-proxy';
+    this.depthTexture.dispose();
+    this.depthTexture.image = { data: new Float32Array([1]), width: 1, height: 1 };
+    this.depthTexture.needsUpdate = true;
   }
 
   /** Releases GPU and worker resources owned by the depth manager. */
@@ -202,6 +232,18 @@ export class WebXRDepthManager {
     this.proxyRadiusMeters = this.proxyRadiusMeters * 0.82 + targetRadius * 0.18;
     this.geometricProxy.geometry.dispose();
     this.geometricProxy.geometry = new THREE.CylinderGeometry(this.proxyRadiusMeters, this.proxyRadiusMeters, this.proxyRadiusMeters * 3.2, 24, 1);
+  }
+
+  /** Positions the reusable geometric fallback around the XR ring-finger segment. */
+  updateXRHandProxy(position: readonly [number, number, number], orientation: readonly [number, number, number, number], lengthMeters: number): void {
+    this.geometricProxy.position.fromArray(position);
+    this.geometricProxy.quaternion.fromArray(orientation);
+    const radius = THREE.MathUtils.clamp(lengthMeters * 0.22, 0.004, 0.014);
+    this.geometricProxy.scale.set(radius / 0.11, lengthMeters / 0.22, radius / 0.11);
+  }
+
+  setGeometricFallbackEnabled(enabled: boolean): void {
+    if (this.activeTier === 'geometric-proxy') this.geometricProxy.visible = enabled;
   }
 
   private resolveUpdateOptions(
@@ -244,6 +286,7 @@ export class WebXRDepthManager {
     material.uniforms.nearMeters.value = this.nearMeters;
     material.uniforms.farMeters.value = this.farMeters;
     material.uniforms.rawValueToMeters.value = this.rawValueToMeters;
+    material.uniforms.depthUvTransform.value.copy(this.depthUvTransform);
   }
 
   private gaussianBlur3x3(source: Float32Array, target: Float32Array, width: number, height: number): void {
@@ -289,9 +332,10 @@ export class WebXRDepthManager {
         farMeters: { value: this.farMeters },
         rawValueToMeters: { value: this.rawValueToMeters },
         opacity: { value: opacity },
+        depthUvTransform: { value: this.depthUvTransform },
       },
       vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: 'precision highp float; uniform sampler2D depthMap; uniform float nearMeters; uniform float farMeters; uniform float opacity; varying vec2 vUv; void main() { float d = texture2D(depthMap, vUv).r; if (d <= nearMeters || d >= farMeters) discard; float clipDepth = ((1.0 / d) - (1.0 / nearMeters)) / ((1.0 / farMeters) - (1.0 / nearMeters)); gl_FragDepthEXT = clamp(clipDepth, 0.0, 1.0); gl_FragColor = vec4(0.0, 0.0, 0.0, opacity); }',
+      fragmentShader: 'precision highp float; uniform sampler2D depthMap; uniform float nearMeters; uniform float farMeters; uniform float opacity; uniform mat4 depthUvTransform; varying vec2 vUv; void main() { vec4 depthUvH = depthUvTransform * vec4(vUv, 0.0, 1.0); vec2 depthUv = depthUvH.xy / max(depthUvH.w, 0.00001); if (any(lessThan(depthUv, vec2(0.0))) || any(greaterThan(depthUv, vec2(1.0)))) discard; float d = texture2D(depthMap, depthUv).r; if (d <= nearMeters || d >= farMeters) discard; float windowDepth = farMeters / (farMeters - nearMeters) - (farMeters * nearMeters) / ((farMeters - nearMeters) * d); gl_FragDepthEXT = clamp(windowDepth, 0.0, 1.0); gl_FragColor = vec4(0.0, 0.0, 0.0, opacity); }',
       extensions: { fragDepth: true } as unknown as THREE.ShaderMaterialParameters['extensions'],
       colorWrite: false,
       depthWrite: true,
