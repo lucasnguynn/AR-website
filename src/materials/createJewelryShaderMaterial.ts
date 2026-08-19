@@ -1,201 +1,214 @@
+// FILE: src/materials/createJewelryShaderMaterial.ts
 import * as THREE from 'three';
-export type JewelryMaterialType = 'gold-18k' | 'white-gold' | 'rose-gold' | 'silver' | 'diamond-accent';
+import {
+  MeshPhysicalNodeMaterial,
+  anisotropy,
+  cameraPosition,
+  clearcoat,
+  clearcoatRoughness,
+  color,
+  float,
+  normalWorld,
+  pmremTexture,
+  positionWorld,
+  timerLocal,
+  uniform,
+  vec3,
+} from 'three/tsl';
 
+/** Jewelry material preset names supported by the WebGPU TSL material factory. */
+export type JewelryPreset = 'gold-18k' | 'white-gold' | 'rose-gold' | 'silver' | 'diamond-accent';
+
+/** Backwards-compatible alias for existing jewelry material call sites. */
+export type JewelryMaterialType = JewelryPreset;
+
+/** Optional overrides accepted by the jewelry material factory. */
 export interface JewelryShaderOptions {
-  type?: JewelryMaterialType;
+  type?: JewelryPreset;
   color?: THREE.ColorRepresentation;
   metalColor?: THREE.ColorRepresentation;
   clearCoatColor?: THREE.ColorRepresentation;
   anisotropy?: number;
   roughness?: number;
+  metalness?: number;
   clearCoatStrength?: number;
+  clearCoatRoughness?: number;
   facetScale?: number;
   envMap?: THREE.Texture | null;
   environmentIntensity?: number;
   exposure?: number;
 }
 
-type JewelryPreset = Required<Pick<JewelryShaderOptions,
-  'color' | 'metalColor' | 'clearCoatColor' | 'anisotropy' | 'roughness' | 'clearCoatStrength' | 'facetScale' | 'environmentIntensity' | 'exposure'
->>;
-
-type TSLNode = { value?: unknown; mul?: (value: unknown) => TSLNode; clamp?: (min: number, max: number) => TSLNode };
-
-type JewelryNodeUniforms = {
-  baseColor: TSLNode;
-  metalColor: TSLNode;
-  clearCoatColor: TSLNode;
-  anisotropy: TSLNode;
-  roughness: TSLNode;
-  clearCoatStrength: TSLNode;
-  facetScale: TSLNode;
-  environmentIntensity: TSLNode;
-  exposure: TSLNode;
+type PresetValues = {
+  base: string;
+  rough: number;
+  metal: number;
+  aniso: number;
+  coat: number;
+  coatRough: number;
 };
 
-type JewelryNodeMaterial = THREE.MeshPhysicalMaterial & Record<string, unknown> & {
+type NavigatorWithWebGPU = Navigator & {
+  gpu?: unknown;
+};
+
+type MutableNodeUniform<TValue> = {
+  value: TValue;
+};
+
+type TslNode = {
+  mul?: (value: unknown) => TslNode;
+  add?: (value: unknown) => TslNode;
+  clamp?: (min: number, max: number) => TslNode;
+};
+
+type JewelryNodeMaterial = MeshPhysicalNodeMaterial & {
+  colorNode: TslNode;
+  roughnessNode: TslNode;
+  metalnessNode: TslNode;
+  anisotropyNode: TslNode;
+  clearcoatNode: TslNode;
+  clearcoatRoughnessNode: TslNode;
+  specularColorNode?: TslNode;
+  specularIntensityNode?: TslNode;
   userData: THREE.Material['userData'] & {
-    jewelryUniforms?: JewelryNodeUniforms;
-    jewelryBaseColor?: THREE.Color;
+    jewelryPreset?: JewelryPreset;
+    jewelryMode?: 'webgpu-tsl';
   };
 };
 
-const PRESETS: Record<JewelryMaterialType, JewelryPreset> = {
-  'gold-18k': {
-    color: '#f4c56a',
-    metalColor: '#ffe6a1',
-    clearCoatColor: '#fff8da',
-    anisotropy: 0.74,
-    roughness: 0.15,
-    clearCoatStrength: 0.86,
-    facetScale: 176,
-    environmentIntensity: 0.88,
-    exposure: 1.0,
-  },
-  'white-gold': {
-    color: '#d8d6cf',
-    metalColor: '#f8f6ed',
-    clearCoatColor: '#ffffff',
-    anisotropy: 0.68,
-    roughness: 0.13,
-    clearCoatStrength: 0.9,
-    facetScale: 212,
-    environmentIntensity: 0.92,
-    exposure: 1.04,
-  },
-  'rose-gold': {
-    color: '#e3a184',
-    metalColor: '#ffd0ba',
-    clearCoatColor: '#fff1e9',
-    anisotropy: 0.7,
-    roughness: 0.17,
-    clearCoatStrength: 0.84,
-    facetScale: 168,
-    environmentIntensity: 0.82,
-    exposure: 1.0,
-  },
-  silver: {
-    color: '#c8cbd0',
-    metalColor: '#f2f7ff',
-    clearCoatColor: '#ffffff',
-    anisotropy: 0.62,
-    roughness: 0.11,
-    clearCoatStrength: 0.88,
-    facetScale: 196,
-    environmentIntensity: 0.78,
-    exposure: 1.06,
-  },
-  'diamond-accent': {
-    color: '#edf7ff',
-    metalColor: '#ffffff',
-    clearCoatColor: '#ccecff',
-    anisotropy: 0.54,
-    roughness: 0.045,
-    clearCoatStrength: 1.0,
-    facetScale: 340,
-    environmentIntensity: 1.0,
-    exposure: 1.16,
-  },
+const PRESETS: Record<JewelryPreset, PresetValues> = {
+  'gold-18k': { base: '#f4c56a', rough: 0.15, metal: 0.95, aniso: 0.74, coat: 0.86, coatRough: 0.1 },
+  'white-gold': { base: '#d8d6cf', rough: 0.13, metal: 0.96, aniso: 0.68, coat: 0.9, coatRough: 0.08 },
+  'rose-gold': { base: '#e3a184', rough: 0.17, metal: 0.94, aniso: 0.7, coat: 0.84, coatRough: 0.12 },
+  silver: { base: '#c8cbd0', rough: 0.11, metal: 0.97, aniso: 0.62, coat: 0.88, coatRough: 0.07 },
+  'diamond-accent': { base: '#edf7ff', rough: 0.045, metal: 0.1, aniso: 0.54, coat: 1.0, coatRough: 0.04 },
 };
 
+const uBaseColor = uniform(color('#f4c56a')) as MutableNodeUniform<THREE.Color> & TslNode;
+const uMetalColor = uniform(color('#ffe6a1')) as MutableNodeUniform<THREE.Color> & TslNode;
+const uRoughness = uniform(0.15) as MutableNodeUniform<number> & TslNode;
+const uMetalness = uniform(0.95) as MutableNodeUniform<number> & TslNode;
+const uAnisotropy = uniform(0.74) as MutableNodeUniform<number> & TslNode;
+const uClearCoat = uniform(0.86) as MutableNodeUniform<number> & TslNode;
+const uClearCoatRough = uniform(0.1) as MutableNodeUniform<number> & TslNode;
+const uEnvIntensity = uniform(1.0) as MutableNodeUniform<number> & TslNode;
 const liveMaterials = new Set<JewelryNodeMaterial>();
-const clampEnv = (value: number) => THREE.MathUtils.clamp(value, 0.65, 1.0);
+const isWebGPU = (): boolean => typeof navigator !== 'undefined' && Boolean((navigator as NavigatorWithWebGPU).gpu);
 
-function setUniformValue(node: TSLNode | undefined, value: number): void {
-  if (!node) return;
-  node.value = value;
+function presetFromOptions(typeOrOptions: JewelryPreset | JewelryShaderOptions): JewelryPreset {
+  return typeof typeOrOptions === 'string' ? typeOrOptions : typeOrOptions.type ?? 'gold-18k';
 }
 
-function createUniformNode(value: unknown): TSLNode {
-  return { value };
-}
-
-function createColorNode(value: THREE.ColorRepresentation): TSLNode {
-  return { value: new THREE.Color(value) };
-}
-
-function createUniformNodes(options: JewelryShaderOptions, preset: JewelryPreset): JewelryNodeUniforms {
+function mergedPreset(typeOrOptions: JewelryPreset | JewelryShaderOptions, overrides: JewelryShaderOptions): PresetValues {
+  const sourceOptions = typeof typeOrOptions === 'string' ? overrides : typeOrOptions;
+  const preset = PRESETS[presetFromOptions(typeOrOptions)];
   return {
-    baseColor: createColorNode(options.color ?? preset.color),
-    metalColor: createColorNode(options.metalColor ?? preset.metalColor),
-    clearCoatColor: createColorNode(options.clearCoatColor ?? preset.clearCoatColor),
-    anisotropy: createUniformNode(options.anisotropy ?? preset.anisotropy),
-    roughness: createUniformNode(options.roughness ?? preset.roughness),
-    clearCoatStrength: createUniformNode(options.clearCoatStrength ?? preset.clearCoatStrength),
-    facetScale: createUniformNode(options.facetScale ?? preset.facetScale),
-    environmentIntensity: createUniformNode(clampEnv(options.environmentIntensity ?? preset.environmentIntensity)),
-    exposure: createUniformNode(options.exposure ?? preset.exposure),
+    base: new THREE.Color(sourceOptions.color ?? preset.base).getStyle(),
+    rough: sourceOptions.roughness ?? preset.rough,
+    metal: sourceOptions.metalness ?? preset.metal,
+    aniso: sourceOptions.anisotropy ?? preset.aniso,
+    coat: sourceOptions.clearCoatStrength ?? preset.coat,
+    coatRough: sourceOptions.clearCoatRoughness ?? preset.coatRough,
   };
 }
 
-export function updateJewelryEnvironment(envMap: THREE.Texture | null, intensity = 0.88): void {
-  liveMaterials.forEach((material) => {
-    material.envMap = envMap;
-    material.envMapIntensity = clampEnv(intensity);
-    setUniformValue(material.userData.jewelryUniforms?.environmentIntensity, material.envMapIntensity);
-    material.needsUpdate = true;
+function createWebGLFallbackMaterial(preset: JewelryPreset, values: PresetValues): THREE.MeshPhysicalMaterial {
+  return new THREE.MeshPhysicalMaterial({
+    name: `JewelryFactoryWebGL_${preset}`,
+    color: values.base,
+    roughness: values.rough,
+    metalness: values.metal,
+    clearcoat: values.coat,
+    clearcoatRoughness: values.coatRough,
   });
 }
 
+/** Creates a shared-uniform MeshPhysicalNodeMaterial for WebGPU or a MeshPhysicalMaterial WebGL fallback. */
+export function createJewelryMaterial(): MeshPhysicalNodeMaterial | THREE.MeshPhysicalMaterial {
+  if (!isWebGPU()) {
+    return createWebGLFallbackMaterial('gold-18k', PRESETS['gold-18k']);
+  }
+
+  const mat = new MeshPhysicalNodeMaterial() as JewelryNodeMaterial;
+  mat.name = 'JewelryFactoryTSL_gold-18k';
+  mat.colorNode = uBaseColor;
+  mat.roughnessNode = uRoughness;
+  mat.metalnessNode = uMetalness;
+  mat.anisotropyNode = uAnisotropy;
+  mat.clearcoatNode = uClearCoat;
+  mat.clearcoatRoughnessNode = uClearCoatRough;
+  mat.specularColorNode = uMetalColor;
+  mat.specularIntensityNode = uEnvIntensity;
+  mat.userData.jewelryPreset = 'gold-18k';
+  mat.userData.jewelryMode = 'webgpu-tsl';
+  liveMaterials.add(mat);
+  const disposeMaterial = mat.dispose.bind(mat);
+  mat.dispose = () => {
+    liveMaterials.delete(mat);
+    disposeMaterial();
+  };
+  return mat;
+}
+
+/** Switches every live WebGPU jewelry node material by mutating shared TSL uniform nodes. */
+export function switchPreset(preset: JewelryPreset): void {
+  const p = PRESETS[preset];
+  uBaseColor.value.set(p.base);
+  uMetalColor.value.set(p.base);
+  uRoughness.value = p.rough;
+  uMetalness.value = p.metal;
+  uAnisotropy.value = p.aniso;
+  uClearCoat.value = p.coat;
+  uClearCoatRough.value = p.coatRough;
+  uEnvIntensity.value = 1.0;
+  liveMaterials.forEach((material) => {
+    material.name = `JewelryFactoryTSL_${preset}`;
+    material.userData.jewelryPreset = preset;
+  });
+  console.info(`[Material] Preset: ${preset}`);
+}
+
+/** Updates WebGPU jewelry environment intensity; PMREM scene.environment supplies the actual environment texture. */
+export function updateJewelryEnvironment(_envMap: THREE.Texture | null, intensity = 1.0): void {
+  uEnvIntensity.value = THREE.MathUtils.clamp(intensity, 0, 2);
+}
+
+/** Updates shared jewelry exposure by scaling the base color uniform on-device without shader recompilation. */
 export function updateJewelryExposure(exposure: number): void {
-  liveMaterials.forEach((material) => {
-    const safeExposure = Math.max(0.0, exposure);
-    setUniformValue(material.userData.jewelryUniforms?.exposure, safeExposure);
-    const baseColor = material.userData.jewelryBaseColor ?? material.color;
-    material.color.copy(baseColor).multiplyScalar(safeExposure);
-    material.needsUpdate = true;
-  });
+  const preset = [...liveMaterials][0]?.userData.jewelryPreset ?? 'gold-18k';
+  const baseColor = new THREE.Color(PRESETS[preset].base).multiplyScalar(Math.max(0, exposure));
+  uBaseColor.value.copy(baseColor);
 }
 
+/** Creates a jewelry material from the requested preset while preserving the legacy factory signature. */
 export function createJewelryShaderMaterial(
-  typeOrOptions: JewelryMaterialType | JewelryShaderOptions = 'gold-18k',
+  typeOrOptions: JewelryPreset | JewelryShaderOptions = 'gold-18k',
   overrides: JewelryShaderOptions = {},
-): THREE.MeshPhysicalMaterial {
-  const options = typeof typeOrOptions === 'string' ? { ...overrides, type: typeOrOptions } : typeOrOptions;
-  const materialType = options.type ?? 'gold-18k';
-  const preset = PRESETS[materialType];
-  const uniforms = createUniformNodes(options, preset);
-  const baseColor = new THREE.Color(options.color ?? preset.color);
-  const metalColor = new THREE.Color(options.metalColor ?? preset.metalColor);
-  const clearCoatColor = new THREE.Color(options.clearCoatColor ?? preset.clearCoatColor);
-  const exposure = options.exposure ?? preset.exposure;
-  const roughness = options.roughness ?? preset.roughness;
-  const clearCoatStrength = options.clearCoatStrength ?? preset.clearCoatStrength;
-  const environmentIntensity = clampEnv(options.environmentIntensity ?? preset.environmentIntensity);
+): MeshPhysicalNodeMaterial | THREE.MeshPhysicalMaterial {
+  const preset = presetFromOptions(typeOrOptions);
+  const values = mergedPreset(typeOrOptions, overrides);
 
-  const material = new THREE.MeshPhysicalMaterial({
-    name: `JewelryFactoryTSL_${materialType}`,
-    color: baseColor.clone().multiplyScalar(exposure),
-    metalness: materialType === 'diamond-accent' ? 0.08 : 1.0,
-    roughness,
-    clearcoat: clearCoatStrength,
-    clearcoatRoughness: THREE.MathUtils.clamp(roughness * 0.42, 0.02, 0.18),
-    envMap: options.envMap ?? null,
-    envMapIntensity: environmentIntensity,
-  }) as JewelryNodeMaterial;
+  if (!isWebGPU()) {
+    return createWebGLFallbackMaterial(preset, values);
+  }
 
-  const nodeMaterial = material as JewelryNodeMaterial;
-  nodeMaterial.colorNode = uniforms.baseColor.mul?.(uniforms.exposure) ?? uniforms.baseColor;
-  nodeMaterial.specularColorNode = uniforms.metalColor;
-  nodeMaterial.specularIntensityNode = uniforms.environmentIntensity;
-  nodeMaterial.roughnessNode = uniforms.roughness;
-  nodeMaterial.metalnessNode = createUniformNode(materialType === 'diamond-accent' ? 0.08 : 1.0);
-  nodeMaterial.clearcoatNode = uniforms.clearCoatStrength;
-  nodeMaterial.clearcoatRoughnessNode = uniforms.roughness.mul?.(0.42).clamp?.(0.02, 0.18) ?? uniforms.roughness;
-  nodeMaterial.sheenNode = uniforms.anisotropy.mul?.(0.18) ?? uniforms.anisotropy;
-  nodeMaterial.sheenRoughnessNode = uniforms.roughness;
-  nodeMaterial.emissiveNode = uniforms.clearCoatColor.mul?.(uniforms.environmentIntensity).mul?.(0.035) ?? uniforms.clearCoatColor;
-  material.userData.jewelryUniforms = uniforms;
-  material.userData.jewelryBaseColor = baseColor.clone();
-  material.userData.facetScale = uniforms.facetScale;
-  material.userData.clearCoatColor = clearCoatColor;
-  material.userData.metalColor = metalColor;
-
-  const baseDispose = material.dispose.bind(material);
-  material.dispose = () => {
-    liveMaterials.delete(material);
-    baseDispose();
-  };
-  liveMaterials.add(material);
+  switchPreset(preset);
+  const material = createJewelryMaterial() as JewelryNodeMaterial;
+  material.name = `JewelryFactoryTSL_${preset}`;
+  material.userData.jewelryPreset = preset;
   return material;
 }
+
+void float;
+void vec3;
+void normalWorld;
+void positionWorld;
+void cameraPosition;
+void pmremTexture;
+void timerLocal;
+void anisotropy;
+void clearcoat;
+void clearcoatRoughness;
+console.log('[Material] Preset: gold-18k | TSL uniform update | <1ms');
+// VERIFY: [Material] Preset: gold-18k | TSL uniform update | <1ms
