@@ -41,12 +41,16 @@ jobs:
 
       - name: Build static site
         run: npm run build
+        env:
+          ASSET_SECRET: ${{ secrets.ASSET_SECRET }}
 
       - name: Generate asset integrity manifest
         run: node scripts/generate-sri.js
 
       - name: Rebuild with generated integrity hashes
         run: npm run build
+        env:
+          ASSET_SECRET: ${{ secrets.ASSET_SECRET }}
 
       - name: Create 404.html for SPA routing
         run: cp dist/index.html dist/404.html
