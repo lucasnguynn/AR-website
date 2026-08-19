@@ -1,85 +1,25 @@
-# FILE: .github/workflows/deploy.yml
-name: Build & Deploy
-
+name: Deploy Pages
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
+  workflow_run:
+    workflows: [Quality gate]
+    types: [completed]
 permissions:
-  contents: read
   pages: write
   id-token: write
-
-concurrency:
-  group: pages-${{ github.ref }}
-  cancel-in-progress: true
-
+  actions: read
+concurrency: { group: pages, cancel-in-progress: false }
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Lint (zero warnings)
-        run: npm run lint
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Download Large ML Models
-        run: |
-          mkdir -p public/models/depth
-          curl -L -o public/models/depth/depth_anything_v2_small.onnx https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/main/onnx/model.onnx
-
-      - name: Validate required assets
-        run: npm run validate:assets
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-
-      - name: Build final deployment artifact
-        run: npm run build
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          NODE_ENV: production
-
-      - name: Bundle size check
-        run: node scripts/check-bundle-size.js
-
-      - name: SPA 404 fallback
-        run: cp dist/index.html dist/404.html
-
-      - name: Setup Pages
-        if: github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@v4
-
-      - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './dist'
-
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: "${{ steps.deployment.outputs.page_url }}"
+    runs-on: ubuntu-latest
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          run-id: "${{ github.event.workflow_run.id }}"
       - id: deployment
         uses: actions/deploy-pages@v4

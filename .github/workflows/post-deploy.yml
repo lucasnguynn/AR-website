@@ -1,0 +1,33 @@
+name: Post-deploy evidence
+on:
+  workflow_run:
+    workflows: [Deploy Pages]
+    types: [completed]
+permissions: { contents: read }
+jobs:
+  deployed-contract:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install --global @lhci/cli@0.14.x
+      - name: Resolve deployment URL
+        run: echo "DEPLOY_URL=https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
+      - name: Smoke and asset checks
+        run: |
+          curl --fail --retry 5 --retry-delay 5 --show-error "$DEPLOY_URL"
+          curl --fail --show-error "${DEPLOY_URL}integrity-manifest.json" -o /tmp/integrity-manifest.json
+          node -e "const m=require('/tmp/integrity-manifest.json'); if(m.version!==1 || !Object.keys(m.assets).length) process.exit(1)"
+      - name: Inspect response headers
+        run: curl --fail --show-error --head "$DEPLOY_URL" | tee response-headers.txt
+      - name: Lighthouse thresholds
+        run: lhci autorun --config=.lighthouserc.json --collect.url="$DEPLOY_URL"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-deploy-evidence
+          path: |
+            response-headers.txt
+            lhci-results
