@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-
 export type JewelryMaterialType = 'gold-18k' | 'white-gold' | 'rose-gold' | 'silver' | 'diamond-accent';
 
 export interface JewelryShaderOptions {
@@ -19,6 +18,27 @@ export interface JewelryShaderOptions {
 type JewelryPreset = Required<Pick<JewelryShaderOptions,
   'color' | 'metalColor' | 'clearCoatColor' | 'anisotropy' | 'roughness' | 'clearCoatStrength' | 'facetScale' | 'environmentIntensity' | 'exposure'
 >>;
+
+type TSLNode = { value?: unknown; mul?: (value: unknown) => TSLNode; clamp?: (min: number, max: number) => TSLNode };
+
+type JewelryNodeUniforms = {
+  baseColor: TSLNode;
+  metalColor: TSLNode;
+  clearCoatColor: TSLNode;
+  anisotropy: TSLNode;
+  roughness: TSLNode;
+  clearCoatStrength: TSLNode;
+  facetScale: TSLNode;
+  environmentIntensity: TSLNode;
+  exposure: TSLNode;
+};
+
+type JewelryNodeMaterial = THREE.MeshPhysicalMaterial & Record<string, unknown> & {
+  userData: THREE.Material['userData'] & {
+    jewelryUniforms?: JewelryNodeUniforms;
+    jewelryBaseColor?: THREE.Color;
+  };
+};
 
 const PRESETS: Record<JewelryMaterialType, JewelryPreset> = {
   'gold-18k': {
@@ -78,99 +98,98 @@ const PRESETS: Record<JewelryMaterialType, JewelryPreset> = {
   },
 };
 
-const liveMaterials = new Set<THREE.ShaderMaterial>();
+const liveMaterials = new Set<JewelryNodeMaterial>();
 const clampEnv = (value: number) => THREE.MathUtils.clamp(value, 0.65, 1.0);
+
+function setUniformValue(node: TSLNode | undefined, value: number): void {
+  if (!node) return;
+  node.value = value;
+}
+
+function createUniformNode(value: unknown): TSLNode {
+  return { value };
+}
+
+function createColorNode(value: THREE.ColorRepresentation): TSLNode {
+  return { value: new THREE.Color(value) };
+}
+
+function createUniformNodes(options: JewelryShaderOptions, preset: JewelryPreset): JewelryNodeUniforms {
+  return {
+    baseColor: createColorNode(options.color ?? preset.color),
+    metalColor: createColorNode(options.metalColor ?? preset.metalColor),
+    clearCoatColor: createColorNode(options.clearCoatColor ?? preset.clearCoatColor),
+    anisotropy: createUniformNode(options.anisotropy ?? preset.anisotropy),
+    roughness: createUniformNode(options.roughness ?? preset.roughness),
+    clearCoatStrength: createUniformNode(options.clearCoatStrength ?? preset.clearCoatStrength),
+    facetScale: createUniformNode(options.facetScale ?? preset.facetScale),
+    environmentIntensity: createUniformNode(clampEnv(options.environmentIntensity ?? preset.environmentIntensity)),
+    exposure: createUniformNode(options.exposure ?? preset.exposure),
+  };
+}
 
 export function updateJewelryEnvironment(envMap: THREE.Texture | null, intensity = 0.88): void {
   liveMaterials.forEach((material) => {
-    material.uniforms.envMap.value = envMap;
-    material.uniforms.environmentIntensity.value = clampEnv(intensity);
+    material.envMap = envMap;
+    material.envMapIntensity = clampEnv(intensity);
+    setUniformValue(material.userData.jewelryUniforms?.environmentIntensity, material.envMapIntensity);
     material.needsUpdate = true;
   });
 }
 
 export function updateJewelryExposure(exposure: number): void {
   liveMaterials.forEach((material) => {
-    material.uniforms.exposure.value = Math.max(0.0, exposure);
+    const safeExposure = Math.max(0.0, exposure);
+    setUniformValue(material.userData.jewelryUniforms?.exposure, safeExposure);
+    const baseColor = material.userData.jewelryBaseColor ?? material.color;
+    material.color.copy(baseColor).multiplyScalar(safeExposure);
+    material.needsUpdate = true;
   });
 }
 
 export function createJewelryShaderMaterial(
   typeOrOptions: JewelryMaterialType | JewelryShaderOptions = 'gold-18k',
   overrides: JewelryShaderOptions = {},
-): THREE.ShaderMaterial {
+): THREE.MeshPhysicalMaterial {
   const options = typeof typeOrOptions === 'string' ? { ...overrides, type: typeOrOptions } : typeOrOptions;
-  const preset = PRESETS[options.type ?? 'gold-18k'];
-  const material = new THREE.ShaderMaterial({
-    name: `JewelryFactoryAnisotropic_${options.type ?? 'gold-18k'}`,
-    uniforms: {
-      baseColor: { value: new THREE.Color(options.color ?? preset.color) },
-      metalColor: { value: new THREE.Color(options.metalColor ?? preset.metalColor) },
-      clearCoatColor: { value: new THREE.Color(options.clearCoatColor ?? preset.clearCoatColor) },
-      anisotropy: { value: options.anisotropy ?? preset.anisotropy },
-      roughness: { value: options.roughness ?? preset.roughness },
-      clearCoatStrength: { value: options.clearCoatStrength ?? preset.clearCoatStrength },
-      facetScale: { value: options.facetScale ?? preset.facetScale },
-      environmentIntensity: { value: clampEnv(options.environmentIntensity ?? preset.environmentIntensity) },
-      exposure: { value: options.exposure ?? preset.exposure },
-      envMap: { value: options.envMap ?? null },
-    },
-    vertexShader: /* glsl */`
-      attribute vec4 tangent;
-      varying vec3 vWorldPosition;
-      varying vec3 vNormal;
-      varying vec3 vTangent;
-      varying vec2 vUv;
-      varying float vVertexAo;
+  const materialType = options.type ?? 'gold-18k';
+  const preset = PRESETS[materialType];
+  const uniforms = createUniformNodes(options, preset);
+  const baseColor = new THREE.Color(options.color ?? preset.color);
+  const metalColor = new THREE.Color(options.metalColor ?? preset.metalColor);
+  const clearCoatColor = new THREE.Color(options.clearCoatColor ?? preset.clearCoatColor);
+  const exposure = options.exposure ?? preset.exposure;
+  const roughness = options.roughness ?? preset.roughness;
+  const clearCoatStrength = options.clearCoatStrength ?? preset.clearCoatStrength;
+  const environmentIntensity = clampEnv(options.environmentIntensity ?? preset.environmentIntensity);
 
-      void main() {
-        vUv = uv;
-        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vWorldPosition = worldPosition.xyz;
-        vNormal = normalize(mat3(modelMatrix) * normal);
-        vec3 sourceTangent = tangent.xyz;
-        if (length(sourceTangent) < 0.001) sourceTangent = vec3(1.0, 0.0, 0.0);
-        vTangent = normalize(mat3(modelMatrix) * sourceTangent);
-        vVertexAo = clamp(0.58 + normal.y * 0.28 + position.y * 0.045, 0.36, 1.0);
-        gl_Position = projectionMatrix * viewMatrix * worldPosition;
-      }
-    `,
-    fragmentShader: /* glsl */`
-      precision highp float;
-      uniform vec3 baseColor; uniform vec3 metalColor; uniform vec3 clearCoatColor;
-      uniform float anisotropy; uniform float roughness; uniform float clearCoatStrength;
-      uniform float facetScale; uniform float environmentIntensity; uniform float exposure;
-      uniform sampler2D envMap;
-      varying vec3 vWorldPosition; varying vec3 vNormal; varying vec3 vTangent; varying vec2 vUv; varying float vVertexAo;
-      float saturate(float v) { return clamp(v, 0.0, 1.0); }
-      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
-      float noise(vec2 p) { vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.0-2.0*f); return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),u.x),mix(hash(i+vec2(0.0,1.0)),hash(i+vec2(1.0,1.0)),u.x),u.y); }
-      vec2 matcapUv(vec3 r) { float m = 2.0 * sqrt(r.x*r.x + r.y*r.y + (r.z + 1.0)*(r.z + 1.0)); return r.xy / max(m, 0.001) + 0.5; }
-      void main() {
-        vec3 N = normalize(vNormal);
-        vec3 V = normalize(cameraPosition - vWorldPosition);
-        vec3 T = normalize(vTangent - N * dot(N, vTangent));
-        vec3 B = normalize(cross(N, T));
-        vec3 L = normalize(vec3(0.35, 0.82, 0.44));
-        vec3 H = normalize(V + L);
-        float micro = noise(vUv * facetScale) * 2.0 - 1.0;
-        vec3 FN = normalize(N + (T * micro + B * (noise(vUv.yx * facetScale * 0.73) - 0.5)) * 0.06);
-        float NoL = saturate(dot(FN, L)); float NoV = saturate(dot(FN, V)); float NoH = saturate(dot(FN, H));
-        float ToH = dot(T, H); float BoH = dot(B, H);
-        float ax = max(0.018, roughness * roughness * (1.0 + anisotropy));
-        float ay = max(0.018, roughness * roughness * (1.0 - anisotropy * 0.82));
-        float d = 1.0 / max(0.001, 3.14159265 * ax * ay * pow((ToH*ToH)/(ax*ax) + (BoH*BoH)/(ay*ay) + NoH*NoH, 2.0));
-        float fresnel = pow(1.0 - NoV, 5.0);
-        vec3 reflection = texture2D(envMap, matcapUv(reflect(-V, FN))).rgb * environmentIntensity;
-        vec3 spec = mix(baseColor, metalColor, 0.72) * d * NoL;
-        vec3 coat = clearCoatColor * pow(NoH, mix(96.0, 560.0, clearCoatStrength)) * (0.1 + 0.9 * fresnel) * clearCoatStrength;
-        vec3 edgeGlow = clearCoatColor * fresnel * 0.28;
-        vec3 bounce = baseColor * (0.16 * NoL + 0.035) * vVertexAo;
-        gl_FragColor = vec4((bounce + spec + coat + edgeGlow + reflection * (0.2 + fresnel * 0.5)) * exposure, 1.0);
-      }
-    `,
-    lights: false,
-  });
+  const material = new THREE.MeshPhysicalMaterial({
+    name: `JewelryFactoryTSL_${materialType}`,
+    color: baseColor.clone().multiplyScalar(exposure),
+    metalness: materialType === 'diamond-accent' ? 0.08 : 1.0,
+    roughness,
+    clearcoat: clearCoatStrength,
+    clearcoatRoughness: THREE.MathUtils.clamp(roughness * 0.42, 0.02, 0.18),
+    envMap: options.envMap ?? null,
+    envMapIntensity: environmentIntensity,
+  }) as JewelryNodeMaterial;
+
+  const nodeMaterial = material as JewelryNodeMaterial;
+  nodeMaterial.colorNode = uniforms.baseColor.mul?.(uniforms.exposure) ?? uniforms.baseColor;
+  nodeMaterial.specularColorNode = uniforms.metalColor;
+  nodeMaterial.specularIntensityNode = uniforms.environmentIntensity;
+  nodeMaterial.roughnessNode = uniforms.roughness;
+  nodeMaterial.metalnessNode = createUniformNode(materialType === 'diamond-accent' ? 0.08 : 1.0);
+  nodeMaterial.clearcoatNode = uniforms.clearCoatStrength;
+  nodeMaterial.clearcoatRoughnessNode = uniforms.roughness.mul?.(0.42).clamp?.(0.02, 0.18) ?? uniforms.roughness;
+  nodeMaterial.sheenNode = uniforms.anisotropy.mul?.(0.18) ?? uniforms.anisotropy;
+  nodeMaterial.sheenRoughnessNode = uniforms.roughness;
+  nodeMaterial.emissiveNode = uniforms.clearCoatColor.mul?.(uniforms.environmentIntensity).mul?.(0.035) ?? uniforms.clearCoatColor;
+  material.userData.jewelryUniforms = uniforms;
+  material.userData.jewelryBaseColor = baseColor.clone();
+  material.userData.facetScale = uniforms.facetScale;
+  material.userData.clearCoatColor = clearCoatColor;
+  material.userData.metalColor = metalColor;
 
   const baseDispose = material.dispose.bind(material);
   material.dispose = () => {
