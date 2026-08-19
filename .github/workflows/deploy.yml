@@ -41,6 +41,11 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Download Large ML Models
+        run: |
+          mkdir -p public/models/depth
+          curl -L -o public/models/depth/depth_anything_v2_small.onnx https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/main/onnx/model.onnx
+
       - name: Validate required assets
         run: npm run validate:assets
         env:
