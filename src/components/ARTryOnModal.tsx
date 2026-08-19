@@ -1,3 +1,4 @@
+// FILE: src/components/ARTryOnModal.tsx
 /**
  * ARTryOnModal.tsx
  *
@@ -12,11 +13,14 @@ import { useCamera, startCameraFromRef, resetCamera } from '../hook/useCamera';
 import { useHandTracking } from '../hook/useHandTracking';
 import { useLoadingState } from '../hook/useLoadingState';
 import { useAmbientLightAdapter } from '../utils/AmbientLightAdapter';
+import { detectARExperience, type ARExperience } from '../utils/DeviceProfiler';
 import { assertLocalCameraPrivacy } from '../utils/SecurityUtils';
 import { estimateRingSizeFromPinch, type RingSizeEstimate } from '../utils/SizingTool';
 import { ARControls } from './ARControls';
 import { WebGPUScene } from './WebGPUScene';
+import { QuickLookViewer } from './QuickLookViewer';
 
+/** Props for the top-level AR try-on modal. */
 export interface ARTryOnModalProps {
   onClose: () => void;
 }
@@ -29,6 +33,10 @@ type CriticalError = {
 
 const TRACKING_TIMEOUT_MS = 12_000;
 const SMART_HUD_DELAY_MS = 2_000;
+const QUICK_LOOK_USDZ_URL = '/models/nhan.usdz';
+const QUICK_LOOK_PREVIEW_URL = '/models/nhan-preview.jpg';
+const QUICK_LOOK_PRODUCT_NAME = 'Classic Gold Band';
+const QUICK_LOOK_DIAMETER_MM = 18;
 
 function hasWebGLSupport(): boolean {
   const canvas = document.createElement('canvas');
@@ -49,6 +57,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   const ambientLight = useAmbientLightAdapter(videoRef);
   const [hudVisible, setHudVisible] = useState(false);
   const [sizeEstimate, setSizeEstimate] = useState<RingSizeEstimate | null>(null);
+  const [arExp, setArExp] = useState<ARExperience | null>(null);
   const {
     cameraState,
     facingMode,
@@ -93,6 +102,18 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   }, [cameraHasError, facingMode, recoverCamera, resultRef, startTracking]);
 
   useEffect(() => {
+    let active = true;
+    detectARExperience().then((experience) => {
+      if (active) setArExp(experience);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (arExp === null || arExp === 'QUICK_LOOK' || arExp === 'INTERACTIVE_3D') return;
+
     if (!hasWebGLSupport()) {
       setCriticalError({
         title: 'WebGL unavailable',
@@ -111,10 +132,10 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
       assertLocalCameraPrivacy(videoRef.current);
       resetCamera();
     };
-  }, [destroy, setActive, stopCamera]);
+  }, [arExp, destroy, setActive, stopCamera]);
 
   useEffect(() => {
-    if (criticalError || !videoRef.current || cameraState !== 'IDLE') return;
+    if (arExp === null || arExp === 'QUICK_LOOK' || arExp === 'INTERACTIVE_3D' || criticalError || !videoRef.current || cameraState !== 'IDLE') return;
 
     startCameraFromRef(videoRef.current, 'user')
       .then(() => {
@@ -127,7 +148,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
           retryable: true,
         });
       });
-  }, [cameraState, criticalError, startTracking]);
+  }, [arExp, cameraState, criticalError, startTracking]);
 
   useEffect(() => {
     if (!cameraHasError || !cameraLastError) return;
@@ -203,6 +224,32 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [closeAR]);
 
+  if (arExp === 'QUICK_LOOK') {
+    return (
+      <FallbackModal title="View in your space" onClose={closeAR}>
+        <QuickLookViewer
+          usdzUrl={QUICK_LOOK_USDZ_URL}
+          previewImageUrl={QUICK_LOOK_PREVIEW_URL}
+          productName={QUICK_LOOK_PRODUCT_NAME}
+          realWorldDiameterMm={QUICK_LOOK_DIAMETER_MM}
+          onDismiss={closeAR}
+        />
+        <p className="mt-4 text-center text-sm text-white/65">iOS Quick Look opens a private, on-device AR preview with no camera upload.</p>
+      </FallbackModal>
+    );
+  }
+
+  if (arExp === 'INTERACTIVE_3D') {
+    return (
+      <FallbackModal title="Interactive 3D preview" onClose={closeAR}>
+        <div className="flex h-52 w-52 items-center justify-center rounded-3xl border border-white/10 bg-neutral-900 text-7xl" aria-label={QUICK_LOOK_PRODUCT_NAME}>
+          💍
+        </div>
+        <p className="mt-4 text-center text-sm text-white/65">Camera AR is unavailable, so you can still inspect the product in a static 3D-safe fallback.</p>
+      </FallbackModal>
+    );
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black text-white antialiased"
@@ -256,6 +303,20 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
         {isReady && hudVisible && <SmartHud />}
         {!isReady && !criticalError && <LoadingOverlay progress={combinedProgress} hasCamera={loadingState.camera} />}
         {criticalError && <RecoveryOverlay error={criticalError} onRetry={retryExperience} onClose={closeAR} />}
+      </div>
+    </div>
+  );
+}
+
+function FallbackModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black text-white antialiased" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="relative flex w-full max-w-sm flex-col items-center rounded-[2rem] border border-white/10 bg-neutral-950 p-6 shadow-2xl">
+        <button onClick={onClose} className="absolute right-4 top-4 min-h-10 min-w-10 rounded-full border border-white/15 text-xl font-light" aria-label="Close AR try-on">
+          ×
+        </button>
+        <p className="mb-4 text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">{title}</p>
+        {children}
       </div>
     </div>
   );
@@ -320,3 +381,4 @@ function RecoveryOverlay({ error, onRetry, onClose }: { error: CriticalError; on
     </div>
   );
 }
+// VERIFY: console.log('[AR Experience] ARTryOnModal routes WebXR, Quick Look, pseudo AR, and static 3D')

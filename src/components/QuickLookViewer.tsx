@@ -1,52 +1,63 @@
-import type { AnchorHTMLAttributes, CSSProperties, ReactNode } from 'react';
+// FILE: src/components/QuickLookViewer.tsx
+import { useCallback, type CSSProperties } from 'react';
 
-const ACCENT_COLOR = '#D5FD50';
-
-export interface QuickLookViewerProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href' | 'rel' | 'children'> {
-  usdzSrc: string;
-  posterSrc?: string;
-  label?: string;
-  children?: ReactNode;
+interface UmamiAnalytics {
+  track(eventName: string, data?: Record<string, string | number | boolean>): void;
 }
 
+declare global {
+  interface Window {
+    umami?: UmamiAnalytics;
+  }
+}
+
+/** Props for the iOS AR Quick Look launcher. */
+export interface QuickLookViewerProps {
+  usdzUrl: string;
+  previewImageUrl: string;
+  productName: string;
+  realWorldDiameterMm: number;
+  onDismiss(): void;
+}
+
+const containerStyle: CSSProperties = { position: 'relative', display: 'inline-block' };
+const imageStyle: CSSProperties = { width: 200, height: 200, objectFit: 'cover', borderRadius: 12 };
 const buttonStyle: CSSProperties = {
-  alignItems: 'center',
-  background: ACCENT_COLOR,
-  border: `2px solid ${ACCENT_COLOR}`,
-  borderRadius: '999px',
-  boxShadow: `0 0 24px ${ACCENT_COLOR}66`,
-  color: '#111',
+  position: 'absolute',
+  bottom: 8,
+  right: 8,
+  background: 'rgba(0,0,0,0.7)',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 8,
+  padding: '6px 12px',
   cursor: 'pointer',
-  display: 'inline-flex',
-  fontWeight: 700,
-  gap: '0.5rem',
-  justifyContent: 'center',
-  minHeight: '44px',
-  padding: '0.75rem 1.25rem',
-  textDecoration: 'none',
+  fontSize: 13,
 };
 
-const posterStyle: CSSProperties = {
-  borderRadius: '50%',
-  height: '28px',
-  objectFit: 'cover',
-  outline: `2px solid ${ACCENT_COLOR}`,
-  width: '28px',
-};
+/** Launches Apple's AR Quick Look with a USDZ model and branded preview image. */
+export function QuickLookViewer({ usdzUrl, previewImageUrl, productName, realWorldDiameterMm, onDismiss }: QuickLookViewerProps) {
+  const handleLaunchAR = useCallback(() => {
+    const anchor = document.createElement('a');
+    anchor.rel = 'ar';
+    anchor.href = `${usdzUrl}#allowsContentScaling=0&canonicalWebPageURL=${encodeURIComponent(window.location.href)}`;
+    anchor.setAttribute('aria-label', `View ${productName} in AR at ${realWorldDiameterMm} millimeters`);
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.umami?.track('ar_quicklook_launched', { product: productName, diameterMm: realWorldDiameterMm });
+  }, [productName, realWorldDiameterMm, usdzUrl]);
 
-export function QuickLookViewer({ usdzSrc, posterSrc, label = 'View in AR', children, style, ...anchorProps }: QuickLookViewerProps) {
   return (
-    <a
-      {...anchorProps}
-      aria-label={anchorProps['aria-label'] ?? label}
-      href={usdzSrc}
-      rel="ar"
-      style={{ ...buttonStyle, ...style }}
-    >
-      {posterSrc ? <img alt="" aria-hidden="true" src={posterSrc} style={posterStyle} /> : null}
-      <span>{children ?? label}</span>
-    </a>
+    <div style={containerStyle}>
+      <img src={previewImageUrl} alt={productName} style={imageStyle} />
+      <button onClick={handleLaunchAR} aria-label="View in AR" style={buttonStyle}>
+        <span aria-hidden="true">⬡</span> View in AR
+      </button>
+      <button onClick={onDismiss} className="sr-only" aria-label="Close Quick Look AR preview">
+        Close
+      </button>
+    </div>
   );
 }
-
-export default QuickLookViewer;
+// VERIFY: console.log('[AR Experience] QuickLookViewer launches rel=ar USDZ anchors with analytics')
