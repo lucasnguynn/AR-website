@@ -16,9 +16,9 @@ export interface RingSizeEstimate {
   frameCount: number;
 }
 
-const MCP_TO_PIP_MM = 25;
+const MCP_TO_PIP_AVERAGE_MM = 25;
 const SMOOTHING_FRAMES = 30;
-const RING_WIDTH_SCALE = 0.5;
+const RING_FINGER_WIDTH_SCALE = 0.5;
 const UK_SIZES: UkRingSize[] = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'Z+1', 'Z+2', 'Z+3', 'Z+4', 'Z+5', 'Z+6'];
 
 function getLandmark(landmarks: NormalisedLandmark[], index: number): NormalisedLandmark | null {
@@ -106,15 +106,17 @@ export class SizingTool {
       const b = getLandmark(landmarks, pip);
       return a && b ? [distancePixels(a, b, video.videoWidth, video.videoHeight)] : [];
     });
+    if (distances.length === 0) return emptyEstimate(clamp(hand.confidence, 0, 1), this.samples.length);
+
     const averageMcpToPipPixels = distances.reduce((sum, distance) => sum + distance, 0) / distances.length;
-    const pixelPerMm = averageMcpToPipPixels / MCP_TO_PIP_MM;
+    const pixelPerMm = averageMcpToPipPixels / MCP_TO_PIP_AVERAGE_MM;
     if (!Number.isFinite(pixelPerMm) || pixelPerMm <= 0) return emptyEstimate(clamp(hand.confidence, 0, 1), this.samples.length);
 
     const ringMcp = getLandmark(landmarks, LM.RING_MCP);
     const pinkyMcp = getLandmark(landmarks, LM.PINKY_MCP);
     if (!ringMcp || !pinkyMcp) return emptyEstimate(clamp(hand.confidence, 0, 1), this.samples.length);
 
-    const widthPixels = distancePixels(ringMcp, pinkyMcp, video.videoWidth, video.videoHeight) * RING_WIDTH_SCALE;
+    const widthPixels = distancePixels(ringMcp, pinkyMcp, video.videoWidth, video.videoHeight) * RING_FINGER_WIDTH_SCALE;
     const fingerDiameterMm = widthPixels / pixelPerMm;
     const circumferenceMm = fingerDiameterMm * Math.PI;
 

@@ -11,7 +11,10 @@ export interface GestureDetection {
 }
 
 const PINCH_THRESHOLD = 0.04;
-const DEBOUNCE_MS = 800;
+const MIN_DEBOUNCE_MS = 200;
+const MAX_DEBOUNCE_MS = 1200;
+const VELOCITY_STILL = 0.002;
+const VELOCITY_FAST = 0.035;
 const FINGER_TIPS = [LM.THUMB_TIP, LM.INDEX_TIP, LM.MIDDLE_TIP, LM.RING_TIP, LM.PINKY_TIP] as const;
 const FINGER_PIPS = [LM.THUMB_IP, LM.INDEX_PIP, LM.MIDDLE_PIP, LM.RING_PIP, LM.PINKY_PIP] as const;
 
@@ -32,13 +35,51 @@ function dot(ax: number, ay: number, bx: number, by: number): number {
   return ax * bx + ay * by;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function interpolate(min: number, max: number, t: number): number {
+  return min + (max - min) * clamp(t, 0, 1);
+}
+
 export class GestureDetector {
   private readonly lastTrigger = new Map<GestureType, number>();
+  private previousPalmCenter: { x: number; y: number; z: number; timestamp: number } | null = null;
+
+  private calculateHandVelocity(landmarks: NormalisedLandmark[], now: number): number {
+    const wrist = getLandmark(landmarks, LM.WRIST);
+    const middleMcp = getLandmark(landmarks, LM.MIDDLE_MCP);
+    if (!wrist || !middleMcp) return 0;
+
+    const palmCenter = {
+      x: (wrist.x + middleMcp.x) / 2,
+      y: (wrist.y + middleMcp.y) / 2,
+      z: (wrist.z + middleMcp.z) / 2,
+      timestamp: now,
+    };
+
+    const previous = this.previousPalmCenter;
+    this.previousPalmCenter = palmCenter;
+    if (!previous || now <= previous.timestamp) return 0;
+
+    const elapsedMs = now - previous.timestamp;
+    return Math.hypot(palmCenter.x - previous.x, palmCenter.y - previous.y, palmCenter.z - previous.z) / elapsedMs;
+  }
+
+  private getAdaptiveDebounceMs(velocity: number): number {
+    const velocityFactor = (velocity - VELOCITY_STILL) / (VELOCITY_FAST - VELOCITY_STILL);
+    return interpolate(MAX_DEBOUNCE_MS, MIN_DEBOUNCE_MS, velocityFactor);
+  }
 
   detect(result: HandTrackingResult | null, now = performance.now()): GestureDetection[] {
-    if (!result?.detected || result.hands.length === 0) return [];
+    if (!result?.detected || result.hands.length === 0) {
+      this.previousPalmCenter = null;
+      return [];
+    }
 
     const detections: GestureDetection[] = [];
+    let maxVelocity = 0;
     for (const hand of result.hands) {
       const landmarks = hand.landmarks;
       const wrist = getLandmark(landmarks, LM.WRIST);
@@ -47,6 +88,7 @@ export class GestureDetector {
       const middleTip = getLandmark(landmarks, LM.MIDDLE_TIP);
       const ringTip = getLandmark(landmarks, LM.RING_TIP);
       const pinkyTip = getLandmark(landmarks, LM.PINKY_TIP);
+      maxVelocity = Math.max(maxVelocity, this.calculateHandVelocity(landmarks, now));
 
       if (thumbTip && indexTip && distance2D(thumbTip, indexTip) < PINCH_THRESHOLD) {
         detections.push({ type: 'PINCH', confidence: hand.confidence, handedness: hand.handedness, timestamp: now });
@@ -71,9 +113,11 @@ export class GestureDetector {
       }
     }
 
+    const debounceMs = this.getAdaptiveDebounceMs(maxVelocity);
+
     return detections.filter((detection) => {
       const last = this.lastTrigger.get(detection.type) ?? -Infinity;
-      if (now - last < DEBOUNCE_MS) return false;
+      if (now - last < debounceMs) return false;
       this.lastTrigger.set(detection.type, now);
       return true;
     });
