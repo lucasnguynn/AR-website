@@ -5,6 +5,8 @@ on:
     branches: [main]
 permissions:
   contents: read
+  pages: write
+  id-token: write
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -13,19 +15,16 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm install
+      - name: Download Large ML Models
+        run: |
+          mkdir -p public/models/depth
+          curl -L -o public/models/depth/depth_anything_v2_small.onnx https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/main/onnx/model.onnx
       - run: npm run validate:assets
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
       - run: npm run test:integration
       - run: npm run lint:csp
-      
-      # Dời bước tải mô hình AI xuống đây, ngay trước khi Build
-      - name: Download Large ML Models
-        run: |
-          mkdir -p public/models/depth
-          curl -L -o public/models/depth/depth_anything_v2_small.onnx https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/main/onnx/model.onnx
-          
       - run: npm run build
         env: { GITHUB_REPOSITORY: "${{ github.repository }}" }
       - run: npm run check:bundle
@@ -34,3 +33,14 @@ jobs:
         with: { path: dist }
       - uses: actions/upload-artifact@v4
         with: { name: quality-evidence, path: "dist/integrity-manifest.json" }
+
+  deploy:
+    needs: quality
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
