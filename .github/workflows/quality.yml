@@ -15,6 +15,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm install
+      - run: npm run validate:hygiene
       
       # 1. Chạy bộ Test TRƯỚC KHI tải mô hình (để bài test ngắt an toàn được Pass)
       - run: npm run typecheck

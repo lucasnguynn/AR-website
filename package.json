@@ -22,6 +22,7 @@
     "build:assets": "npm run lod && npm run compress-model",
     "validate:assets": "node scripts/validate-assets.mjs",
     "validate:dependencies": "node scripts/validate-dependencies.mjs",
+    "validate:hygiene": "node scripts/validate-repo-hygiene.mjs",
     "generate:integrity": "node scripts/generate-integrity-manifest.mjs",
     "verify:headers": "node scripts/verify-deployment-headers.mjs"
   },

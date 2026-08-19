@@ -1,0 +1,94 @@
+name: V4 repository hygiene
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: V4 working branch to clean (must start with v4-)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  untrack-generated-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate selected branch
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          case "$BRANCH" in
+            v4-*) ;;
+            *) echo "Refusing non-V4 branch: $BRANCH" >&2; exit 1 ;;
+          esac
+
+      - name: Check out selected V4 branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 1
+
+      - name: Audit cleanup assumptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_modules_count="$(git ls-files node_modules | wc -l)"
+          dist_count="$(git ls-files dist | wc -l)"
+          total_count="$(git ls-files | wc -l)"
+          printf 'Tracked before cleanup: total=%s node_modules=%s dist=%s\n' \
+            "$total_count" "$node_modules_count" "$dist_count"
+
+          test "$node_modules_count" -eq 14628 || {
+            echo "Expected exactly 14628 tracked node_modules files; aborting." >&2
+            exit 1
+          }
+          test "$dist_count" -eq 10 || {
+            echo "Expected exactly 10 tracked dist files; aborting." >&2
+            exit 1
+          }
+          test "$(git status --short | wc -l)" -eq 0 || {
+            echo "Checkout is not clean; aborting." >&2
+            git status --short
+            exit 1
+          }
+
+          echo 'Paths that will be removed from the Git index:'
+          git ls-files node_modules dist
+
+      - name: Remove generated directories from Git tracking
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -r --cached -- node_modules dist
+
+          removed_count="$(git diff --cached --diff-filter=D --name-only | wc -l)"
+          test "$removed_count" -eq 14638 || {
+            echo "Expected exactly 14638 staged removals; aborting." >&2
+            exit 1
+          }
+
+          unexpected="$(git diff --cached --diff-filter=D --name-only | grep -Ev '^(node_modules|dist)/' || true)"
+          test -z "$unexpected" || {
+            echo 'Unexpected staged removals; aborting:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          }
+
+          for path in node_modules dist; do
+            git check-ignore -q "$path/example" || {
+              echo "$path is not protected by .gitignore; aborting." >&2
+              exit 1
+            }
+          done
+
+      - name: Commit and push index cleanup
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Normalize generated-file tracking for V4"
+          git push origin "HEAD:$BRANCH"
