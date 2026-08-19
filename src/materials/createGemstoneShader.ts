@@ -1,7 +1,7 @@
 // FILE: src/materials/createGemstoneShader.ts
 import * as THREE from 'three';
 import {
-  tslFn as Fn,
+  Fn,
   cameraPosition,
   dot,
   float,
@@ -17,10 +17,10 @@ import {
   vec2,
   vec3,
   MeshPhysicalNodeMaterial,
-} from 'three/nodes';
+} from 'three/tsl';
 import { createCausticTexture } from './causticTexture';
 import type { GemstoneNodeMaterial, GemstonePreset, GemstoneShaderOptions, GemstoneType } from '../types/gemstone.types';
-import type { TSLNode } from 'three/nodes';
+import type { TSLNode } from 'three/tsl';
 import type { GemstoneQuality } from './ringMaterialStrategy';
 
 interface GemNode {
