@@ -5,7 +5,7 @@ export interface ARDiagnostics {
   tracking: 'none' | 'mediapipe' | 'webxr-hand';
   filter: 'one-euro' | 'ukf';
   prediction: 'none' | 'lstm' | 'transformer' | 'kinematic';
-  depth: 'none' | 'geometric-proxy' | 'monocular' | 'webxr-depth';
+  depth: 'none' | 'geometric-proxy' | 'monocular-depth' | 'degraded-depth' | 'webxr-depth';
   renderer: 'webgpu' | 'webgl2' | 'webgl1';
   experience: ARExperienceKind;
   state: ARRuntimeState;

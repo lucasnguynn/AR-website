@@ -45,8 +45,34 @@ export interface DepthUpdateOptions {
   readonly landmarks?: readonly DepthProxyLandmark[];
 }
 
+export interface DepthDiagnostics {
+  readonly tier: DepthOcclusionTier;
+  readonly captureP50Ms: number;
+  readonly captureP95Ms: number;
+  readonly inferenceP50Ms: number;
+  readonly inferenceP95Ms: number;
+  readonly queueDrops: number;
+  readonly depthLatencyMs: number;
+  readonly transitions: number;
+  readonly failures: number;
+}
+
+export interface DepthFrameInput extends DepthUpdateOptions {
+  readonly xrFrame?: XRFrameWithDepthData;
+  readonly xrView?: XRView;
+  readonly captureMs?: number;
+}
+
+export interface DepthPipeline {
+  start(): Promise<void>;
+  update(input: DepthFrameInput): void;
+  getTier(): DepthOcclusionTier;
+  diagnostics(): DepthDiagnostics;
+  dispose(): void;
+}
+
 /** Coordinates native WebXR depth, worker monocular depth, degraded depth, and geometric fallback occlusion. */
-export class WebXRDepthManager {
+export class WebXRDepthManager implements DepthPipeline {
   readonly depthTexture = new THREE.DataTexture(new Float32Array([1]), 1, 1, THREE.RedFormat, THREE.FloatType);
   readonly occlusionProxy: THREE.Mesh;
   readonly geometricProxy: THREE.Mesh;
@@ -68,6 +94,9 @@ export class WebXRDepthManager {
   private xrDepthAvailable = false;
   private disposed = false;
   private readonly depthUvTransform = new THREE.Matrix4();
+  private readonly captureTimings: number[] = [];
+  private transitions = 0;
+  private lastDepthLatencyMs = 0;
 
   constructor(options: DepthManagerOptions = {}) {
     this.nearMeters = options.nearMeters ?? 0.02;
@@ -98,6 +127,40 @@ export class WebXRDepthManager {
     return this.activeTier;
   }
 
+  getTier(): DepthOcclusionTier { return this.activeTier; }
+
+  async start(): Promise<void> {
+    // Initialization is intentionally lazy: the ONNX asset is optional and the
+    // worker is only created once the camera producer has capacity and a frame.
+  }
+
+  diagnostics(): DepthDiagnostics {
+    const sorted = [...this.captureTimings].sort((a, b) => a - b);
+    const percentile = (fraction: number) => sorted.length === 0 ? 0 : sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
+    const estimator = this.monocularEstimator.diagnostics();
+    return { tier: this.activeTier, captureP50Ms: percentile(0.5), captureP95Ms: percentile(0.95), inferenceP50Ms: estimator.inferenceP50Ms, inferenceP95Ms: estimator.inferenceP95Ms, queueDrops: estimator.dropped, depthLatencyMs: this.lastDepthLatencyMs, transitions: this.transitions, failures: estimator.failures };
+  }
+
+  canAcceptCameraFrame(): boolean { return !this.disposed && this.monocularEstimator.canAcceptFrame(); }
+
+  update(input: DepthFrameInput): void {
+    if (this.disposed) return;
+    if (input.captureMs !== undefined) {
+      this.captureTimings.push(input.captureMs);
+      if (this.captureTimings.length > 120) this.captureTimings.shift();
+    }
+    if (input.landmarks) this.updateGeometricProxy(input.landmarks);
+    if (input.xrFrame && input.xrView && this.updateFromWebXR(input.xrFrame, input.xrView)) return;
+    if (!input.cameraFrame) { this.setTier('geometric-proxy'); return; }
+    const before = performance.now();
+    const result = this.monocularEstimator.estimate(input.cameraFrame, this.selectTier() === 'degraded-depth' ? 'degraded-depth' : 'monocular-depth');
+    if (!result) return;
+    this.lastDepthLatencyMs = performance.now() - before + result.averageMs;
+    this.gpuMisses = result.tier === 'degraded-depth' ? Math.min(this.adaptiveThreshold - 1, this.gpuMisses + 1) : Math.max(0, this.gpuMisses - 2);
+    this.uploadDepth(result.width, result.height, result.depth, true);
+    this.setTier(result.tier);
+  }
+
   /** Selects the best available depth tier while allowing recovery from transient GPU misses. */
   selectTier(): DepthOcclusionTier {
     if (this.xrDepthAvailable) {
@@ -110,7 +173,7 @@ export class WebXRDepthManager {
   }
 
   /** Updates the depth occlusion texture from WebXR depth, worker inference, or geometry fallback. */
-  async update(
+  async updateLegacy(
     frame: XRFrameWithDepthData,
     view: XRView,
     cameraFrameOrOptions?: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas | DepthUpdateOptions,
@@ -230,8 +293,8 @@ export class WebXRDepthManager {
     if (!Number.isFinite(maxDistance) || maxDistance <= 0) return;
     const targetRadius = THREE.MathUtils.clamp(maxDistance * 0.33, 0.035, 0.18);
     this.proxyRadiusMeters = this.proxyRadiusMeters * 0.82 + targetRadius * 0.18;
-    this.geometricProxy.geometry.dispose();
-    this.geometricProxy.geometry = new THREE.CylinderGeometry(this.proxyRadiusMeters, this.proxyRadiusMeters, this.proxyRadiusMeters * 3.2, 24, 1);
+    // Geometry is allocated once; only its transform changes per tracking frame.
+    this.geometricProxy.scale.set(this.proxyRadiusMeters / 0.11, this.proxyRadiusMeters * 3.2 / 0.22, this.proxyRadiusMeters / 0.11);
   }
 
   /** Positions the reusable geometric fallback around the XR ring-finger segment. */
@@ -261,6 +324,10 @@ export class WebXRDepthManager {
   }
 
   private setTier(tier: DepthOcclusionTier): void {
+    if (tier !== this.activeTier) {
+      this.transitions += 1;
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ar:depth-diagnostics', { detail: { ...this.diagnostics(), tier } }));
+    }
     this.activeTier = tier;
     this.occlusionProxy.visible = tier !== 'geometric-proxy';
     this.geometricProxy.visible = tier === 'geometric-proxy';

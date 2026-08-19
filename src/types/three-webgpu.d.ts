@@ -9,6 +9,14 @@ declare module 'three/examples/jsm/renderers/webgpu/WebGPURenderer.js' {
   }
 }
 
+declare module 'three/addons/renderers/webgpu/WebGPURenderer.js' {
+  import type { WebGPURendererParameters } from 'three/src/renderers/webgpu/WebGPURenderer';
+  export default class WebGPURenderer {
+    constructor(parameters?: WebGPURendererParameters);
+    init(): Promise<void>;
+  }
+}
+
 declare module 'three/tsl' {
   import { Color, ColorRepresentation, MeshPhysicalMaterial, Texture } from 'three';
 

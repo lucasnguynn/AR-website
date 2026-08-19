@@ -47,6 +47,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   const wasmBlobUrlRef = useRef<string | null>(null);
   const modelBlobUrlRef = useRef<string | null>(null);
   const inferenceTimerRef = useRef<number | null>(null);
+  const videoFrameCallbackRef = useRef<number | null>(null);
   const lastFrameSentAtRef = useRef(0);
   const gestureDetectorRef = useRef(new GestureDetector());
 
@@ -62,6 +63,11 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     if (inferenceTimerRef.current !== null) {
       window.clearInterval(inferenceTimerRef.current);
       inferenceTimerRef.current = null;
+    }
+    const scheduledVideo = videoRef.current;
+    if (videoFrameCallbackRef.current !== null && scheduledVideo?.cancelVideoFrameCallback) {
+      scheduledVideo.cancelVideoFrameCallback(videoFrameCallbackRef.current);
+      videoFrameCallbackRef.current = null;
     }
 
     activeRef.current = false;
@@ -201,7 +207,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   }, [destroyWorker, enabled]);
 
   const processFrame = useCallback(() => {
-    if (!activeRef.current || isPausedRef.current || !workerReadyRef.current) return;
+    if (!activeRef.current || isPausedRef.current || !workerReadyRef.current || inFlightRef.current) return;
 
     const now = performance.now();
     const minFrameIntervalMs = degradedRef.current ? 1000 / 15 : 1000 / 30;
@@ -231,14 +237,27 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   }, []);
 
   useEffect(() => {
-    inferenceTimerRef.current = window.setInterval(processFrame, 1000 / 60);
+    const video = videoRef.current;
+    if (video?.requestVideoFrameCallback) {
+      const onVideoFrame = () => {
+        processFrame();
+        videoFrameCallbackRef.current = video.requestVideoFrameCallback(onVideoFrame);
+      };
+      videoFrameCallbackRef.current = video.requestVideoFrameCallback(onVideoFrame);
+    } else {
+      inferenceTimerRef.current = window.setInterval(processFrame, 1000 / 30);
+    }
     return () => {
       if (inferenceTimerRef.current !== null) {
         window.clearInterval(inferenceTimerRef.current);
         inferenceTimerRef.current = null;
       }
+      if (videoFrameCallbackRef.current !== null && video?.cancelVideoFrameCallback) {
+        video.cancelVideoFrameCallback(videoFrameCallbackRef.current);
+        videoFrameCallbackRef.current = null;
+      }
     };
-  }, [processFrame]);
+  }, [processFrame, loadingState.camera]);
 
   const startTracking = useCallback((video: HTMLVideoElement) => {
     videoRef.current = video;
