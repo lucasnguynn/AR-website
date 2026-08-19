@@ -38,19 +38,30 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          from pxr import Usd, UsdGeom, Sdf
+          from pxr import Usd, UsdGeom
 
           model_dir = Path('public/models')
           for glb_path in model_dir.glob('*.glb'):
               usdz_path = glb_path.with_suffix('.usdz')
-              stage = Usd.Stage.CreateNew(str(usdz_path.with_suffix('.usda')))
+              usda_path = usdz_path.with_suffix('.usda')
+              
+              # 1. Tạo file cấu hình USD
+              stage = Usd.Stage.CreateNew(str(usda_path))
               root = UsdGeom.Xform.Define(stage, '/Root')
               stage.SetDefaultPrim(root.GetPrim())
-              asset = root.GetPrim().GetReferences()
-              asset.AddReference(Sdf.AssetPath(str(glb_path)))
+              
+              # 2. Sửa lỗi ép kiểu: Truyền thẳng chuỗi string (tên file) thay vì Sdf.AssetPath
+              refs = root.GetPrim().GetReferences()
+              refs.AddReference(glb_path.name)
               stage.Save()
-              Usd.ZipFileWriter.CreateNew(str(usdz_path)).AddFile(str(usdz_path.with_suffix('.usda')), 'scene.usda').Save()
-              usdz_path.with_suffix('.usda').unlink(missing_ok=True)
+              
+              # 3. Đóng gói USDZ: Phải gói cả file cấu hình (.usda) VÀ file 3D (.glb) vào chung
+              zip_writer = Usd.ZipFileWriter.CreateNew(str(usdz_path))
+              zip_writer.AddFile(str(usda_path), 'scene.usda')
+              zip_writer.AddFile(str(glb_path), glb_path.name)
+              zip_writer.Save()
+              
+              usda_path.unlink(missing_ok=True)
               print(f'Created {usdz_path}')
           PY
 
