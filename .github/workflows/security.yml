@@ -9,8 +9,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm install
+        with: { node-version: '20.20.2', cache: npm }
+      - run: npm install --global npm@11.4.2
+      - run: npm --version | grep -Fx '11.4.2'
+      - run: npm ci
       # Thêm || true để báo cáo lỗ hổng nhưng không làm sập CI/CD
       - run: npm audit --audit-level=high || true
       - name: Generate CycloneDX SBOM

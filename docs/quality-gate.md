@@ -1,5 +1,15 @@
 # Production quality gate
 
+## Reproducible build environment
+
+The frozen-lock release environment is Ubuntu (the `ubuntu-latest` GitHub Actions
+runner), Node 20.20.2, and npm 11.4.2. Use `npm ci`; do not reuse `node_modules`
+or fall back to `npm install`. The required release stack is Three.js 0.170.0,
+MediaPipe Tasks Vision 0.10.35, ONNX Runtime Web 1.20.1, and Vite 5.4.21. CI
+checks the npm version before installation so changes to the Node
+distribution's bundled package manager fail visibly rather than silently
+rewriting dependency resolution.
+
 `npm run quality` is the local equivalent of the required pull-request gate. It validates required binary assets, strict TypeScript, lint, unit and simulated-browser contracts, the static CSP, a production build, the final SHA-384 artifact manifest, and gzip budgets. The integrity manifest detects accidental or hostile byte changes; it is **not** client authorization and contains no signing secret.
 
 The integration suite deliberately mocks capability routing only. It does not certify ARCore/ARKit tracking, native depth accuracy, camera permission UI, WebGPU drivers, thermal behavior, or jewelry scale on physical devices.

@@ -13,11 +13,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm install
+        with: { node-version: '20.20.2', cache: npm }
+      - run: npm install --global npm@11.4.2
+      - run: npm --version | grep -Fx '11.4.2'
+      - run: npm ci
       
       # 1. Chạy bộ Test TRƯỚC KHI tải mô hình (để bài test ngắt an toàn được Pass)
       - run: npm run typecheck
+      - run: npm run validate:dependencies
       - run: npm run lint
       - run: npm test
       - run: npm run test:integration
