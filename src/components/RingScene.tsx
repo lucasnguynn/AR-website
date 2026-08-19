@@ -38,6 +38,7 @@ import { RingTrackingStabilizer } from '../utils/trackingStabilizer';
 import type { RingPoseSample } from '../utils/trackingStabilizer';
 import { useRayTracingPipeline } from './RayTracingPipeline';
 import { WebXRDepthManager, type DepthOcclusionTier } from '../services/WebXRDepthManager';
+import type { GemstoneQuality, RingRendererMode } from '../materials/ringMaterialStrategy';
 
 const FINGER_OCCLUDER_RENDER_ORDER = -1;
 const RING_RENDER_ORDER = 20;
@@ -59,6 +60,8 @@ interface RingSceneProps {
   facingMode?: 'user' | 'environment';
   enableRayTracing?: boolean;
   ambientLight?: AmbientLightState;
+  materialRendererMode?: RingRendererMode;
+  gemstoneQuality?: GemstoneQuality;
 }
 
 const DEPTH_INPUT_SIZE = 518;
@@ -105,13 +108,13 @@ function CameraDepthOcclusion({ videoRef, tierRef }: { videoRef?: React.RefObjec
 // ── RingMesh — inner component, renders only after useGLTF resolves ──────────
 // Kept separate from the Suspense boundary so ErrorBoundary can catch
 // suspension errors without unmounting the whole scene.
-function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false, ambientLight }: RingSceneProps) {
+function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false, ambientLight, materialRendererMode = 'webgl', gemstoneQuality = 'HIGH' }: RingSceneProps) {
   const { camera, gl } = useThree();
   const groupRef   = useRef<THREE.Group>(null);
   const debugBoxRef = useRef<THREE.Mesh>(null);
   const occluderRef = useRef<THREE.Mesh>(null);
   const depthTierRef = useRef<DepthOcclusionTier>('geometric-proxy');
-  const { scene }  = useRingModel();
+  const { scene }  = useRingModel(undefined, { rendererMode: materialRendererMode, quality: gemstoneQuality, preset: 'silver' });
   useRayTracingPipeline({ enabled: enableRayTracing, ringRoot: scene });
 
   // Tracking stabilizer — state machine + outlier rejection + adaptive filters

@@ -177,7 +177,7 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
 
   return (
     <Canvas
-      key={`${renderTier}-${qualityTier}`}
+      key={renderTier}
       className="absolute inset-0 z-10"
       style={{ background: 'transparent', zIndex: 10, pointerEvents: 'none' }}
       gl={glFactory}
@@ -202,7 +202,15 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
       <FrameTimeMonitor tier={renderTier} quality={qualityTier} onDowngrade={handleDowngrade} />
       <RendererReadyNotifier onMount={onMount} />
       <Suspense fallback={null}>
-        <RingScene resultRef={resultRef} videoRef={videoRef} facingMode={facingMode} enableRayTracing={renderTier === 'webgpu'} ambientLight={ambientLight} />
+        <RingScene
+          resultRef={resultRef}
+          videoRef={videoRef}
+          facingMode={facingMode}
+          enableRayTracing={renderTier === 'webgpu'}
+          materialRendererMode={renderTier === 'webgpu' ? 'webgpu' : 'webgl'}
+          gemstoneQuality={qualityTier}
+          ambientLight={ambientLight}
+        />
       </Suspense>
     </Canvas>
   );

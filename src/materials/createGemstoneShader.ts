@@ -21,6 +21,7 @@ import {
 import { createCausticTexture } from './causticTexture';
 import type { GemstoneNodeMaterial, GemstonePreset, GemstoneShaderOptions, GemstoneType } from '../types/gemstone.types';
 import type { TSLNode } from 'three/tsl';
+import type { GemstoneQuality } from './ringMaterialStrategy';
 
 interface GemNode {
   readonly x: GemNode;
@@ -65,7 +66,7 @@ function envSample(direction: GemNode): GemNode {
   return direction.normalize().mul(0.5).add(asGemNode(vec3(0.5, 0.5, 0.5)));
 }
 
-const gemstoneColorFn = Fn(([
+function createGemstoneColorFn(sampleCount: number) { return Fn(([
   normalW,
   viewDir,
   worldPos,
@@ -91,7 +92,7 @@ const gemstoneColorFn = Fn(([
   const causticStrengthNode = asGemNode(uCausticStrength);
   let acc = asGemNode(vec3(0, 0, 0));
 
-  for (let i = 0; i < WAVELENGTHS.length; i += 1) {
+  for (let i = 0; i < sampleCount; i += 1) {
     const lam = float(WAVELENGTHS[i]);
     const ior = cauchyANode.add(cauchyBNode.div(asGemNode(lam).mul(asGemNode(lam))));
     const refDir = asGemNode(tslRefract(asTslNode(viewNode.negate()), asTslNode(normalNode), asTslNode(asGemNode(float(1)).div(ior))));
@@ -101,7 +102,7 @@ const gemstoneColorFn = Fn(([
   }
 
   const transmitted = alphaNode.negate().mul(pathNode).exp();
-  const absorbed = acc.div(float(WAVELENGTHS.length)).mul(transmitted);
+  const absorbed = acc.div(float(sampleCount)).mul(transmitted);
   const criticalCos = asGemNode(float(1)).div(cauchyANode).asin().cos();
   const refracted = asGemNode(tslRefract(viewNode.negate(), normalNode, asGemNode(float(1)).div(cauchyANode)));
   const tirMask = asGemNode(max(asGemNode(float(0)), criticalCos.sub(asGemNode(dot(asTslNode(refracted.normalize()), asTslNode(normalNode.normalize()))))));
@@ -111,21 +112,23 @@ const gemstoneColorFn = Fn(([
   const causticUV = asGemNode(vec2(positionNode.x, positionNode.z)).mul(causticScaleNode).add(asGemNode(vec2(causticOffset, causticOffset)));
   const caustic = asGemNode(texture(asTslNode(causticTextureNode), asTslNode(causticUV))).r.mul(causticStrengthNode);
   return asTslNode(asGemNode(tirMixed).add(asGemNode(vec3(caustic, caustic, caustic))));
-});
+}); }
 
-/** Creates a 5-pass TSL gemstone material using spectral dispersion, absorption, TIR, and caustics. */
-export function createGemstoneMaterial(type: GemstoneType, causticTex: THREE.Texture): GemstoneNodeMaterial {
+/** Creates a rasterized TSL optical approximation with quality-scaled spectral samples and caustics. */
+export function createGemstoneMaterial(type: GemstoneType, causticTex: THREE.Texture, quality: GemstoneQuality = 'HIGH'): GemstoneNodeMaterial {
   const g = GEMS[type];
   const uA = uniform(g.A);
   const uB = uniform(g.B);
   const uAlpha = uniform(vec3(g.absorb[0], g.absorb[1], g.absorb[2]));
   const uPathLen = uniform(g.path);
   const uCausticScale = uniform(2.0);
-  const uCausticStrength = uniform(g.caustic);
+  const uCausticStrength = uniform(quality === 'LOW' ? 0 : g.caustic);
   const causticSampler = texture(causticTex);
+  const sampleCount = quality === 'HIGH' ? 8 : quality === 'MEDIUM' ? 5 : 3;
+  const gemstoneColorFn = createGemstoneColorFn(sampleCount);
   const mat = new MeshPhysicalNodeMaterial() as unknown as GemstoneNodeMaterial;
 
-  mat.name = `GemstoneFivePassTSL_${type}`;
+  mat.name = `GemstoneTSL_${type}_${quality}`;
   mat.metalness = 0;
   mat.roughness = 0.01;
   mat.transparent = true;
@@ -147,10 +150,34 @@ export function createGemstoneMaterial(type: GemstoneType, causticTex: THREE.Tex
     absorption: { value: new THREE.Vector3(g.absorb[0], g.absorb[1], g.absorb[2]) },
     pathLength: { value: g.path },
     causticScale: { value: 2.0 },
-    causticStrength: { value: g.caustic },
+    causticStrength: uCausticStrength as unknown as { value: number },
+    quality: { value: quality },
   };
-  console.info(`[Gemstone] ${type} | IOR=${g.A.toFixed(3)} | 5-pass TSL | caustics ON`);
+  console.info(`[Gemstone] ${type} | IOR=${g.A.toFixed(3)} | ${sampleCount} spectral samples | caustics ${quality === 'LOW' ? 'OFF' : 'ON'}`);
   return mat;
+}
+
+/** WebGL approximation retaining transmission, IOR, absorption tint, and environment response. */
+export function createGemstoneWebGLMaterial(type: GemstoneType, quality: GemstoneQuality = 'HIGH'): THREE.MeshPhysicalMaterial {
+  const gem = GEMS[type];
+  const color = new THREE.Color(1 - gem.absorb[0], 1 - gem.absorb[1], 1 - gem.absorb[2]);
+  const material = new THREE.MeshPhysicalMaterial({
+    name: `GemstoneWebGL_${type}_${quality}`,
+    color,
+    roughness: quality === 'LOW' ? 0.08 : 0.025,
+    metalness: 0,
+    transmission: quality === 'LOW' ? 0.75 : 0.92,
+    ior: gem.A,
+    thickness: gem.path * 100,
+    attenuationColor: color,
+    attenuationDistance: Math.max(gem.path * 30, 0.05),
+    envMapIntensity: quality === 'HIGH' ? 1.6 : 1.25,
+    transparent: true,
+    opacity: 0.94,
+  });
+  material.userData.gemstoneType = type;
+  material.userData.gemstoneQuality = quality;
+  return material;
 }
 
 /** Backward-compatible factory that creates the requested gemstone shader with an optional generated caustic map. */
