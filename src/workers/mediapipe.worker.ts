@@ -17,10 +17,10 @@ import {
 // Protocol types
 // ──────────────────────────────────────────────────────────────────────────────
 
-type WorkerState = 'INIT' | 'READY' | 'PROCESS' | 'DESTROY';
+type WorkerState = 'INIT' | 'READY' | 'PROCESS' | 'DEGRADED' | 'DESTROY';
 
 type WorkerInMessage =
-  | { type: 'INIT' }
+  | { type: 'INIT'; payload: { wasmBlobUrl: string } }
   | { type: 'DETECT'; payload: FramePayload }
   | { type: 'PAUSE' }
   | { type: 'RESUME' }
@@ -52,8 +52,9 @@ interface TrackingResult {
 type WorkerOutMessage =
   | { type: 'READY' }
   | { type: 'PROGRESS'; payload: { phase: 'wasm' | 'model'; progress: number } }
-  | { type: 'RESULT'; payload: { hands: TrackingResult[]; detected: boolean; frameTimestamp: number } }
+  | { type: 'RESULT'; payload: { hands: TrackingResult[]; detected: boolean; frameTimestamp: number; metrics: TrackingMetrics } }
   | { type: 'ERROR'; payload: { message: string; state: WorkerState } }
+  | { type: 'DEGRADED'; payload: { metrics: TrackingMetrics } }
   | { type: 'PAUSED' }
   | { type: 'DESTROYED' };
 
@@ -61,8 +62,7 @@ type WorkerOutMessage =
 // Constants
 // ──────────────────────────────────────────────────────────────────────────────
 
-const MEDIAPIPE_VERSION = '0.10.14';
-const MEDIAPIPE_WASM_CDN_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
+const MEDIAPIPE_WASM_BASE_PATH = '/wasm';
 const HAND_LANDMARKER_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 const CONFIG = {
@@ -83,7 +83,6 @@ let state: WorkerState = 'INIT';
 let handLandmarker: HandLandmarker | null = null;
 let paused = false;
 let activeFrame: FramePayload | null = null;
-let pendingFrame: FramePayload | null = null;
 let lastProcessedTimestamp = -1;
 let canvas: OffscreenCanvas | null = null;
 let canvasContext: OffscreenCanvasRenderingContext2D | null = null;
@@ -95,6 +94,54 @@ const metrics = {
   lastInferenceTime: 0,
   avgInferenceMs: 0,
 };
+
+type TrackingMetrics = typeof metrics & { lastInferenceMs: number; inferenceFps: number };
+
+let consecutiveFailures = 0;
+let degradedMode = false;
+
+class FrameRingBuffer {
+  private readonly frames: FramePayload[] = [];
+
+  constructor(private readonly size: number) {}
+
+  push(frame: FramePayload): number {
+    if (this.frames.some((queuedFrame) => queuedFrame.timestamp >= frame.timestamp)) {
+      return 1;
+    }
+
+    this.frames.push(frame);
+    this.frames.sort((a, b) => a.timestamp - b.timestamp);
+
+    const staleDropCount = Math.max(0, this.frames.length - this.size);
+    if (staleDropCount > 0) {
+      this.frames.splice(0, staleDropCount);
+    }
+
+    return staleDropCount;
+  }
+
+  popLatest(): { frame: FramePayload | null; dropped: number } {
+    const frame = this.frames.pop() ?? null;
+    const dropped = this.frames.length;
+    this.frames.length = 0;
+    return { frame, dropped };
+  }
+
+  clear(): void {
+    this.frames.length = 0;
+  }
+}
+
+const frameRingBuffer = new FrameRingBuffer(2);
+
+function getMetrics(): TrackingMetrics {
+  return {
+    ...metrics,
+    lastInferenceMs: metrics.lastInferenceTime,
+    inferenceFps: metrics.avgInferenceMs > 0 ? 1000 / metrics.avgInferenceMs : 0,
+  };
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -142,19 +189,6 @@ function ensureCanvas(width: number, height: number): OffscreenCanvasRenderingCo
   return canvasContext;
 }
 
-async function applyWasmLoaderWorkaround(wasmFileset: { wasmLoaderPath: string }): Promise<void> {
-  // Preserve the Vite/GitHub Pages workaround: fetch and evaluate the classic
-  // MediaPipe WASM loader manually so createFromOptions can find ModuleFactory
-  // without relying on ES module worker import semantics.
-  const response = await fetch(wasmFileset.wasmLoaderPath, { cache: 'force-cache' });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch MediaPipe WASM loader (${response.status})`);
-  }
-
-  const loaderSource = await response.text();
-  (0, eval)(loaderSource);
-}
-
 function queueFrame(frame: FramePayload): void {
   metrics.frameCount += 1;
 
@@ -168,25 +202,18 @@ function queueFrame(frame: FramePayload): void {
     return;
   }
 
-  if (state === 'PROCESS') {
-    if (!pendingFrame || frame.timestamp > pendingFrame.timestamp) {
-      if (pendingFrame) metrics.droppedFrames += 1;
-      pendingFrame = frame;
-    } else {
-      metrics.droppedFrames += 1;
-    }
-    return;
-  }
-
-  pendingFrame = frame;
+  metrics.droppedFrames += frameRingBuffer.push(frame);
   drainLatestFrame();
 }
 
 function drainLatestFrame(): void {
-  if (state !== 'READY' || paused || !pendingFrame || !handLandmarker) return;
+  if ((state !== 'READY' && state !== 'DEGRADED') || paused || !handLandmarker) return;
 
-  activeFrame = pendingFrame;
-  pendingFrame = null;
+  const nextFrame = frameRingBuffer.popLatest();
+  metrics.droppedFrames += nextFrame.dropped;
+  if (!nextFrame.frame) return;
+
+  activeFrame = nextFrame.frame;
   processActiveFrame();
 }
 
@@ -194,13 +221,16 @@ function drainLatestFrame(): void {
 // Lifecycle
 // ──────────────────────────────────────────────────────────────────────────────
 
-async function initializeMediaPipe(): Promise<void> {
+async function initializeMediaPipe(wasmBlobUrl: string): Promise<void> {
   if (state === 'DESTROY' || handLandmarker) return;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
 
-  const wasmFileset = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_CDN_URL, false);
-  await applyWasmLoaderWorkaround(wasmFileset);
+  // FilesetResolver normally points at a JS loader that may hit CSP-sensitive dynamic-code paths.
+  // Passing the pre-fetched Blob URL keeps the binary on a blob: URL and bypasses the previous inline-loader workaround.
+  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBlobUrl, false);
+  wasmFileset.wasmLoaderPath = `${MEDIAPIPE_WASM_BASE_PATH}/vision_wasm_internal.js`;
+  wasmFileset.wasmBinaryPath = wasmBlobUrl;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 0 } });
@@ -223,7 +253,7 @@ async function initializeMediaPipe(): Promise<void> {
 }
 
 function processActiveFrame(): void {
-  if (!activeFrame || !handLandmarker || state !== 'READY') return;
+  if (!activeFrame || !handLandmarker || (state !== 'READY' && state !== 'DEGRADED')) return;
 
   const frame = activeFrame;
   activeFrame = null;
@@ -257,18 +287,26 @@ function processActiveFrame(): void {
       (metrics.avgInferenceMs * (metrics.processedFrames - 1) + inferenceTime) / metrics.processedFrames;
     lastProcessedTimestamp = frame.timestamp;
 
-    state = 'READY';
+    consecutiveFailures = 0;
+    state = degradedMode ? 'DEGRADED' : 'READY';
     postMessageSafe({
       type: 'RESULT',
-      payload: { hands, detected: hands.length > 0, frameTimestamp: frame.timestamp },
+      payload: { hands, detected: hands.length > 0, frameTimestamp: frame.timestamp, metrics: getMetrics() },
     });
   } catch (error) {
     metrics.droppedFrames += 1;
-    state = 'READY';
+    consecutiveFailures += 1;
+    if (consecutiveFailures >= 5) {
+      degradedMode = true;
+      state = 'DEGRADED';
+      postMessageSafe({ type: 'DEGRADED', payload: { metrics: getMetrics() } });
+    } else {
+      state = 'READY';
+    }
     reportError(error instanceof Error ? error.message : 'Detection failed');
     postMessageSafe({
       type: 'RESULT',
-      payload: { hands: [], detected: false, frameTimestamp: frame.timestamp },
+      payload: { hands: [], detected: false, frameTimestamp: frame.timestamp, metrics: getMetrics() },
     });
   }
 
@@ -279,7 +317,7 @@ function destroyWorker(): void {
   state = 'DESTROY';
   paused = true;
   activeFrame = null;
-  pendingFrame = null;
+  frameRingBuffer.clear();
   canvas = null;
   canvasContext = null;
 
@@ -298,7 +336,7 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
 
   switch (message.type) {
     case 'INIT':
-      initializeMediaPipe().catch((error: unknown) => {
+      initializeMediaPipe(message.payload.wasmBlobUrl).catch((error: unknown) => {
         reportError(`MediaPipe initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       });
       break;
@@ -309,7 +347,7 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
 
     case 'PAUSE':
       paused = true;
-      pendingFrame = null;
+      frameRingBuffer.clear();
       postMessageSafe({ type: 'PAUSED' });
       break;
 

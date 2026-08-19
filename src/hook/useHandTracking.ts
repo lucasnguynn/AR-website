@@ -7,10 +7,19 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { HandTrackingResult, LoadingState, WorkerOutMessage, TrackingMetrics } from '../types/ar.types';
+import type { HandTrackingResult, LoadingState, TrackingMetrics } from '../types/ar.types';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
-import { createVerifiedWorker } from '../utils/SecurityUtils';
+import { verifyWorkerBlobIntegrity } from '../utils/SecurityUtils';
+
+type HandTrackingWorkerOutMessage =
+  | { type: 'READY' }
+  | { type: 'PROGRESS'; payload: { phase: 'wasm' | 'model'; progress: number } }
+  | { type: 'RESULT'; payload: HandTrackingResult & { metrics?: TrackingMetrics } }
+  | { type: 'DEGRADED'; payload: { metrics: TrackingMetrics } }
+  | { type: 'ERROR'; payload: { message: string; state?: string } }
+  | { type: 'PAUSED' }
+  | { type: 'DESTROYED' };
 
 export interface UseHandTrackingReturn {
   resultRef: React.RefObject<HandTrackingResult | null>;
@@ -32,7 +41,10 @@ export function useHandTracking(): UseHandTrackingReturn {
   const metricsRef = useRef<TrackingMetrics | null>(null);
   const workerReadyRef = useRef(false);
   const inFlightRef = useRef(false);
+  const degradedRef = useRef(false);
+  const wasmBlobUrlRef = useRef<string | null>(null);
   const inferenceTimerRef = useRef<number | null>(null);
+  const lastFrameSentAtRef = useRef(0);
   const gestureDetectorRef = useRef(new GestureDetector());
 
   const [loadingState, setLoadingState] = useState<LoadingState>({
@@ -55,6 +67,12 @@ export function useHandTracking(): UseHandTrackingReturn {
     videoRef.current = null;
     workerReadyRef.current = false;
     inFlightRef.current = false;
+    degradedRef.current = false;
+
+    if (wasmBlobUrlRef.current) {
+      URL.revokeObjectURL(wasmBlobUrlRef.current);
+      wasmBlobUrlRef.current = null;
+    }
 
     if (!worker) return;
 
@@ -62,7 +80,7 @@ export function useHandTracking(): UseHandTrackingReturn {
     const killTimer = window.setTimeout(() => worker.terminate(), 300);
     worker.addEventListener(
       'message',
-      (event: MessageEvent<WorkerOutMessage>) => {
+      (event: MessageEvent<HandTrackingWorkerOutMessage>) => {
         if (event.data?.type === 'DESTROYED') {
           window.clearTimeout(killTimer);
           worker.terminate();
@@ -75,51 +93,101 @@ export function useHandTracking(): UseHandTrackingReturn {
   }, []);
 
   useEffect(() => {
-    const worker = createVerifiedWorker(new URL('../workers/mediapipe.worker.ts', import.meta.url), { type: 'module' });
-    workerRef.current = worker;
+    let cancelled = false;
+    let worker: Worker | null = null;
 
-    worker.addEventListener('message', (event: MessageEvent<WorkerOutMessage>) => {
-      const message = event.data;
-
-      switch (message.type) {
-        case 'PROGRESS': {
-          const { phase, progress } = message.payload;
-          setLoadingState((prev) => ({
-            ...prev,
-            mediapipe: phase === 'wasm' ? Math.round(progress / 2) : Math.round(50 + progress / 2),
-          }));
-          break;
-        }
-        case 'READY':
-          workerReadyRef.current = true;
-          setLoadingState((prev) => ({ ...prev, mediapipe: 100, ready: true, error: null }));
-          break;
-        case 'RESULT': {
-          resultRef.current = message.payload;
-          const gestures = gestureDetectorRef.current.detect(message.payload);
-          gestures.forEach((gesture) => {
-            window.dispatchEvent(new CustomEvent('ar:gesture', { detail: gesture }));
-          });
-          inFlightRef.current = false;
-          break;
-        }
-        case 'PAUSED':
-          isPausedRef.current = true;
-          break;
-        case 'ERROR':
-          setLoadingState((prev) => ({ ...prev, error: message.payload.message, ready: false }));
-          inFlightRef.current = false;
-          break;
+    async function createWorker(): Promise<void> {
+      const workerUrl = new URL('../workers/mediapipe.worker.ts', import.meta.url);
+      const workerVerified = await verifyWorkerBlobIntegrity(workerUrl);
+      if (!workerVerified) {
+        throw new Error('MediaPipe worker integrity verification failed. Refusing to start hand tracking.');
       }
+
+      const wasmResponse = await fetch('/wasm/vision_wasm_internal.wasm', {
+        cache: 'force-cache',
+        credentials: 'same-origin',
+      });
+      if (!wasmResponse.ok) {
+        throw new Error(`Failed to fetch MediaPipe WASM binary: HTTP ${wasmResponse.status}`);
+      }
+
+      const wasmBlob = new Blob([await wasmResponse.arrayBuffer()], { type: 'application/wasm' });
+      const wasmBlobUrl = URL.createObjectURL(wasmBlob);
+      wasmBlobUrlRef.current = wasmBlobUrl;
+
+      if (cancelled) {
+        URL.revokeObjectURL(wasmBlobUrl);
+        if (wasmBlobUrlRef.current === wasmBlobUrl) wasmBlobUrlRef.current = null;
+        return;
+      }
+
+      worker = new Worker(workerUrl, { type: 'module' });
+      workerRef.current = worker;
+
+      worker.addEventListener('message', (event: MessageEvent<HandTrackingWorkerOutMessage>) => {
+        const message = event.data;
+
+        switch (message.type) {
+          case 'PROGRESS': {
+            const { phase, progress } = message.payload;
+            setLoadingState((prev) => ({
+              ...prev,
+              mediapipe: phase === 'wasm' ? Math.round(progress / 2) : Math.round(50 + progress / 2),
+            }));
+            break;
+          }
+          case 'READY':
+            workerReadyRef.current = true;
+            setLoadingState((prev) => ({ ...prev, mediapipe: 100, ready: true, error: null }));
+            break;
+          case 'RESULT': {
+            resultRef.current = message.payload;
+            metricsRef.current = message.payload.metrics ?? metricsRef.current;
+            const gestures = gestureDetectorRef.current.detect(message.payload);
+            gestures.forEach((gesture) => {
+              window.dispatchEvent(new CustomEvent('ar:gesture', { detail: gesture }));
+            });
+            inFlightRef.current = false;
+            break;
+          }
+          case 'DEGRADED':
+            degradedRef.current = true;
+            inFlightRef.current = false;
+            metricsRef.current = message.payload.metrics;
+            break;
+          case 'PAUSED':
+            isPausedRef.current = true;
+            break;
+          case 'ERROR':
+            setLoadingState((prev) => ({ ...prev, error: message.payload.message, ready: false }));
+            inFlightRef.current = false;
+            break;
+        }
+      });
+
+      worker.postMessage({ type: 'INIT', payload: { wasmBlobUrl } });
+    }
+
+    createWorker().catch((error: unknown) => {
+      setLoadingState((prev) => ({
+        ...prev,
+        ready: false,
+        error: error instanceof Error ? error.message : 'Failed to initialize MediaPipe worker',
+      }));
     });
 
-    worker.postMessage({ type: 'INIT' });
-
-    return () => destroyWorker(worker);
+    return () => {
+      cancelled = true;
+      destroyWorker(worker);
+    };
   }, [destroyWorker]);
 
   const processFrame = useCallback(() => {
-    if (!activeRef.current || isPausedRef.current || !workerReadyRef.current || inFlightRef.current) return;
+    if (!activeRef.current || isPausedRef.current || !workerReadyRef.current) return;
+
+    const now = performance.now();
+    const minFrameIntervalMs = degradedRef.current ? 1000 / 15 : 1000 / 30;
+    if (now - lastFrameSentAtRef.current < minFrameIntervalMs) return;
 
     const video = videoRef.current;
     const worker = workerRef.current;
@@ -129,6 +197,7 @@ export function useHandTracking(): UseHandTrackingReturn {
     if (!frame) return;
 
     inFlightRef.current = true;
+    lastFrameSentAtRef.current = now;
     worker.postMessage(
       {
         type: 'DETECT',
@@ -136,7 +205,7 @@ export function useHandTracking(): UseHandTrackingReturn {
           buffer: frame.buffer,
           width: frame.width,
           height: frame.height,
-          timestamp: performance.now(),
+          timestamp: now,
         },
       },
       [frame.buffer],
@@ -144,7 +213,7 @@ export function useHandTracking(): UseHandTrackingReturn {
   }, []);
 
   useEffect(() => {
-    inferenceTimerRef.current = window.setInterval(processFrame, 1000 / 30);
+    inferenceTimerRef.current = window.setInterval(processFrame, 1000 / 60);
     return () => {
       if (inferenceTimerRef.current !== null) {
         window.clearInterval(inferenceTimerRef.current);
