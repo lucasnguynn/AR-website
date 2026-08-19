@@ -28,7 +28,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm ci
+          npm install
           python -m pip install --upgrade pip usd-core
 
       - name: Compress GLB models
