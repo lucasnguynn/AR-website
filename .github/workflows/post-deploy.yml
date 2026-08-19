@@ -1,7 +1,7 @@
 name: Post-deploy evidence
 on:
   workflow_run:
-    workflows: [Deploy Pages]
+    workflows: [Quality gate] # <-- Sửa dòng này từ [Deploy Pages] thành [Quality gate]
     types: [completed]
 permissions: { contents: read }
 jobs:
