@@ -193,5 +193,3 @@ export function updateGemstoneAdaptiveLod(material: THREE.Material, frameAvgMs: 
     uniforms.causticStrength.value = 0;
   }
 }
-
-// VERIFY: console.log('[Gemstone] diamond | IOR=2.392 | 5-pass TSL | caustics ON');

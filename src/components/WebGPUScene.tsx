@@ -204,7 +204,7 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
           resultRef={resultRef}
           videoRef={videoRef}
           facingMode={facingMode}
-          enableRayTracing={renderTier === 'webgpu'}
+          enableWebGPUEnhancements={renderTier === 'webgpu'}
           materialRendererMode={renderTier === 'webgpu' ? 'webgpu' : 'webgl'}
           gemstoneQuality={qualityTier}
           depthIntervalMs={effectiveQuality.depthIntervalMs}
