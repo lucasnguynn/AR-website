@@ -15,19 +15,26 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - run: npm install
-      - name: Download Large ML Models
-        run: |
-          mkdir -p public/models/depth
-          curl -L -o public/models/depth/depth_anything_v2_small.onnx https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/main/onnx/model.onnx
-      - run: npm run validate:assets
+      
+      # 1. Chạy bộ Test TRƯỚC KHI tải mô hình (để bài test ngắt an toàn được Pass)
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
       - run: npm run test:integration
       - run: npm run lint:csp
+      
+      # 2. Tải mô hình AI SAU KHI test xong
+      - name: Download Large ML Models
+        run: |
+          mkdir -p public/models/depth
+          curl -L -o public/models/depth/depth_anything_v2_small.onnx https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/main/onnx/model.onnx
+          
+      # 3. Validate và Build (lúc này mô hình đã sẵn sàng)
+      - run: npm run validate:assets
       - run: npm run build
         env: { GITHUB_REPOSITORY: "${{ github.repository }}" }
       - run: npm run check:bundle
+      
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main'
         with: { path: dist }
