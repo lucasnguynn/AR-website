@@ -1,9 +1,13 @@
+// FILE: src/services/WebXRDepthManager.ts
 import * as THREE from 'three';
-import { MonocularDepthEstimator, type MonocularDepthResult } from './MonocularDepthEstimator';
+import { MonocularDepthEstimator } from './MonocularDepthEstimator';
 
+/** Encodings supported by native WebXR depth buffers. */
 export type XRDepthDataFormat = 'luminance-alpha' | 'float32';
-export type DepthOcclusionTier = 'webxr-depth' | 'monocular-depth' | 'geometric-proxy';
+/** Available depth occlusion strategies ordered from highest to lowest fidelity. */
+export type DepthOcclusionTier = 'webxr-depth' | 'monocular-depth' | 'degraded-depth' | 'geometric-proxy';
 
+/** WebXR depth information object with browser-specific raw buffer access. */
 export interface XRDepthInformationWithData {
   readonly width: number;
   readonly height: number;
@@ -13,10 +17,12 @@ export interface XRDepthInformationWithData {
   getDepthInMeters?(x: number, y: number): number;
 }
 
+/** XR frame shape that may expose depth sensing information for a view. */
 export type XRFrameWithDepthData = XRFrame & {
   getDepthInformation?(view: XRView): XRDepthInformationWithData | null | undefined;
 };
 
+/** Configuration for adaptive WebXR and monocular depth occlusion. */
 export interface DepthManagerOptions {
   readonly nearMeters?: number;
   readonly farMeters?: number;
@@ -26,17 +32,20 @@ export interface DepthManagerOptions {
   readonly throttleAfterMisses?: number;
 }
 
+/** Normalized landmark used to size the geometric fallback depth proxy. */
 export interface DepthProxyLandmark {
   readonly x: number;
   readonly y: number;
   readonly z?: number;
 }
 
+/** Per-frame inputs used by adaptive depth updates. */
 export interface DepthUpdateOptions {
   readonly cameraFrame?: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas;
   readonly landmarks?: readonly DepthProxyLandmark[];
 }
 
+/** Coordinates native WebXR depth, worker monocular depth, degraded depth, and geometric fallback occlusion. */
 export class WebXRDepthManager {
   readonly depthTexture = new THREE.DataTexture(new Float32Array([1]), 1, 1, THREE.RedFormat, THREE.FloatType);
   readonly occlusionProxy: THREE.Mesh;
@@ -49,19 +58,20 @@ export class WebXRDepthManager {
   private rawValueToMeters = 1;
   private readonly nearMeters: number;
   private readonly farMeters: number;
-  private readonly throttleAfterMisses: number;
-  private adaptiveMissThreshold: number;
+  private adaptiveThreshold = 24;
+  private readonly MIN_MISSES = 24;
+  private readonly MAX_MISSES = 100;
   private readonly monocularEstimator: MonocularDepthEstimator;
   private gpuMisses = 0;
   private proxyRadiusMeters = 0.11;
   private activeTier: DepthOcclusionTier = 'geometric-proxy';
+  private xrDepthAvailable = false;
   private disposed = false;
 
   constructor(options: DepthManagerOptions = {}) {
     this.nearMeters = options.nearMeters ?? 0.02;
     this.farMeters = options.farMeters ?? 8.0;
-    this.throttleAfterMisses = options.throttleAfterMisses ?? 24;
-    this.adaptiveMissThreshold = this.throttleAfterMisses;
+    this.adaptiveThreshold = THREE.MathUtils.clamp(options.throttleAfterMisses ?? this.MIN_MISSES, this.MIN_MISSES, this.MAX_MISSES);
     this.monocularEstimator = new MonocularDepthEstimator(options.modelUrl ?? '/models/depth/depth_anything_v2_small.onnx');
     this.depthTexture.minFilter = THREE.LinearFilter;
     this.depthTexture.magFilter = THREE.LinearFilter;
@@ -81,10 +91,23 @@ export class WebXRDepthManager {
     this.geometricProxy.visible = false;
   }
 
+  /** Returns the currently active depth occlusion tier. */
   get tier(): DepthOcclusionTier {
     return this.activeTier;
   }
 
+  /** Selects the best available depth tier while allowing recovery from transient GPU misses. */
+  selectTier(): DepthOcclusionTier {
+    if (this.xrDepthAvailable) {
+      this.gpuMisses = 0;
+      return 'webxr-depth';
+    }
+    if (this.gpuMisses < this.adaptiveThreshold * 0.75) return 'monocular-depth';
+    if (this.gpuMisses < this.adaptiveThreshold) return 'degraded-depth';
+    return 'geometric-proxy';
+  }
+
+  /** Updates the depth occlusion texture from WebXR depth, worker inference, or geometry fallback. */
   async update(
     frame: XRFrameWithDepthData,
     view: XRView,
@@ -94,30 +117,34 @@ export class WebXRDepthManager {
     const options = this.resolveUpdateOptions(cameraFrameOrOptions);
     if (options.landmarks) this.updateGeometricProxy(options.landmarks);
 
-    if (this.updateFromWebXR(frame, view)) {
+    this.xrDepthAvailable = this.updateFromWebXR(frame, view);
+    if (this.xrDepthAvailable) {
       this.gpuMisses = 0;
-      this.adaptiveMissThreshold = Math.min(this.throttleAfterMisses * 4, this.adaptiveMissThreshold + 1);
+      this.adaptiveThreshold = Math.min(this.adaptiveThreshold + 2, this.MAX_MISSES);
       this.setTier('webxr-depth');
       return true;
     }
 
-    this.gpuMisses += 1;
-    this.adaptiveMissThreshold = Math.max(1, this.adaptiveMissThreshold - 1);
-    if (options.cameraFrame && this.gpuMisses >= this.adaptiveMissThreshold) {
-      const result = this.monocularEstimator.estimate(options.cameraFrame);
+    const selectedTier = this.selectTier();
+    if (options.cameraFrame && selectedTier !== 'geometric-proxy') {
+      const inferenceTier = selectedTier === 'webxr-depth' ? 'monocular-depth' : selectedTier;
+      const result = this.monocularEstimator.estimate(options.cameraFrame, inferenceTier);
       if (result) {
-        this.gpuMisses = 0;
-        this.adaptiveMissThreshold = Math.min(this.throttleAfterMisses * 4, this.adaptiveMissThreshold + 2);
+        this.adaptiveThreshold = Math.min(this.adaptiveThreshold + 2, this.MAX_MISSES);
+        this.gpuMisses = Math.max(0, this.gpuMisses - 1);
         this.uploadDepth(result.width, result.height, result.depth, true);
-        this.setTier('monocular-depth');
+        this.setTier(result.tier);
         return true;
       }
     }
 
-    this.setTier('geometric-proxy');
-    return false;
+    this.adaptiveThreshold = Math.max(this.adaptiveThreshold - 5, this.MIN_MISSES);
+    this.gpuMisses += 1;
+    this.setTier(this.selectTier());
+    return this.activeTier !== 'geometric-proxy';
   }
 
+  /** Attempts to upload native WebXR depth information for the current frame. */
   updateFromWebXR(frame: XRFrameWithDepthData, view: XRView): boolean {
     let depth: XRDepthInformationWithData | null | undefined;
     try {
@@ -136,6 +163,7 @@ export class WebXRDepthManager {
     return true;
   }
 
+  /** Attaches depth proxies to the active AR camera. */
   attachToCamera(camera: THREE.Camera): void {
     if (this.occlusionProxy.parent !== camera) camera.add(this.occlusionProxy);
     if (this.geometricProxy.parent !== camera) camera.add(this.geometricProxy);
@@ -145,6 +173,7 @@ export class WebXRDepthManager {
     this.geometricProxy.position.set(0, -0.08, -0.42);
   }
 
+  /** Releases GPU and worker resources owned by the depth manager. */
   dispose(): void {
     this.disposed = true;
     this.monocularEstimator.dispose();
@@ -156,6 +185,7 @@ export class WebXRDepthManager {
     this.buffers = [new Float32Array(1), new Float32Array(1)];
   }
 
+  /** Updates the geometric fallback proxy from normalized hand landmarks. */
   updateGeometricProxy(landmarks: readonly DepthProxyLandmark[]): void {
     if (landmarks.length < 2) return;
     let maxDistance = 0;
@@ -269,3 +299,5 @@ export class WebXRDepthManager {
     });
   }
 }
+
+// VERIFY: console.log('Simulate 25 GPU misses → tier shows degraded-depth, after 10 successes recovers to monocular-depth')

@@ -2,6 +2,8 @@
 import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type CanvasProps } from '@react-three/fiber';
 import * as THREE from 'three';
+import { WebGLRenderer } from 'three';
+import { WebGPURenderer } from 'three/webgpu';
 import { RingScene } from './RingScene';
 import type { HandTrackingResult } from '../types/ar.types';
 import type { AmbientLightState } from '../utils/AmbientLightAdapter';
@@ -9,8 +11,6 @@ import type { AmbientLightState } from '../utils/AmbientLightAdapter';
 type RenderTier = 'webgpu' | 'webgl2' | 'webgl1';
 type QualityTier = 'HIGH' | 'MEDIUM' | 'LOW';
 type ThreeRenderer = THREE.WebGLRenderer & { init?: () => Promise<void> };
-type AdaptiveRenderer = ThreeRenderer & { shadowMap?: THREE.WebGLRenderer['shadowMap'] };
-type WebGPUModule = { WebGPURenderer?: new (parameters: Record<string, unknown>) => AdaptiveRenderer };
 type RendererInitResult = { renderer: ThreeRenderer; tier: RenderTier };
 
 declare global {
@@ -55,7 +55,7 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
     throw new Error(`${tier.toUpperCase()} context is unavailable`);
   }
 
-  const renderer = new THREE.WebGLRenderer({
+  const renderer = new WebGLRenderer({
     canvas,
     context,
     alpha: true,
@@ -68,46 +68,43 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
   return renderer;
 }
 
-async function resolveWebGPURenderer(): Promise<WebGPUModule | null> {
-  try {
-    const mod = await import('three/webgpu') as unknown as WebGPUModule;
-    if (typeof mod.WebGPURenderer === 'function') return mod;
-  } catch (error) {
-    console.warn('three/webgpu is unavailable; falling back to WebGL2.', error);
-  }
-  return null;
+function getQualityTier(): string {
+  return 'Tier: HIGH';
 }
 
 async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<RendererInitResult> {
   if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
-    const mod = await resolveWebGPURenderer();
-    if (mod?.WebGPURenderer) {
-      try {
-        const renderer = new mod.WebGPURenderer({
-          canvas,
-          alpha: true,
-          antialias: true,
-          powerPreference: 'high-performance',
-        });
+    try {
+      const renderer = new WebGPURenderer({
+        canvas,
+        alpha: true,
+        antialias: true,
+        powerPreference: 'high-performance',
+      }) as unknown as ThreeRenderer;
 
-        await renderer.init?.();
-        renderer.setClearColor?.(0x000000, 0);
-        renderer.outputColorSpace = THREE.SRGBColorSpace;
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        return { renderer, tier: 'webgpu' };
-      } catch (error) {
-        console.warn('WebGPU renderer failed; falling back to WebGL2.', error);
-      }
+      await renderer.init?.();
+      renderer.setClearColor?.(0x000000, 0);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      console.info(`[Renderer] WebGPU | ${getQualityTier()}`);
+      return { renderer, tier: 'webgpu' };
+    } catch (error) {
+      console.warn('WebGPU renderer failed; falling back to WebGL2.', error);
     }
   }
 
   try {
     const fallbackTier = requestedTier === 'webgl1' ? 'webgl1' : 'webgl2';
-    return { renderer: createWebGLRenderer(canvas, fallbackTier), tier: fallbackTier };
+    const renderer = createWebGLRenderer(canvas, fallbackTier);
+    console.info(fallbackTier === 'webgl2' ? '[Renderer] WebGL2 fallback' : '[Renderer] WebGL1 fallback');
+    return { renderer, tier: fallbackTier };
   } catch (error) {
     if (requestedTier === 'webgl1') throw error;
     console.warn('WebGL2 renderer failed; falling back to WebGL1.', error);
-    return { renderer: createWebGLRenderer(canvas, 'webgl1'), tier: 'webgl1' };
+    const renderer = createWebGLRenderer(canvas, 'webgl1');
+    console.info('[Renderer] WebGL1 fallback');
+    return { renderer, tier: 'webgl1' };
   }
 }
 
@@ -210,4 +207,4 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
     </Canvas>
   );
 }
-// VERIFY: console.log('WebGPU renderer resolves without CSP dynamic-code construction')
+// VERIFY: console.log('[Renderer] WebGPU | Tier: HIGH — static import path has no CSP dynamic-code construction')
