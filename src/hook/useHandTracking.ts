@@ -12,7 +12,7 @@ import type { HandTrackingResult, LoadingState, TrackingMetrics } from '../types
 import { protocolMessage, validateMediaPipeOutbound } from '../protocol/workerProtocol';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
-import { createVerifiedWorker } from '../utils/SecurityUtils';
+import { createVerifiedAssetBlobUrl, createVerifiedWorker } from '../utils/SecurityUtils';
 
 const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
 const MEDIAPIPE_WASM_PATH = 'wasm/vision_wasm_internal.wasm';
@@ -45,6 +45,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   const inFlightRef = useRef(false);
   const degradedRef = useRef(false);
   const wasmBlobUrlRef = useRef<string | null>(null);
+  const modelBlobUrlRef = useRef<string | null>(null);
   const inferenceTimerRef = useRef<number | null>(null);
   const lastFrameSentAtRef = useRef(0);
   const gestureDetectorRef = useRef(new GestureDetector());
@@ -75,6 +76,8 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       URL.revokeObjectURL(wasmBlobUrlRef.current);
       wasmBlobUrlRef.current = null;
     }
+
+    if (modelBlobUrlRef.current) { URL.revokeObjectURL(modelBlobUrlRef.current); modelBlobUrlRef.current = null; }
 
     if (!worker) return;
 
@@ -118,21 +121,18 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
       const wasmUrl = new URL(MEDIAPIPE_WASM_PATH, assetBaseUrl);
       const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
-      const wasmResponse = await fetch(wasmUrl, {
-        cache: 'force-cache',
-        credentials: 'same-origin',
-      });
-      if (!wasmResponse.ok) {
-        throw new Error(`Failed to fetch MediaPipe WASM binary: HTTP ${wasmResponse.status}`);
-      }
-
-      const wasmBlob = new Blob([await wasmResponse.arrayBuffer()], { type: 'application/wasm' });
-      const wasmBlobUrl = URL.createObjectURL(wasmBlob);
+      const [wasmBlobUrl, modelBlobUrl] = await Promise.all([
+        createVerifiedAssetBlobUrl(wasmUrl, 'application/wasm'),
+        createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream'),
+      ]);
       wasmBlobUrlRef.current = wasmBlobUrl;
+      modelBlobUrlRef.current = modelBlobUrl;
 
       if (cancelled) {
         URL.revokeObjectURL(wasmBlobUrl);
+        URL.revokeObjectURL(modelBlobUrl);
         if (wasmBlobUrlRef.current === wasmBlobUrl) wasmBlobUrlRef.current = null;
+        if (modelBlobUrlRef.current === modelBlobUrl) modelBlobUrlRef.current = null;
         return;
       }
 
@@ -183,7 +183,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         }
       });
 
-      worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl, modelUrl: modelUrl.toString() } }));
+      worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl, modelUrl: modelBlobUrl } }));
     }
 
     createWorker().catch((error: unknown) => {

@@ -6,4 +6,3 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
-# VERIFY: console.log('Security headers deployed with CSP blocking eval()')

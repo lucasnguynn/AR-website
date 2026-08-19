@@ -35,8 +35,8 @@ type CriticalError = {
 
 const TRACKING_TIMEOUT_MS = 12_000;
 const SMART_HUD_DELAY_MS = 2_000;
-const QUICK_LOOK_USDZ_URL = '/models/nhan.usdz';
-const QUICK_LOOK_PREVIEW_URL = '/models/nhan-preview.jpg';
+const QUICK_LOOK_USDZ_URL = `${import.meta.env.BASE_URL}models/nhan.usdz`;
+const QUICK_LOOK_PREVIEW_URL = `${import.meta.env.BASE_URL}models/nhan-preview.png`;
 const QUICK_LOOK_PRODUCT_NAME = 'Classic Gold Band';
 const QUICK_LOOK_DIAMETER_MM = 18;
 

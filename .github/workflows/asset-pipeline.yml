@@ -8,7 +8,7 @@ on:
       - 'src/assets/models/**/*.glb'
       - 'public/models/**/*.glb'
       - 'scripts/glb_to_usdz.py'
-      - 'scripts/generate-sri.js'
+      - 'scripts/generate-integrity-manifest.mjs'
       - '.github/workflows/asset-pipeline.yml'
   workflow_dispatch:
 
@@ -38,11 +38,11 @@ jobs:
           done
       - name: Convert to USDZ
         run: for f in public/models/*.glb; do python3 scripts/glb_to_usdz.py "$f"; done
-      - name: Generate SRI
-        run: node scripts/generate-sri.js public/models/
+      - name: Validate generated assets
+        run: node scripts/validate-assets.mjs
       - name: Commit
         run: |
           git config user.email "actions@github.com" && git config user.name "GitHub Actions"
-          git add public/models/ src/generated/
+          git add public/models/
           git diff --staged --quiet || (git commit -m "ci: assets compressed + USDZ [skip ci]" && git push)
 # VERIFY: echo "Asset Pipeline converts GLB assets to optimized GLB, USDZ, and SRI manifests"
