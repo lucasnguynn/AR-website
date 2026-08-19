@@ -1,6 +1,8 @@
-import { LSTM_WEIGHT_KEY, MLWeightManager } from './MLWeightManager';
+// FILE: src/tracking/PredictiveLSTM.ts
+import { LSTM_WEIGHT_KEY, loadWeights, saveWeights } from './MLWeightManager';
 import type { FusionState } from './UKFEngine';
 
+/** Complete predictive LSTM tensor bundle. */
 export interface PredictiveLSTMWeights {
   readonly inputKernel: Float32Array;
   readonly recurrentKernel: Float32Array;
@@ -9,6 +11,7 @@ export interface PredictiveLSTMWeights {
   readonly projectionBias: Float32Array;
 }
 
+/** Predicted pose returned by the recurrent tracker. */
 export interface PredictedPose { readonly position: Float32Array; readonly orientation: Float32Array; readonly horizonMs: number; readonly confidence: number; }
 
 const INPUT = 9;
@@ -16,6 +19,7 @@ const OUTPUT = 7;
 
 function sigmoid(x: number): number { return 1 / (1 + Math.exp(-Math.max(-40, Math.min(40, x)))); }
 
+/** Lightweight deterministic LSTM pose predictor with IndexedDB weight persistence. */
 export class PredictiveLSTM {
   private readonly hiddenSize: number;
   private weights: PredictiveLSTMWeights;
@@ -36,21 +40,39 @@ export class PredictiveLSTM {
     this.gates = new Float32Array(hiddenSize * 4);
     this.input = new Float32Array(INPUT);
     this.output = { position: this.outPosition, orientation: this.outOrientation, horizonMs: 0, confidence: 0 };
-    if (!weights) void this.loadPersistedWeights();
+    if (!weights) void this.init();
   }
 
+  /** Resets recurrent state and confidence without changing weights. */
   reset(): void { this.hidden.fill(0); this.cell.fill(0); this.confidence = 0.5; }
 
-  async loadPersistedWeights(): Promise<boolean> {
-    const persisted = await MLWeightManager.read(LSTM_WEIGHT_KEY, this.hiddenSize).catch(() => null);
-    if (!persisted) return false;
-    this.weights = persisted;
+  /** Loads persisted weights when available, otherwise keeps deterministic Xavier-style defaults. */
+  async init(): Promise<void> {
+    const saved = await loadWeights(LSTM_WEIGHT_KEY).catch(() => null);
+    if (saved && this.loadFromArrays(saved)) {
+      console.info(`[LSTM] Loaded from IDB — ${saved.length} weight tensors`);
+      return;
+    }
+    this.weights = PredictiveLSTM.createDefaultWeights(this.hiddenSize);
     this.reset();
-    return true;
+    console.info('[LSTM] Xavier init (no saved weights)');
   }
 
+  /** Backwards-compatible persisted weight loader. */
+  async loadPersistedWeights(): Promise<boolean> {
+    const saved = await loadWeights(LSTM_WEIGHT_KEY).catch(() => null);
+    return saved ? this.loadFromArrays(saved) : false;
+  }
+
+  /** Returns the active LSTM tensor bundle. */
   getWeights(): PredictiveLSTMWeights { return this.weights; }
 
+  /** Persists the complete 14-tensor gate-split LSTM weight set to IndexedDB. */
+  async saveCurrentWeights(): Promise<void> {
+    await saveWeights(LSTM_WEIGHT_KEY, this.toArrays());
+  }
+
+  /** Predicts future pose at the requested horizon. */
   predict(state: FusionState, horizonMs: 16.667 | 33.334 | number = 16.667): PredictedPose {
     const dt = horizonMs * 0.001;
     this.input[0] = state.position[0]; this.input[1] = state.position[1]; this.input[2] = state.position[2];
@@ -99,6 +121,48 @@ export class PredictiveLSTM {
     this.confidence = Math.max(0.15, Math.min(0.98, 0.94 - motion * 0.08));
   }
 
+  private toArrays(): Float32Array[] {
+    const h = this.hiddenSize;
+    const gates = h * 4;
+    const splitInput = (gate: number): Float32Array => {
+      const out = new Float32Array(INPUT * h);
+      for (let i = 0; i < INPUT; i += 1) for (let j = 0; j < h; j += 1) out[i * h + j] = this.weights.inputKernel[i * gates + gate * h + j];
+      return out;
+    };
+    const splitRecurrent = (gate: number): Float32Array => {
+      const out = new Float32Array(h * h);
+      for (let i = 0; i < h; i += 1) for (let j = 0; j < h; j += 1) out[i * h + j] = this.weights.recurrentKernel[i * gates + gate * h + j];
+      return out;
+    };
+    const splitBias = (gate: number): Float32Array => this.weights.bias.slice(gate * h, gate * h + h);
+    return [splitInput(1), splitInput(0), splitInput(2), splitInput(3), splitRecurrent(1), splitRecurrent(0), splitRecurrent(2), splitRecurrent(3), splitBias(1), splitBias(0), splitBias(2), splitBias(3), new Float32Array(this.weights.projection), new Float32Array(this.weights.projectionBias)];
+  }
+
+  private loadFromArrays(arrays: Float32Array[]): boolean {
+    if (arrays.length === 5) {
+      this.weights = { inputKernel: new Float32Array(arrays[0]), recurrentKernel: new Float32Array(arrays[1]), bias: new Float32Array(arrays[2]), projection: new Float32Array(arrays[3]), projectionBias: new Float32Array(arrays[4]) };
+      this.reset();
+      return true;
+    }
+    if (arrays.length !== 14) return false;
+    const h = this.hiddenSize;
+    const gates = h * 4;
+    const inputKernel = new Float32Array(INPUT * gates);
+    const recurrentKernel = new Float32Array(h * gates);
+    const bias = new Float32Array(gates);
+    const order = [1, 0, 2, 3];
+    for (let source = 0; source < 4; source += 1) {
+      const gate = order[source];
+      for (let i = 0; i < INPUT; i += 1) for (let j = 0; j < h; j += 1) inputKernel[i * gates + gate * h + j] = arrays[source][i * h + j] ?? 0;
+      for (let i = 0; i < h; i += 1) for (let j = 0; j < h; j += 1) recurrentKernel[i * gates + gate * h + j] = arrays[source + 4][i * h + j] ?? 0;
+      bias.set(arrays[source + 8].slice(0, h), gate * h);
+    }
+    this.weights = { inputKernel, recurrentKernel, bias, projection: new Float32Array(arrays[12]), projectionBias: new Float32Array(arrays[13]) };
+    this.reset();
+    return true;
+  }
+
+  /** Creates deterministic default LSTM weights. */
   static createDefaultWeights(hiddenSize: number): PredictiveLSTMWeights {
     const gates = hiddenSize * 4;
     const inputKernel = new Float32Array(INPUT * gates);
@@ -113,3 +177,6 @@ export class PredictiveLSTM {
     return { inputKernel, recurrentKernel, bias, projection, projectionBias };
   }
 }
+
+console.log('[PredictiveLSTM] persistence and confidence decay ready');
+// VERIFY: Second load: "[LSTM] Loaded from IDB — 14 weight tensors"

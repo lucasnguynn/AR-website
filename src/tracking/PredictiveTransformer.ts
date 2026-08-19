@@ -1,5 +1,7 @@
+// FILE: src/tracking/PredictiveTransformer.ts
 import type { FusionState } from './UKFEngine';
 
+/** Predicted pose returned by the deterministic transformer tracker. */
 export interface PredictedPose { readonly position: Float32Array; readonly orientation: Float32Array; readonly horizonMs: number; readonly confidence: number; }
 
 const SEQ = 8;
@@ -22,15 +24,17 @@ function splitmix32(seed: number): () => number {
   };
 }
 
-const initRandom = splitmix32(42);
+const GLOBAL_SEED = 42;
+const _rng = splitmix32(GLOBAL_SEED);
 
 function xavier(length: number, fanIn: number, fanOut: number): Float32Array {
   const a = new Float32Array(length);
   const limit = Math.sqrt(6 / (fanIn + fanOut));
-  for (let i = 0; i < length; i += 1) a[i] = (initRandom() * 2 - 1) * limit;
+  for (let i = 0; i < length; i += 1) a[i] = (_rng() * 2 - 1) * limit;
   return a;
 }
 
+/** Seeded Transformer pose predictor with deterministic Xavier initialization. */
 export class PredictiveTransformer {
   private readonly history = new Float32Array(SEQ * INPUT);
   private readonly x = new Float32Array(SEQ * MODEL);
@@ -57,8 +61,10 @@ export class PredictiveTransformer {
   private readonly w2 = xavier(LAYERS * FF * MODEL, FF, MODEL);
   private readonly outW = xavier(MODEL * OUTPUT, MODEL, OUTPUT);
 
+  /** Clears temporal history while preserving deterministic weights. */
   reset(): void { this.history.fill(0); this.filled = 0; this.cursor = 0; }
 
+  /** Predicts a future pose from the current fusion state. */
   predict(state: FusionState, horizonMs: 16.667 | 33.334 | number = 16.667): PredictedPose {
     this.pushState(state);
     this.embed();
@@ -130,3 +136,6 @@ export class PredictiveTransformer {
     (this.output as { horizonMs: number; confidence: number }).horizonMs = horizonMs; (this.output as { confidence: number }).confidence = Math.max(0.12, Math.min(0.97, 0.9 - motion * 0.07));
   }
 }
+
+console.log('[PredictiveTransformer] splitmix32 seeded Xavier ready');
+// VERIFY: Transformer same input yields same output across 10 browser refreshes.
