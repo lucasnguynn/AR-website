@@ -2,19 +2,9 @@
 import * as THREE from 'three';
 import {
   MeshPhysicalNodeMaterial,
-  anisotropy,
-  cameraPosition,
-  clearcoat,
-  clearcoatRoughness,
   color,
-  float,
-  normalWorld,
-  pmremTexture,
-  positionWorld,
-  timerLocal,
   uniform,
-  vec3,
-} from 'three/tsl';
+} from 'three/nodes';
 
 /** Jewelry material preset names supported by the WebGPU TSL material factory. */
 export type JewelryPreset = 'gold-18k' | 'white-gold' | 'rose-gold' | 'silver' | 'diamond-accent';
@@ -37,6 +27,7 @@ export interface JewelryShaderOptions {
   envMap?: THREE.Texture | null;
   environmentIntensity?: number;
   exposure?: number;
+  rendererMode?: 'webgpu' | 'webgl';
 }
 
 type PresetValues = {
@@ -121,12 +112,14 @@ function createWebGLFallbackMaterial(preset: JewelryPreset, values: PresetValues
     metalness: values.metal,
     clearcoat: values.coat,
     clearcoatRoughness: values.coatRough,
+    anisotropy: values.aniso,
+    envMapIntensity: 1.35,
   });
 }
 
 /** Creates a shared-uniform MeshPhysicalNodeMaterial for WebGPU or a MeshPhysicalMaterial WebGL fallback. */
-export function createJewelryMaterial(): MeshPhysicalNodeMaterial | THREE.MeshPhysicalMaterial {
-  if (!isWebGPU()) {
+export function createJewelryMaterial(rendererMode?: 'webgpu' | 'webgl'): MeshPhysicalNodeMaterial | THREE.MeshPhysicalMaterial {
+  if (rendererMode === 'webgl' || (rendererMode === undefined && !isWebGPU())) {
     return createWebGLFallbackMaterial('gold-18k', PRESETS['gold-18k']);
   }
 
@@ -169,6 +162,26 @@ export function switchPreset(preset: JewelryPreset): void {
   console.info(`[Material] Preset: ${preset}`);
 }
 
+/** Applies a preset to an already-bound material without reallocating GPU resources. */
+export function updateJewelryMaterialPreset(material: THREE.Material, preset: JewelryPreset): void {
+  if (material.userData.jewelryMode === 'webgpu-tsl') {
+    switchPreset(preset);
+    return;
+  }
+  if (material instanceof THREE.MeshPhysicalMaterial) {
+    const values = PRESETS[preset];
+    material.name = `JewelryFactoryWebGL_${preset}`;
+    material.color.set(values.base);
+    material.roughness = values.rough;
+    material.metalness = values.metal;
+    material.clearcoat = values.coat;
+    material.clearcoatRoughness = values.coatRough;
+    material.anisotropy = values.aniso;
+    material.userData.jewelryPreset = preset;
+    material.needsUpdate = true;
+  }
+}
+
 /** Updates WebGPU jewelry environment intensity; PMREM scene.environment supplies the actual environment texture. */
 export function updateJewelryEnvironment(_envMap: THREE.Texture | null, intensity = 1.0): void {
   uEnvIntensity.value = THREE.MathUtils.clamp(intensity, 0, 2);
@@ -189,26 +202,17 @@ export function createJewelryShaderMaterial(
   const preset = presetFromOptions(typeOrOptions);
   const values = mergedPreset(typeOrOptions, overrides);
 
-  if (!isWebGPU()) {
+  const requestedMode = typeof typeOrOptions === 'string' ? undefined : typeOrOptions.rendererMode;
+  if (requestedMode === 'webgl' || (requestedMode === undefined && !isWebGPU())) {
     return createWebGLFallbackMaterial(preset, values);
   }
 
   switchPreset(preset);
-  const material = createJewelryMaterial() as JewelryNodeMaterial;
+  const material = createJewelryMaterial(requestedMode) as JewelryNodeMaterial;
   material.name = `JewelryFactoryTSL_${preset}`;
   material.userData.jewelryPreset = preset;
   return material;
 }
 
-void float;
-void vec3;
-void normalWorld;
-void positionWorld;
-void cameraPosition;
-void pmremTexture;
-void timerLocal;
-void anisotropy;
-void clearcoat;
-void clearcoatRoughness;
 console.log('[Material] Preset: gold-18k | TSL uniform update | <1ms');
 // VERIFY: [Material] Preset: gold-18k | TSL uniform update | <1ms

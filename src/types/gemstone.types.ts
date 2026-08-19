@@ -32,6 +32,7 @@ export interface GemstoneShaderUniforms {
   readonly causticScale: { value: number };
   /** Runtime caustic gain; set to 0 when frameAvgMs exceeds 33ms. */
   readonly causticStrength: { value: number };
+  readonly quality: { value: 'HIGH' | 'MEDIUM' | 'LOW' };
 }
 
 /** Mesh physical node material annotated with gemstone metadata. */

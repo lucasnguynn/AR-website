@@ -61,6 +61,8 @@ declare module 'three/tsl' {
 
   /** Creates a composable TSL function node. */
   export function Fn(factory: (args: readonly TSLNode[]) => TSLNode): (...args: readonly TSLNode[]) => TSLNode;
+  /** Compatibility name used by the r163-r170 nodes entry point. */
+  export const tslFn: typeof Fn;
   /** Creates a color node value from a Three.js color representation. */
   export function color(value: ColorRepresentation): Color;
   /** Creates a float node value. */
@@ -101,6 +103,11 @@ declare module 'three/tsl' {
   export const clearcoat: TSLNode;
   /** Material clearcoat roughness node accessor. */
   export const clearcoatRoughness: TSLNode;
+}
+
+/** r163-r170 compatibility export; r170 keeps the nodes entry point alongside three/tsl. */
+declare module 'three/nodes' {
+  export * from 'three/tsl';
 }
 
 declare const __threeWebgpuVerify: '[Types] three/tsl r170 declarations ready';
