@@ -1,8 +1,19 @@
+// FILE: scripts/run-tests.mjs
+
+// Cung cấp biến môi trường giả lập (Polyfill) cho Node.js để chạy test Three.js WebGPU/TSL
+if (typeof globalThis.self === 'undefined') {
+  globalThis.self = globalThis;
+}
+if (typeof globalThis.window === 'undefined') {
+  globalThis.window = globalThis;
+}
+
 import { build } from 'esbuild';
 import { pathToFileURL } from 'node:url';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
 const directory = await mkdtemp(join(tmpdir(), 'ar-tests-'));
 try {
   for (const [source, exported] of [['tests/orchestration.test.ts', 'run'], ['tests/webxr.test.ts', 'runWebXRTests'], ['tests/depth-pipeline.test.ts', 'runDepthPipelineTests'], ['tests/integrity.test.ts', 'runIntegrityTests'], ['tests/material-strategy.test.ts', 'runMaterialStrategyTests']]) {
@@ -11,4 +22,6 @@ try {
     await (await import(pathToFileURL(output).href))[exported]();
   }
   console.log('Orchestration, WebXR lifecycle/depth, protocol, integrity, materials, base-path, and asset-preflight tests passed.');
-} finally { await rm(directory, { recursive: true, force: true }); }
+} finally { 
+  await rm(directory, { recursive: true, force: true }); 
+}
