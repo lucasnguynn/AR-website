@@ -4,7 +4,7 @@ import {
   MeshPhysicalNodeMaterial,
   color,
   uniform,
-} from 'three/nodes';
+} from 'three/tsl';
 
 /** Jewelry material preset names supported by the WebGPU TSL material factory. */
 export type JewelryPreset = 'gold-18k' | 'white-gold' | 'rose-gold' | 'silver' | 'diamond-accent';
