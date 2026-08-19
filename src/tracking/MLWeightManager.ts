@@ -1,52 +1,106 @@
-import type { PredictiveLSTMWeights } from './PredictiveLSTM';
-
-const DB_NAME = 'wear-jewelry-ar-ml';
+// FILE: src/tracking/MLWeightManager.ts
+const DB_NAME = 'webar-ml-v1';
 const DB_VERSION = 1;
-const STORE_NAME = 'weights';
-export const LSTM_WEIGHT_KEY = 'predictive-lstm-v1';
+const STORE = 'weights';
+const MAX_VERSIONS = 3;
 
-interface StoredWeights { readonly key: string; readonly hiddenSize: number; readonly updatedAt: number; readonly inputKernel: number[]; readonly recurrentKernel: number[]; readonly bias: number[]; readonly projection: number[]; readonly projectionBias: number[]; }
+interface StoredWeightVersion {
+  readonly id: string;
+  readonly key: string;
+  readonly data: Float32Array[];
+  readonly savedAt: number;
+}
 
-function hasIndexedDB(): boolean { return typeof indexedDB !== 'undefined'; }
+/** Stable IndexedDB key for the predictive LSTM weights. */
+export const LSTM_WEIGHT_KEY = 'lstm-v1';
 
-function openWeightsDB(): Promise<IDBDatabase> {
-  if (!hasIndexedDB()) return Promise.reject(new Error('IndexedDB is unavailable'));
-  return new Promise((resolve, reject) => {
+function hasIndexedDB(): boolean {
+  return typeof indexedDB !== 'undefined';
+}
+
+function makeVersionId(key: string, savedAt: number): string {
+  return `${key}:${savedAt}`;
+}
+
+/** Opens the local WebAR ML weights database and creates the weights store when needed. */
+export async function openDB(): Promise<IDBDatabase> {
+  if (!hasIndexedDB()) throw new Error('IndexedDB is unavailable');
+  return new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, { keyPath: 'key' });
+      if (!db.objectStoreNames.contains(STORE)) {
+        const store = db.createObjectStore(STORE, { keyPath: 'id' });
+        store.createIndex('by_key', 'key', { unique: false });
+        store.createIndex('by_saved_at', 'savedAt', { unique: false });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Failed to open IndexedDB'));
   });
 }
 
-function transaction<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-  return openWeightsDB().then((db) => new Promise<T>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, mode);
-    const request = action(tx.objectStore(STORE_NAME));
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
-    tx.oncomplete = () => db.close();
+function cloneWeights(weights: Float32Array[]): Float32Array[] {
+  return weights.map((weight) => new Float32Array(weight));
+}
+
+async function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
+  const db = await openDB();
+  return new Promise<T | undefined>((resolve, reject) => {
+    const tx = db.transaction(STORE, mode);
+    const store = tx.objectStore(STORE);
+    const request = action(store);
+    let result: T | undefined;
+    if (request) {
+      request.onsuccess = () => { result = request.result; };
+      request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
+    }
+    tx.oncomplete = () => { db.close(); resolve(result); };
     tx.onerror = () => { db.close(); reject(tx.error ?? new Error('IndexedDB transaction failed')); };
     tx.onabort = () => { db.close(); reject(tx.error ?? new Error('IndexedDB transaction aborted')); };
-  }));
+  });
 }
 
-function serializeWeights(key: string, hiddenSize: number, weights: PredictiveLSTMWeights): StoredWeights {
-  return { key, hiddenSize, updatedAt: Date.now(), inputKernel: Array.from(weights.inputKernel), recurrentKernel: Array.from(weights.recurrentKernel), bias: Array.from(weights.bias), projection: Array.from(weights.projection), projectionBias: Array.from(weights.projectionBias) };
+function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
+  });
 }
 
-function deserializeWeights(stored: StoredWeights, hiddenSize: number): PredictiveLSTMWeights | null {
-  if (stored.hiddenSize !== hiddenSize) return null;
-  return { inputKernel: new Float32Array(stored.inputKernel), recurrentKernel: new Float32Array(stored.recurrentKernel), bias: new Float32Array(stored.bias), projection: new Float32Array(stored.projection), projectionBias: new Float32Array(stored.projectionBias) };
+async function rotateOldVersions(key: string): Promise<void> {
+  const db = await openDB();
+  try {
+    const tx = db.transaction(STORE, 'readwrite');
+    const index = tx.objectStore(STORE).index('by_key');
+    const rows = await requestToPromise<StoredWeightVersion[]>(index.getAll(IDBKeyRange.only(key)));
+    const stale = rows.sort((a, b) => b.savedAt - a.savedAt).slice(MAX_VERSIONS);
+    for (const row of stale) tx.objectStore(STORE).delete(row.id);
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB rotation failed'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB rotation aborted'));
+    });
+  } finally {
+    db.close();
+  }
 }
 
-export class MLWeightManager {
-  static async create(key: string, hiddenSize: number, weights: PredictiveLSTMWeights): Promise<void> { await transaction('readwrite', (store) => store.add(serializeWeights(key, hiddenSize, weights))); }
-  static async read(key = LSTM_WEIGHT_KEY, hiddenSize = 16): Promise<PredictiveLSTMWeights | null> { const stored = await transaction<StoredWeights | undefined>('readonly', (store) => store.get(key)); return stored ? deserializeWeights(stored, hiddenSize) : null; }
-  static async update(key: string, hiddenSize: number, weights: PredictiveLSTMWeights): Promise<void> { await transaction('readwrite', (store) => store.put(serializeWeights(key, hiddenSize, weights))); }
-  static async delete(key = LSTM_WEIGHT_KEY): Promise<void> { await transaction('readwrite', (store) => store.delete(key)); }
-  static async saveLSTMWeights(weights: PredictiveLSTMWeights, hiddenSize = 16): Promise<void> { await MLWeightManager.update(LSTM_WEIGHT_KEY, hiddenSize, weights); }
+/** Saves a complete model weight tensor set and keeps at most three versions for the key. */
+export async function saveWeights(key: string, weights: Float32Array[]): Promise<void> {
+  const savedAt = Date.now();
+  const row: StoredWeightVersion = { id: makeVersionId(key, savedAt), key, data: cloneWeights(weights), savedAt };
+  await withStore('readwrite', (store) => store.put(row));
+  await rotateOldVersions(key);
 }
+
+/** Loads the newest complete model weight tensor set for the key, or null when none exists. */
+export async function loadWeights(key: string): Promise<Float32Array[] | null> {
+  const rows = await withStore<StoredWeightVersion[]>('readonly', (store) => store.index('by_key').getAll(IDBKeyRange.only(key)));
+  if (!rows || rows.length === 0) return null;
+  const latest = rows.reduce((a, b) => (a.savedAt >= b.savedAt ? a : b));
+  return cloneWeights(latest.data);
+}
+
+console.log('[MLWeightManager] IndexedDB weight persistence ready');
+// VERIFY: saveWeights('lstm-v1', tensors) persists only the newest three versions.

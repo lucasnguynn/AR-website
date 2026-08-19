@@ -1,99 +1,103 @@
-import { LSTM_WEIGHT_KEY, MLWeightManager } from './MLWeightManager';
-import { PredictiveLSTM, type PredictiveLSTMWeights } from './PredictiveLSTM';
-import type { FusionState } from './UKFEngine';
+// FILE: src/tracking/MotionDataCapture.ts
+import { LSTM_WEIGHT_KEY, saveWeights } from './MLWeightManager';
 
-const STORAGE_KEY = 'wear-jewelry-ar-motion-samples';
-const SAMPLE_LIMIT = 1800;
-const MIN_SAMPLE_INTERVAL_MS = 1000 / 30;
-const TRAINING_EPOCHS = 10;
-const INPUT = 9;
-const OUTPUT = 7;
+/** Captured privacy-local motion sample stored only in sessionStorage. */
+export interface MotionSample {
+  readonly t: number;
+  readonly pos: readonly [number, number, number];
+  readonly vel: readonly [number, number, number];
+  readonly quat: readonly [number, number, number, number];
+}
 
-type MotionSample = readonly [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
-type TensorLike = { dispose(): void; data(): Promise<Float32Array | Int32Array | Uint8Array>; };
-type ModelLike = { fit(xs: TensorLike, ys: TensorLike, options: { epochs: number; verbose: number; shuffle: boolean; batchSize: number }): Promise<unknown>; predict(xs: TensorLike): TensorLike; dispose(): void; };
-type TFJSLike = { sequential(): { add(layer: unknown): void; compile(options: unknown): void; fit: ModelLike['fit']; predict: ModelLike['predict']; dispose: ModelLike['dispose']; }; layers: { dense(options: { inputShape?: number[]; units: number; activation?: string; }): unknown; }; tensor2d(values: Float32Array, shape: [number, number]): TensorLike; train: { adam(learningRate: number): unknown; }; };
-
-type IdleDeadlineLike = { timeRemaining(): number; didTimeout: boolean; };
-type IdleWindow = Window & { requestIdleCallback?: (callback: (deadline: IdleDeadlineLike) => void, options?: { timeout: number }) => number; tf?: TFJSLike; };
+const MAX_SAMPLES = 1800;
+const SAMPLES_KEY = 'webar-motion-samples';
+const INPUT_FRAMES = 8;
+const INPUT_WIDTH = 9;
+const OUTPUT_WIDTH = 7;
 
 function readSamples(): MotionSample[] {
-  if (typeof sessionStorage === 'undefined') return [];
-  const raw = sessionStorage.getItem(STORAGE_KEY);
-  if (!raw) return [];
-  try { const parsed = JSON.parse(raw) as MotionSample[]; return Array.isArray(parsed) ? parsed.slice(-SAMPLE_LIMIT) : []; }
-  catch { return []; }
+  const raw = sessionStorage.getItem(SAMPLES_KEY) ?? '[]';
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(isMotionSample);
 }
 
-function writeSamples(samples: readonly MotionSample[]): void {
-  if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(STORAGE_KEY, JSON.stringify(samples.slice(-SAMPLE_LIMIT)));
+function isMotionSample(value: unknown): value is MotionSample {
+  if (typeof value !== 'object' || value === null) return false;
+  const sample = value as { t?: unknown; pos?: unknown; vel?: unknown; quat?: unknown };
+  return typeof sample.t === 'number' && isTuple(sample.pos, 3) && isTuple(sample.vel, 3) && isTuple(sample.quat, 4);
 }
 
-function toSample(state: FusionState): MotionSample {
-  return [state.timestamp, state.position[0], state.position[1], state.position[2], state.velocity[0], state.velocity[1], state.velocity[2], state.acceleration[0], state.acceleration[1], state.acceleration[2], state.orientation[0], state.orientation[1], state.orientation[2], state.orientation[3], state.quaternionUKF?.[0] ?? state.orientation[3], state.scaleUKF];
+function isTuple(value: unknown, length: number): value is readonly number[] {
+  return Array.isArray(value) && value.length === length && value.every((entry) => typeof entry === 'number' && Number.isFinite(entry));
 }
 
-function makeTrainingMatrices(samples: readonly MotionSample[]): { xs: Float32Array; ys: Float32Array; rows: number } {
-  const rows = Math.max(0, samples.length - 1);
-  const xs = new Float32Array(rows * INPUT);
-  const ys = new Float32Array(rows * OUTPUT);
-  for (let r = 0; r < rows; r += 1) {
-    const current = samples[r]; const next = samples[r + 1];
-    xs.set(current.slice(1, 10), r * INPUT);
-    ys[r * OUTPUT] = next[1] - current[1]; ys[r * OUTPUT + 1] = next[2] - current[2]; ys[r * OUTPUT + 2] = next[3] - current[3];
-    ys[r * OUTPUT + 3] = next[13] - current[13]; ys[r * OUTPUT + 4] = next[10] - current[10]; ys[r * OUTPUT + 5] = next[11] - current[11]; ys[r * OUTPUT + 6] = next[12] - current[12];
+function toLstmGateWeights(rawWeights: Float32Array[]): Float32Array[] {
+  if (rawWeights.length < 5) return rawWeights;
+  const kernel = rawWeights[0];
+  const recurrent = rawWeights[1];
+  const bias = rawWeights[2];
+  const projection = rawWeights[3];
+  const projectionBias = rawWeights[4];
+  const hidden = 16;
+  const split = (source: Float32Array, rows: number, gate: number): Float32Array => {
+    const out = new Float32Array(rows * hidden);
+    for (let row = 0; row < rows; row += 1) for (let col = 0; col < hidden; col += 1) out[row * hidden + col] = source[row * hidden * 4 + gate * hidden + col] ?? 0;
+    return out;
+  };
+  const gateBias = (gate: number): Float32Array => bias.slice(gate * hidden, gate * hidden + hidden);
+  return [split(kernel, INPUT_WIDTH, 1), split(kernel, INPUT_WIDTH, 0), split(kernel, INPUT_WIDTH, 2), split(kernel, INPUT_WIDTH, 3), split(recurrent, hidden, 1), split(recurrent, hidden, 0), split(recurrent, hidden, 2), split(recurrent, hidden, 3), gateBias(1), gateBias(0), gateBias(2), gateBias(3), projection.slice(0, hidden * OUTPUT_WIDTH), projectionBias.slice(0, OUTPUT_WIDTH)];
+}
+
+function onIdle(): Promise<void> {
+  if (typeof window !== 'undefined' && window.requestIdleCallback) {
+    return new Promise((resolve) => window.requestIdleCallback?.(() => resolve(), { timeout: 500 }) ?? resolve());
   }
-  return { xs, ys, rows };
+  return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
-function requestIdle(callback: () => void): void {
-  if (typeof window === 'undefined') return;
-  const idleWindow = window as IdleWindow;
-  if (idleWindow.requestIdleCallback) idleWindow.requestIdleCallback(() => callback(), { timeout: 2000 });
-  else window.setTimeout(callback, 0);
+/** Captures one motion sample into sessionStorage, keeping at most 60 seconds at 30 fps. */
+export function captureSample(sample: MotionSample): void {
+  const all = readSamples();
+  if (all.length >= MAX_SAMPLES) all.shift();
+  all.push(sample);
+  sessionStorage.setItem(SAMPLES_KEY, JSON.stringify(all));
 }
 
-export class MotionDataCapture {
-  private samples: MotionSample[] = readSamples();
-  private lastTimestamp = this.samples.length > 0 ? this.samples[this.samples.length - 1][0] : -Infinity;
-  private training = false;
-
-  capture(state: FusionState): void {
-    if (state.timestamp - this.lastTimestamp < MIN_SAMPLE_INTERVAL_MS) return;
-    this.lastTimestamp = state.timestamp;
-    this.samples.push(toSample(state));
-    if (this.samples.length > SAMPLE_LIMIT) this.samples = this.samples.slice(-SAMPLE_LIMIT);
-    writeSamples(this.samples);
-    if (this.samples.length === SAMPLE_LIMIT) this.scheduleTraining();
+/** Trains a tiny in-browser LSTM on captured session motion and persists its 14 tensors. */
+export async function trainOnCapturedData(): Promise<void> {
+  const samples = readSamples();
+  if (samples.length < 100) {
+    console.warn('[LSTM] Insufficient data for training');
+    return;
   }
-
-  clear(): void { this.samples = []; this.lastTimestamp = -Infinity; if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(STORAGE_KEY); }
-
-  async trainNow(tf = (typeof window !== 'undefined' ? (window as IdleWindow).tf : undefined), hiddenSize = 16): Promise<PredictiveLSTMWeights | null> {
-    if (!tf || this.samples.length < SAMPLE_LIMIT) return null;
-    const { xs, ys, rows } = makeTrainingMatrices(this.samples);
-    if (rows < 1) return null;
-    const model = tf.sequential();
-    model.add(tf.layers.dense({ inputShape: [INPUT], units: hiddenSize, activation: 'tanh' }));
-    model.add(tf.layers.dense({ units: OUTPUT }));
-    model.compile({ optimizer: tf.train.adam(0.003), loss: 'meanSquaredError' });
-    const xTensor = tf.tensor2d(xs, [rows, INPUT]);
-    const yTensor = tf.tensor2d(ys, [rows, OUTPUT]);
-    try {
-      await model.fit(xTensor, yTensor, { epochs: TRAINING_EPOCHS, verbose: 0, shuffle: false, batchSize: 32 });
-      const predictions = model.predict(xTensor);
-      const trained = await predictions.data();
-      predictions.dispose();
-      const weights = PredictiveLSTM.createDefaultWeights(hiddenSize);
-      for (let o = 0; o < OUTPUT; o += 1) weights.projectionBias[o] = trained[o] ?? 0;
-      await MLWeightManager.update(LSTM_WEIGHT_KEY, hiddenSize, weights);
-      return weights;
-    } finally { xTensor.dispose(); yTensor.dispose(); model.dispose(); }
+  await onIdle();
+  await import('@tensorflow/tfjs-backend-webgpu');
+  const tf = await import('@tensorflow/tfjs-core');
+  await tf.setBackend('webgpu').catch(async () => { await tf.setBackend('webgl'); });
+  await tf.ready();
+  const x: number[][][] = [];
+  const y: number[][] = [];
+  for (let i = INPUT_FRAMES; i < samples.length; i += 1) {
+    x.push(samples.slice(i - INPUT_FRAMES, i).map((sample) => [...sample.pos, ...sample.vel, ...sample.quat.slice(0, 3)]));
+    y.push([...samples[i].pos, ...samples[i].quat]);
   }
-
-  private scheduleTraining(): void {
-    if (this.training) return;
-    this.training = true;
-    requestIdle(() => { void this.trainNow().finally(() => { this.training = false; }); });
+  const model = tf.sequential({ layers: [tf.layers.lstm({ units: 16, inputShape: [INPUT_FRAMES, INPUT_WIDTH], returnSequences: false }), tf.layers.dense({ units: OUTPUT_WIDTH })] });
+  model.compile({ optimizer: tf.train.adam(0.001), loss: 'meanSquaredError' });
+  const xTensor = tf.tensor3d(x);
+  const yTensor = tf.tensor2d(y);
+  try {
+    await model.fit(xTensor, yTensor, { epochs: 10, batchSize: 32, callbacks: { onEpochEnd: async (epoch, logs) => console.info(`[LSTM train] epoch ${epoch} loss=${Number(logs?.loss ?? 0).toFixed(4)}`) } });
+    const weights = model.getWeights().map((weight) => new Float32Array(weight.dataSync()));
+    await saveWeights(LSTM_WEIGHT_KEY, toLstmGateWeights(weights));
+  } finally {
+    xTensor.dispose();
+    yTensor.dispose();
+    model.dispose();
   }
+  sessionStorage.removeItem(SAMPLES_KEY);
+  console.info('[LSTM] Training complete — weights saved to IDB');
 }
+
+console.log('[MotionDataCapture] session-only capture and micro-training ready');
+// VERIFY: Captured motion trains during idle time and saves 14 LSTM tensors to IDB.
