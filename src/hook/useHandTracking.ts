@@ -9,21 +9,13 @@
 
 import { useEffect, useRef, useCallback, useState, type RefObject } from 'react';
 import type { HandTrackingResult, LoadingState, TrackingMetrics } from '../types/ar.types';
+import { protocolMessage, validateMediaPipeOutbound } from '../protocol/workerProtocol';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
 import { createVerifiedWorker } from '../utils/SecurityUtils';
 
 const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
 const MEDIAPIPE_WASM_PATH = 'wasm/vision_wasm_internal.wasm';
-
-type HandTrackingWorkerOutMessage =
-  | { type: 'READY' }
-  | { type: 'PROGRESS'; payload: { phase: 'wasm' | 'model'; progress: number } }
-  | { type: 'RESULT'; payload: HandTrackingResult & { metrics?: TrackingMetrics } }
-  | { type: 'DEGRADED'; payload: { metrics: TrackingMetrics } }
-  | { type: 'ERROR'; payload: { message: string; state?: string } }
-  | { type: 'PAUSED' }
-  | { type: 'DESTROYED' };
 
 /**
  * Public controls and state references for hand tracking.
@@ -42,7 +34,7 @@ export interface UseHandTrackingReturn {
 /**
  * Creates and controls the verified MediaPipe hand-tracking worker lifecycle.
  */
-export function useHandTracking(): UseHandTrackingReturn {
+export function useHandTracking(enabled = true): UseHandTrackingReturn {
   const workerRef = useRef<Worker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeRef = useRef(false);
@@ -86,12 +78,12 @@ export function useHandTracking(): UseHandTrackingReturn {
 
     if (!worker) return;
 
-    worker.postMessage({ type: 'DESTROY' });
+    worker.postMessage(protocolMessage({ type: 'DESTROY' }));
     const killTimer = window.setTimeout(() => worker.terminate(), 300);
     worker.addEventListener(
       'message',
-      (event: MessageEvent<HandTrackingWorkerOutMessage>) => {
-        if (event.data?.type === 'DESTROYED') {
+      (event: MessageEvent<unknown>) => {
+        if (validateMediaPipeOutbound(event.data) && event.data.type === 'DESTROYED') {
           window.clearTimeout(killTimer);
           worker.terminate();
         }
@@ -103,6 +95,7 @@ export function useHandTracking(): UseHandTrackingReturn {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     let worker: Worker | null = null;
 
@@ -145,8 +138,12 @@ export function useHandTracking(): UseHandTrackingReturn {
 
       workerRef.current = worker;
 
-      worker.addEventListener('message', (event: MessageEvent<HandTrackingWorkerOutMessage>) => {
+      worker.addEventListener('message', (event: MessageEvent<unknown>) => {
         const message = event.data;
+        if (!validateMediaPipeOutbound(message)) {
+          window.dispatchEvent(new CustomEvent('ar:protocol-error', { detail: { worker: 'mediapipe', reason: 'INVALID_MESSAGE' } }));
+          return;
+        }
 
         switch (message.type) {
           case 'PROGRESS': {
@@ -186,7 +183,7 @@ export function useHandTracking(): UseHandTrackingReturn {
         }
       });
 
-      worker.postMessage({ type: 'INIT', payload: { wasmBlobUrl, modelUrl: modelUrl.toString() } });
+      worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl, modelUrl: modelUrl.toString() } }));
     }
 
     createWorker().catch((error: unknown) => {
@@ -201,7 +198,7 @@ export function useHandTracking(): UseHandTrackingReturn {
       cancelled = true;
       destroyWorker(worker);
     };
-  }, [destroyWorker]);
+  }, [destroyWorker, enabled]);
 
   const processFrame = useCallback(() => {
     if (!activeRef.current || isPausedRef.current || !workerReadyRef.current) return;
@@ -220,7 +217,7 @@ export function useHandTracking(): UseHandTrackingReturn {
     inFlightRef.current = true;
     lastFrameSentAtRef.current = now;
     worker.postMessage(
-      {
+      protocolMessage({
         type: 'DETECT',
         payload: {
           buffer: frame.buffer,
@@ -228,7 +225,7 @@ export function useHandTracking(): UseHandTrackingReturn {
           height: frame.height,
           timestamp: now,
         },
-      },
+      }),
       [frame.buffer],
     );
   }, []);
@@ -254,18 +251,18 @@ export function useHandTracking(): UseHandTrackingReturn {
     activeRef.current = active;
     if (active && isPausedRef.current) {
       isPausedRef.current = false;
-      workerRef.current?.postMessage({ type: 'RESUME' });
+      workerRef.current?.postMessage(protocolMessage({ type: 'RESUME' }));
     }
   }, []);
 
   const pause = useCallback(() => {
     isPausedRef.current = true;
-    workerRef.current?.postMessage({ type: 'PAUSE' });
+    workerRef.current?.postMessage(protocolMessage({ type: 'PAUSE' }));
   }, []);
 
   const resume = useCallback(() => {
     isPausedRef.current = false;
-    workerRef.current?.postMessage({ type: 'RESUME' });
+    workerRef.current?.postMessage(protocolMessage({ type: 'RESUME' }));
   }, []);
 
   const getMetrics = useCallback(() => metricsRef.current, []);

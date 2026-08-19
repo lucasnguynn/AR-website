@@ -15,24 +15,10 @@ import {
 } from '@mediapipe/tasks-vision';
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Protocol types
+// Versioned protocol (shared with the main thread)
 // ──────────────────────────────────────────────────────────────────────────────
 
-type WorkerState = 'INIT' | 'READY' | 'PROCESS' | 'DEGRADED' | 'DESTROY';
-
-type WorkerInMessage =
-  | { type: 'INIT'; payload: { wasmBlobUrl: string; modelUrl: string } }
-  | { type: 'DETECT'; payload: FramePayload }
-  | { type: 'PAUSE' }
-  | { type: 'RESUME' }
-  | { type: 'DESTROY' };
-
-interface FramePayload {
-  buffer: ArrayBuffer;
-  width: number;
-  height: number;
-  timestamp: number;
-}
+import { protocolMessage, validateMediaPipeInbound, type MediaPipeFramePayload as FramePayload, type UnversionedMediaPipeOutboundMessage as WorkerOutMessage, type MediaPipeWorkerState as WorkerState } from '../protocol/workerProtocol';
 
 interface RingLandmark {
   index: HandLandmarkIndex;
@@ -49,15 +35,6 @@ interface TrackingResult {
   confidence: number;
   timestamp: number;
 }
-
-type WorkerOutMessage =
-  | { type: 'READY' }
-  | { type: 'PROGRESS'; payload: { phase: 'wasm' | 'model'; progress: number } }
-  | { type: 'RESULT'; payload: { hands: TrackingResult[]; detected: boolean; frameTimestamp: number; metrics: TrackingMetrics } }
-  | { type: 'ERROR'; payload: { message: string; state: WorkerState } }
-  | { type: 'DEGRADED'; payload: { metrics: TrackingMetrics } }
-  | { type: 'PAUSED' }
-  | { type: 'DESTROYED' };
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -148,7 +125,7 @@ function getMetrics(): TrackingMetrics {
 
 function postMessageSafe(message: WorkerOutMessage): void {
   if (state !== 'DESTROY') {
-    self.postMessage(message);
+    self.postMessage(protocolMessage(message));
   }
 }
 
@@ -325,10 +302,14 @@ function destroyWorker(): void {
     handLandmarker = null;
   }
 
-  self.postMessage({ type: 'DESTROYED' } satisfies WorkerOutMessage);
+  self.postMessage(protocolMessage({ type: 'DESTROYED' }));
 }
 
-self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
+self.onmessage = (event: MessageEvent<unknown>) => {
+  if (!validateMediaPipeInbound(event.data)) {
+    reportError('Rejected invalid or incompatible worker protocol message');
+    return;
+  }
   const message = event.data;
 
   if (state === 'DESTROY') return;

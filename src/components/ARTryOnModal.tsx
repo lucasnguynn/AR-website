@@ -13,7 +13,9 @@ import { useCamera, startCameraFromRef, resetCamera } from '../hook/useCamera';
 import { useHandTracking } from '../hook/useHandTracking';
 import { useLoadingState } from '../hook/useLoadingState';
 import { useAmbientLightAdapter } from '../utils/AmbientLightAdapter';
-import { detectARExperience, type ARExperience } from '../utils/DeviceProfiler';
+import { DeviceProfiler } from '../utils/DeviceProfiler';
+import { AROrchestrator, type ARDiagnostics } from '../ar/AROrchestrator';
+import { WebXRAdapter, createCameraCompositeAdapter, createInteractive3DAdapter, createQuickLookAdapter } from '../ar/adapters';
 import { assertLocalCameraPrivacy } from '../utils/SecurityUtils';
 import { estimateRingSizeFromPinch, type RingSizeEstimate } from '../utils/SizingTool';
 import { ARControls } from './ARControls';
@@ -47,17 +49,24 @@ function hasWebGLSupport(): boolean {
   return true;
 }
 
+function rendererKind(): 'webgpu' | 'webgl2' | 'webgl1' {
+  if ('gpu' in navigator) return 'webgpu';
+  const canvas = document.createElement('canvas');
+  return canvas.getContext('webgl2') ? 'webgl2' : 'webgl1';
+}
+
 export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const closeRequestedRef = useRef(false);
   const trackingTimeoutRef = useRef<number | null>(null);
   const [criticalError, setCriticalError] = useState<CriticalError | null>(null);
-  const { resultRef, loadingState, startTracking, setActive, destroy } = useHandTracking();
+  const [trackingEnabled, setTrackingEnabled] = useState(false);
+  const { resultRef, loadingState, startTracking, setActive, destroy } = useHandTracking(trackingEnabled);
   const { isLoading, markLoaded } = useLoadingState();
   const ambientLight = useAmbientLightAdapter(videoRef);
   const [hudVisible, setHudVisible] = useState(false);
   const [sizeEstimate, setSizeEstimate] = useState<RingSizeEstimate | null>(null);
-  const [arExp, setArExp] = useState<ARExperience | null>(null);
+  const [diagnostics, setDiagnostics] = useState<ARDiagnostics | null>(null);
   const {
     cameraState,
     facingMode,
@@ -68,6 +77,34 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     recoverCamera,
     stopCamera,
   } = useCamera();
+
+  const orchestrator = useMemo(() => new AROrchestrator([
+    new WebXRAdapter(),
+    createQuickLookAdapter(() => /iPad|iPhone|iPod/.test(navigator.userAgent) && DeviceProfiler.checkQuickLookSupport()),
+    createCameraCompositeAdapter(
+      () => typeof navigator.mediaDevices?.getUserMedia === 'function' && hasWebGLSupport(),
+      {
+        start: async () => {
+          const video = videoRef.current;
+          if (!video) throw new Error('Camera preview is not mounted.');
+          await startCameraFromRef(video, 'user');
+          setTrackingEnabled(true);
+          startTracking(video);
+          setActive(true);
+        },
+        stop: () => {
+          setActive(false);
+          setTrackingEnabled(false);
+          destroy();
+          stopCamera();
+          assertLocalCameraPrivacy(videoRef.current);
+          resetCamera();
+        },
+      },
+      rendererKind(),
+    ),
+    createInteractive3DAdapter(rendererKind()),
+  ], setDiagnostics), [destroy, setActive, startTracking, stopCamera]);
 
   const adaptiveDpr = useMemo<[number, number]>(() => [1, Math.min(window.devicePixelRatio, 1.75)], []);
   const combinedProgress = Math.min(100, Math.round(loadingState.mediapipe * 0.7 + (isLoading ? 0 : 30)));
@@ -80,13 +117,8 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
       window.clearTimeout(trackingTimeoutRef.current);
       trackingTimeoutRef.current = null;
     }
-    setActive(false);
-    destroy();
-    stopCamera();
-    assertLocalCameraPrivacy(videoRef.current);
-    resetCamera();
-    onClose();
-  }, [destroy, onClose, setActive, stopCamera]);
+    void orchestrator.stop().finally(onClose);
+  }, [onClose, orchestrator]);
 
   const retryExperience = useCallback(async () => {
     setCriticalError(null);
@@ -102,53 +134,16 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   }, [cameraHasError, facingMode, recoverCamera, resultRef, startTracking]);
 
   useEffect(() => {
-    let active = true;
-    detectARExperience().then((experience) => {
-      if (active) setArExp(experience);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (arExp === null || arExp === 'QUICK_LOOK' || arExp === 'INTERACTIVE_3D') return;
-
-    if (!hasWebGLSupport()) {
-      setCriticalError({
-        title: 'WebGL unavailable',
-        message: 'This device or browser cannot render the AR preview. Try another browser or close this view.',
-        retryable: false,
-      });
-      return;
-    }
-
-    setActive(true);
+    void orchestrator.start().catch((error: unknown) => setCriticalError({
+      title: 'AR unavailable',
+      message: error instanceof Error ? error.message : 'No AR experience could start.',
+      retryable: false,
+    }));
     return () => {
       if (trackingTimeoutRef.current !== null) window.clearTimeout(trackingTimeoutRef.current);
-      setActive(false);
-      destroy();
-      stopCamera();
-      assertLocalCameraPrivacy(videoRef.current);
-      resetCamera();
+      void orchestrator.stop();
     };
-  }, [arExp, destroy, setActive, stopCamera]);
-
-  useEffect(() => {
-    if (arExp === null || arExp === 'QUICK_LOOK' || arExp === 'INTERACTIVE_3D' || criticalError || !videoRef.current || cameraState !== 'IDLE') return;
-
-    startCameraFromRef(videoRef.current, 'user')
-      .then(() => {
-        if (videoRef.current) startTracking(videoRef.current);
-      })
-      .catch(() => {
-        setCriticalError({
-          title: 'Camera unavailable',
-          message: 'Allow camera access in your browser settings, then retry. Your camera feed stays on this device only.',
-          retryable: true,
-        });
-      });
-  }, [arExp, cameraState, criticalError, startTracking]);
+  }, [orchestrator]);
 
   useEffect(() => {
     if (!cameraHasError || !cameraLastError) return;
@@ -224,7 +219,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [closeAR]);
 
-  if (arExp === 'QUICK_LOOK') {
+  if (diagnostics?.experience === 'quick-look') {
     return (
       <FallbackModal title="View in your space" onClose={closeAR}>
         <QuickLookViewer
@@ -239,13 +234,13 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     );
   }
 
-  if (arExp === 'INTERACTIVE_3D') {
+  if (diagnostics?.experience === 'interactive-3d' || diagnostics?.experience === 'webxr') {
     return (
-      <FallbackModal title="Interactive 3D preview" onClose={closeAR}>
+      <FallbackModal title={diagnostics.experience === 'webxr' ? 'WebXR session active' : 'Interactive 3D preview'} onClose={closeAR}>
         <div className="flex h-52 w-52 items-center justify-center rounded-3xl border border-white/10 bg-neutral-900 text-7xl" aria-label={QUICK_LOOK_PRODUCT_NAME}>
           💍
         </div>
-        <p className="mt-4 text-center text-sm text-white/65">Camera AR is unavailable, so you can still inspect the product in a static 3D-safe fallback.</p>
+        <p className="mt-4 text-center text-sm text-white/65">{diagnostics.experience === 'webxr' ? 'The immersive AR session is active. Native rendering integration follows in the WebXR rendering phase.' : 'Camera AR is unavailable, so you can still inspect the product in a static 3D-safe fallback.'}</p>
       </FallbackModal>
     );
   }

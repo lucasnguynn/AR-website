@@ -18,7 +18,7 @@
  *   - Hand tracking orchestration (handled by useHandTracking.ts)
  *   - Ring pose mathematics (handled by coordinateMapping.ts)
  *   - 3D rendering (handled by RingScene.tsx)
- *   - UI state management (handled by useARStore.ts)
+ *   - Experience selection and UI state management (handled by AROrchestrator)
  *   - React state (handled by useCamera.ts hook)
  */
 

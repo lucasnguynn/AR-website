@@ -8,18 +8,10 @@
 export type DeviceClass = 'HIGH' | 'MEDIUM' | 'LOW' | 'UNSUPPORTED';
 /** Legacy AR capability labels used by the profiler summary. */
 export type ARCapability = 'WEBXR' | 'QUICK_LOOK';
-/** Progressive AR experience selected for the current browser. */
-export type ARExperience = 'WEBXR_FULL' | 'QUICK_LOOK' | 'PSEUDO_AR' | 'INTERACTIVE_3D';
 
 interface NavigatorWithDeviceMemory extends Navigator {
   readonly deviceMemory?: number;
 }
-
-type NavigatorWithXR = Navigator & {
-  readonly xr?: {
-    isSessionSupported(sessionMode: 'immersive-ar'): Promise<boolean>;
-  };
-};
 
 /** Device capability summary used to choose the best AR route. */
 export interface DeviceProfile {
@@ -35,11 +27,6 @@ export interface DeviceProfile {
   details: string[];
 }
 
-function isIOSDevice(): boolean {
-  const legacyStreamWindow = window as Window & { MSStream?: unknown };
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !legacyStreamWindow.MSStream;
-}
-
 function hasQuickLookAnchorSupport(): boolean {
   if (typeof document === 'undefined') {
     return false;
@@ -47,34 +34,6 @@ function hasQuickLookAnchorSupport(): boolean {
 
   const anchor = document.createElement('a');
   return typeof anchor.relList?.supports === 'function' && anchor.relList.supports('ar');
-}
-
-/**
- * Detects the most capable AR experience available on this browser, in priority order.
- */
-export async function detectARExperience(): Promise<ARExperience> {
-  const xrNavigator = navigator as NavigatorWithXR;
-
-  if (xrNavigator.xr) {
-    const supportsImmersiveAr = await xrNavigator.xr.isSessionSupported('immersive-ar').catch(() => false);
-    if (supportsImmersiveAr) {
-      console.log('[AR Experience] WEBXR_FULL | ARCore available');
-      return 'WEBXR_FULL';
-    }
-  }
-
-  if (isIOSDevice() && hasQuickLookAnchorSupport()) {
-    console.log('[AR Experience] QUICK_LOOK | iOS | Quick Look supported');
-    return 'QUICK_LOOK';
-  }
-
-  if (typeof navigator.mediaDevices?.getUserMedia === 'function') {
-    console.log('[AR Experience] PSEUDO_AR | camera compositing available');
-    return 'PSEUDO_AR';
-  }
-
-  console.log('[AR Experience] INTERACTIVE_3D | no camera');
-  return 'INTERACTIVE_3D';
 }
 
 /** Capability profiler for camera, graphics, worker, and AR support. */

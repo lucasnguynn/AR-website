@@ -1,27 +1,16 @@
 // FILE: src/workers/depth.worker.ts
 import * as ort from 'onnxruntime-web/webgpu';
+import { protocolMessage, validateDepthInbound, type DepthTier } from '../protocol/workerProtocol';
 
 type WorkerGlobal = typeof self & {
   caches?: CacheStorage;
   postMessage(message: unknown, transfer?: Transferable[]): void;
-  addEventListener(type: 'message', listener: (event: MessageEvent<RequestMessage>) => void): void;
+  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
 };
 
-type DepthTier = 'monocular-depth' | 'degraded-depth';
+const workerScope = self as WorkerGlobal;
 type OrtTensor = { data: Float32Array | readonly number[]; dims: readonly number[] };
 type OrtSession = { inputNames: readonly string[]; outputNames: readonly string[]; run(feeds: Record<string, ort.Tensor>): Promise<Record<string, OrtTensor>> };
-
-type RequestMessage =
-  | { type: 'init'; modelUrl?: string }
-  | { type: 'estimate'; frameId: number; image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCanvasElement; tier?: DepthTier };
-
-type ResponseMessage =
-  | { type: 'ready' }
-  | { type: 'depth'; frameId: number; width: number; height: number; depth: Float32Array; tier: DepthTier; averageMs: number }
-  | { type: 'skipped'; frameId: number }
-  | { type: 'error'; frameId?: number; message: string };
-
-const workerScope = self as WorkerGlobal;
 const INPUT_SIZE = 518;
 const MODEL_CACHE = 'webar-models-v1';
 const DEFAULT_MODEL_URL = '/models/depth/depth_anything_v2_small.onnx';
@@ -104,7 +93,7 @@ async function estimate(frameId: number, image: ImageBitmap | ImageData | Offscr
   const now = performance.now();
   const minimumIntervalMs = tier === 'degraded-depth' ? 100 : 33;
   if (busy || now - lastInferenceAt < minimumIntervalMs) {
-    workerScope.postMessage({ type: 'skipped', frameId } satisfies ResponseMessage);
+    workerScope.postMessage(protocolMessage({ type: 'DEGRADED', payload: { frameId, reason: 'backpressure' } }));
     return;
   }
   busy = true;
@@ -122,23 +111,34 @@ async function estimate(frameId: number, image: ImageBitmap | ImageData | Offscr
     averageMs = averageMs === 0 ? elapsedMs : averageMs * 0.8 + elapsedMs * 0.2;
     lastInferenceAt = performance.now();
     const reportedTier: DepthTier = averageMs > 30 ? 'degraded-depth' : tier;
-    workerScope.postMessage({ type: 'depth', frameId, width: INPUT_SIZE, height: INPUT_SIZE, depth, tier: reportedTier, averageMs } satisfies ResponseMessage, [depth.buffer]);
+    workerScope.postMessage(protocolMessage({ type: 'RESULT', payload: { frameId, width: INPUT_SIZE, height: INPUT_SIZE, depth, tier: reportedTier, averageMs } }), [depth.buffer]);
   } finally {
     busy = false;
     if (image instanceof ImageBitmap) image.close();
   }
 }
 
-workerScope.addEventListener('message', (event: MessageEvent<RequestMessage>) => {
-  const message = event.data;
-  if (message.type === 'init') {
-    init(message.modelUrl)
-      .then(() => workerScope.postMessage({ type: 'ready' } satisfies ResponseMessage))
-      .catch((error: unknown) => workerScope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) } satisfies ResponseMessage));
+workerScope.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (!validateDepthInbound(event.data)) {
+    workerScope.postMessage(protocolMessage({ type: 'ERROR', payload: { message: 'Rejected invalid or incompatible worker protocol message' } }));
     return;
   }
-
-  estimate(message.frameId, message.image, message.tier)
-    .catch((error: unknown) => workerScope.postMessage({ type: 'error', frameId: message.frameId, message: error instanceof Error ? error.message : String(error) } satisfies ResponseMessage));
+  const message = event.data;
+  if (message.type === 'INIT') {
+    init(message.payload.modelUrl)
+      .then(() => workerScope.postMessage(protocolMessage({ type: 'READY' })))
+      .catch((error: unknown) => workerScope.postMessage(protocolMessage({ type: 'ERROR', payload: { message: error instanceof Error ? error.message : String(error) } })));
+    return;
+  }
+  if (message.type === 'DESTROY') {
+    session = null; canvas = null; context = null;
+    workerScope.postMessage(protocolMessage({ type: 'DESTROYED' }));
+    workerScope.close();
+    return;
+  }
+  if (message.type !== 'DETECT') return;
+  const { frameId, image, tier } = message.payload;
+  estimate(frameId, image, tier)
+    .catch((error: unknown) => workerScope.postMessage(protocolMessage({ type: 'ERROR', payload: { frameId, message: error instanceof Error ? error.message : String(error) } })));
 });
 // VERIFY: console.log('ONNX Runtime WebGPU uses Cache API model reuse with webgpu/wasm fallback')

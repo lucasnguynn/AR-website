@@ -10,8 +10,9 @@ import React, { Suspense, useState, useCallback, useRef, useEffect } from 'react
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Environment, ContactShadows, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { FallbackMode } from '../store/useARStore';
 import { disposeRingScene, useRingModel } from '../hook/useRingModel';
+
+export type FallbackMode = 'NONE' | 'PERMISSION_DENIED' | 'DEVICE_UNSUPPORTED' | 'CAMERA_ERROR';
 
 interface Fallback3DViewerProps {
   ringModelUrl: string;
