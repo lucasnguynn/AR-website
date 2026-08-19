@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 GLB_MAGIC = 0x46546C67
 JSON_CHUNK_TYPE = 0x4E4F534A
@@ -102,47 +101,40 @@ def triples(indices: list[int]) -> Iterable[tuple[int, int, int]]:
 
 
 def convert(glb_path: Path) -> Path:
-    """Convert one GLB file to a USDZ package and return its path."""
+    """Convert GLB triangles to a self-contained, uncompressed USDZ package."""
     glb = read_glb(glb_path)
     meshes = object_list(glb.json_doc, "meshes")
-    usdc_path = glb_path.with_suffix(".usdc")
-    usdz_path = glb_path.with_suffix(".usdz")
-
-    stage = Usd.Stage.CreateNew(str(usdc_path))
-    root = UsdGeom.Xform.Define(stage, "/Root")
-    stage.SetDefaultPrim(root.GetPrim())
-    material = UsdShade.Material.Define(stage, "/Root/DefaultMaterial")
-    shader = UsdShade.Shader.Define(stage, "/Root/DefaultMaterial/PreviewSurface")
-    shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.0, 0.82, 0.36))
-    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.32)
-    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(1.0)
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-
-    for mesh_index, mesh_doc in enumerate(meshes):
+    lines = ["#usda 1.0", "(", '    defaultPrim = "Root"', '    metersPerUnit = 1', '    upAxis = "Y"', ")", 'def Xform "Root" {']
+    mesh_number = 0
+    for mesh_doc in meshes:
         primitives = mesh_doc.get("primitives", [])
         if not isinstance(primitives, list):
             continue
-        for primitive_index, primitive in enumerate(primitives):
+        for primitive in primitives:
             if not isinstance(primitive, dict):
                 continue
             attributes = primitive.get("attributes", {})
             if not isinstance(attributes, dict) or "POSITION" not in attributes:
                 continue
-            points = [Gf.Vec3f(*values[:3]) for values in accessor_values(glb, int(attributes["POSITION"]))]
+            points = accessor_values(glb, int(attributes["POSITION"]))
             indices = scalar_indices(glb, int(primitive["indices"])) if "indices" in primitive else list(range(len(points)))
-            face_vertex_indices = [index for tri in triples(indices) for index in tri]
-            face_vertex_counts = [3 for _ in range(len(face_vertex_indices) // 3)]
-            usd_mesh = UsdGeom.Mesh.Define(stage, f"/Root/Mesh_{mesh_index}_{primitive_index}")
-            usd_mesh.CreatePointsAttr(points)
-            usd_mesh.CreateFaceVertexCountsAttr(face_vertex_counts)
-            usd_mesh.CreateFaceVertexIndicesAttr(face_vertex_indices)
-            UsdShade.MaterialBindingAPI(usd_mesh).Bind(material)
-
-    stage.Save()
-    with zipfile.ZipFile(usdz_path, "w", compression=zipfile.ZIP_STORED) as archive:
-        archive.write(usdc_path, arcname=usdc_path.name)
-    usdc_path.unlink(missing_ok=True)
+            indices = [index for tri in triples(indices) for index in tri]
+            lines.extend([f'    def Mesh "Mesh_{mesh_number}" {{', f'        int[] faceVertexCounts = [{", ".join("3" for _ in range(len(indices) // 3))}]', f'        int[] faceVertexIndices = [{", ".join(map(str, indices))}]', f'        point3f[] points = [{", ".join(f"({v[0]:.7g}, {v[1]:.7g}, {v[2]:.7g})" for v in points)}]', '        uniform token subdivisionScheme = "none"', "    }"])
+            mesh_number += 1
+    lines.append("}")
+    if mesh_number == 0:
+        raise ValueError(f"{glb_path} contains no convertible mesh primitives")
+    payload = ("\n".join(lines) + "\n").encode("utf-8")
+    usdz_path = glb_path.with_suffix(".usdz")
+    info = zipfile.ZipInfo("model.usda")
+    info.compress_type = zipfile.ZIP_STORED
+    # USDZ requires each file payload to begin on a 64-byte boundary.
+    base_header_size = 30 + len(info.filename.encode("utf-8"))
+    padding = (-base_header_size) % 64
+    if padding:
+        info.extra = b"\x00\x00" + struct.pack("<H", padding - 4) + (b"\x00" * (padding - 4))
+    with zipfile.ZipFile(usdz_path, "w") as archive:
+        archive.writestr(info, payload)
     return usdz_path
 
 

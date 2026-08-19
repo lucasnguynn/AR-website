@@ -35,35 +35,25 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      # - name: Lint (zero warnings)
-      #   run: npx eslint src/ --max-warnings=0 --ext .ts,.tsx
+      - name: Lint (zero warnings)
+        run: npm run lint
 
-      # - name: Unit tests
-      #   run: npx vitest run --reporter=verbose
+      - name: Unit tests
+        run: npm test
 
-      - name: Build
-        run: npx vite build
+      - name: Validate required assets
+        run: npm run validate:assets
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ASSET_SECRET: ${{ secrets.ASSET_SECRET }}
-          NODE_ENV: production
 
-      - name: Sign asset manifest
-        run: node scripts/sign-assets.js
+      - name: Build final deployment artifact
+        run: npm run build
         env:
-          ASSET_SECRET: ${{ secrets.ASSET_SECRET }}
-
-      - name: Generate SRI hashes
-        run: node scripts/generate-sri.js
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          NODE_ENV: production
 
       - name: Bundle size check
         run: node scripts/check-bundle-size.js
-
-      - name: Rebuild with SRI
-        run: npx vite build
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          NODE_ENV: production
 
       - name: SPA 404 fallback
         run: cp dist/index.html dist/404.html
