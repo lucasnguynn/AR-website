@@ -26,6 +26,17 @@ export interface DepthManagerOptions {
   readonly throttleAfterMisses?: number;
 }
 
+export interface DepthProxyLandmark {
+  readonly x: number;
+  readonly y: number;
+  readonly z?: number;
+}
+
+export interface DepthUpdateOptions {
+  readonly cameraFrame?: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas;
+  readonly landmarks?: readonly DepthProxyLandmark[];
+}
+
 export class WebXRDepthManager {
   readonly depthTexture = new THREE.DataTexture(new Float32Array([1]), 1, 1, THREE.RedFormat, THREE.FloatType);
   readonly occlusionProxy: THREE.Mesh;
@@ -39,8 +50,10 @@ export class WebXRDepthManager {
   private readonly nearMeters: number;
   private readonly farMeters: number;
   private readonly throttleAfterMisses: number;
+  private adaptiveMissThreshold: number;
   private readonly monocularEstimator: MonocularDepthEstimator;
   private gpuMisses = 0;
+  private proxyRadiusMeters = 0.11;
   private activeTier: DepthOcclusionTier = 'geometric-proxy';
   private disposed = false;
 
@@ -48,7 +61,8 @@ export class WebXRDepthManager {
     this.nearMeters = options.nearMeters ?? 0.02;
     this.farMeters = options.farMeters ?? 8.0;
     this.throttleAfterMisses = options.throttleAfterMisses ?? 24;
-    this.monocularEstimator = new MonocularDepthEstimator(options.modelUrl ?? '/models/depth/model.json');
+    this.adaptiveMissThreshold = this.throttleAfterMisses;
+    this.monocularEstimator = new MonocularDepthEstimator(options.modelUrl ?? '/models/depth/depth_anything_v2_small.onnx');
     this.depthTexture.minFilter = THREE.LinearFilter;
     this.depthTexture.magFilter = THREE.LinearFilter;
     this.depthTexture.generateMipmaps = false;
@@ -71,18 +85,29 @@ export class WebXRDepthManager {
     return this.activeTier;
   }
 
-  async update(frame: XRFrameWithDepthData, view: XRView, cameraFrame?: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas): Promise<boolean> {
+  async update(
+    frame: XRFrameWithDepthData,
+    view: XRView,
+    cameraFrameOrOptions?: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas | DepthUpdateOptions,
+  ): Promise<boolean> {
     if (this.disposed) return false;
+    const options = this.resolveUpdateOptions(cameraFrameOrOptions);
+    if (options.landmarks) this.updateGeometricProxy(options.landmarks);
+
     if (this.updateFromWebXR(frame, view)) {
       this.gpuMisses = 0;
+      this.adaptiveMissThreshold = Math.min(this.throttleAfterMisses * 4, this.adaptiveMissThreshold + 1);
       this.setTier('webxr-depth');
       return true;
     }
 
     this.gpuMisses += 1;
-    if (cameraFrame && this.gpuMisses < this.throttleAfterMisses) {
-      const result = await this.monocularEstimator.estimate(cameraFrame);
+    this.adaptiveMissThreshold = Math.max(1, this.adaptiveMissThreshold - 1);
+    if (options.cameraFrame && this.gpuMisses >= this.adaptiveMissThreshold) {
+      const result = this.monocularEstimator.estimate(options.cameraFrame);
       if (result) {
+        this.gpuMisses = 0;
+        this.adaptiveMissThreshold = Math.min(this.throttleAfterMisses * 4, this.adaptiveMissThreshold + 2);
         this.uploadDepth(result.width, result.height, result.depth, true);
         this.setTier('monocular-depth');
         return true;
@@ -129,6 +154,38 @@ export class WebXRDepthManager {
     this.geometricProxy.geometry.dispose();
     (this.geometricProxy.material as THREE.Material).dispose();
     this.buffers = [new Float32Array(1), new Float32Array(1)];
+  }
+
+  updateGeometricProxy(landmarks: readonly DepthProxyLandmark[]): void {
+    if (landmarks.length < 2) return;
+    let maxDistance = 0;
+    for (let i = 0; i < landmarks.length; i += 1) {
+      for (let j = i + 1; j < landmarks.length; j += 1) {
+        const dx = landmarks[i].x - landmarks[j].x;
+        const dy = landmarks[i].y - landmarks[j].y;
+        const dz = (landmarks[i].z ?? 0) - (landmarks[j].z ?? 0);
+        maxDistance = Math.max(maxDistance, Math.sqrt(dx * dx + dy * dy + dz * dz));
+      }
+    }
+    if (!Number.isFinite(maxDistance) || maxDistance <= 0) return;
+    const targetRadius = THREE.MathUtils.clamp(maxDistance * 0.33, 0.035, 0.18);
+    this.proxyRadiusMeters = this.proxyRadiusMeters * 0.82 + targetRadius * 0.18;
+    this.geometricProxy.geometry.dispose();
+    this.geometricProxy.geometry = new THREE.CylinderGeometry(this.proxyRadiusMeters, this.proxyRadiusMeters, this.proxyRadiusMeters * 3.2, 24, 1);
+  }
+
+  private resolveUpdateOptions(
+    cameraFrameOrOptions?: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas | DepthUpdateOptions,
+  ): DepthUpdateOptions {
+    if (!cameraFrameOrOptions) return {};
+    if (this.isDepthUpdateOptions(cameraFrameOrOptions)) return cameraFrameOrOptions;
+    return { cameraFrame: cameraFrameOrOptions };
+  }
+
+  private isDepthUpdateOptions(
+    value: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas | DepthUpdateOptions,
+  ): value is DepthUpdateOptions {
+    return 'cameraFrame' in value || 'landmarks' in value;
   }
 
   private setTier(tier: DepthOcclusionTier): void {
