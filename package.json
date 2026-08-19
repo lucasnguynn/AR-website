@@ -8,6 +8,7 @@
     "compress-3d": "node scripts/compress-model.js",
     "build": "npm run compress-3d && npm run sign:assets && tsc && vite build && npm run generate:sri",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test": "node scripts/run-tests.mjs",
     "preview": "vite preview",
     "deploy": "gh-pages -d dist",
     "lod": "node scripts/generate-lod.js",

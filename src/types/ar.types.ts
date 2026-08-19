@@ -4,45 +4,6 @@
  */
 
 // --------------------------------------------------------------------------
-// Worker message protocol
-// --------------------------------------------------------------------------
-
-/** Messages sent FROM the main thread TO the worker */
-export type WorkerInMessage =
-  | { type: 'INIT' }
-  | {
-      type: 'DETECT';
-      payload: {
-        /** Transferable ArrayBuffer of RGBA pixel data from the video frame */
-        buffer: ArrayBuffer;
-        width: number;
-        height: number;
-        /** High-resolution timestamp from performance.now() */
-        timestamp: number;
-      };
-    }
-  | { type: 'PAUSE' }
-  | { type: 'RESUME' }
-  | { type: 'DESTROY' };
-
-/** Messages sent FROM the worker TO the main thread */
-export type WorkerOutMessage =
-  | { type: 'READY' }
-  | {
-      type: 'PROGRESS';
-      payload: {
-        /** 'wasm' = fetching WASM, 'model' = fetching task model */
-        phase: 'wasm' | 'model';
-        /** 0-100 */
-        progress: number;
-      };
-    }
-  | { type: 'RESULT'; payload: HandTrackingResult }
-  | { type: 'ERROR'; payload: { message: string; state?: 'INIT' | 'READY' | 'PROCESS' | 'DESTROY' } }
-  | { type: 'PAUSED' }
-  | { type: 'DESTROYED' };
-
-// --------------------------------------------------------------------------
 // Hand tracking data
 // --------------------------------------------------------------------------
 

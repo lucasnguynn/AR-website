@@ -83,14 +83,21 @@ export class WebXRManager {
   get isRunning(): boolean { return this.session !== null; }
 
   async start(): Promise<XRSession> {
+    if (this.session) return this.session;
     if (!navigator.xr) throw new Error('WebXR is not available in this browser.');
     const supported = await navigator.xr.isSessionSupported('immersive-ar');
     if (!supported) throw new Error('immersive-ar is not supported on this device.');
     const session = await navigator.xr.requestSession('immersive-ar', SESSION_INIT);
     this.session = session;
-    this.referenceSpace = await session.requestReferenceSpace('local-floor');
-    session.addEventListener('end', this.handleSessionEnd, { once: true });
-    return session;
+    try {
+      this.referenceSpace = await session.requestReferenceSpace('local-floor');
+      session.addEventListener('end', this.handleSessionEnd, { once: true });
+      return session;
+    } catch (error) {
+      this.handleSessionEnd();
+      await session.end().catch(() => undefined);
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
