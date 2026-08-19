@@ -8,6 +8,7 @@
  */
 
 import * as THREE from 'three';
+import { RING_MODEL_METADATA } from '../config/ringModelMetadata';
 import type { NormalisedLandmark } from '../types/ar.types';
 import { LM } from '../types/ar.types';
 
@@ -215,12 +216,12 @@ export function computeRingQuaternion(
 export function computeRingScale(
   posMCP: THREE.Vector3,
   posPIP: THREE.Vector3,
-  ringModelDiameter = 0.02,
-  fingerWidthFraction = 0.65,
+  ringModelDiameter = RING_MODEL_METADATA.outerDiameterModelUnits,
+  fingerWidthFraction = RING_MODEL_METADATA.visualFingerWidthFraction,
 ): number {
   const segmentLength = posMCP.distanceTo(posPIP);
   const scale = (segmentLength * fingerWidthFraction) / ringModelDiameter;
-  return Math.max(0.1, Math.min(20, scale));
+  return Math.max(RING_MODEL_METADATA.visualScaleRange.min, Math.min(RING_MODEL_METADATA.visualScaleRange.max, scale));
 }
 
 let _captureCanvas: OffscreenCanvas | null = null;

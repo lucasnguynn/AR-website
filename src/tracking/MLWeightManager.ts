@@ -41,7 +41,11 @@ export async function openDB(): Promise<IDBDatabase> {
 }
 
 function cloneWeights(weights: Float32Array[]): Float32Array[] {
-  return weights.map((weight) => new Float32Array(weight));
+  return weights.map((weight) => {
+    if (weight instanceof Float32Array) return new Float32Array(weight);
+    if (Array.isArray(weight)) return new Float32Array(weight);
+    throw new Error('Corrupted weight tensor in IndexedDB');
+  });
 }
 
 async function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
@@ -98,8 +102,11 @@ export async function saveWeights(key: string, weights: Float32Array[]): Promise
 export async function loadWeights(key: string): Promise<Float32Array[] | null> {
   const rows = await withStore<StoredWeightVersion[]>('readonly', (store) => store.index('by_key').getAll(IDBKeyRange.only(key)));
   if (!rows || rows.length === 0) return null;
-  const latest = rows.reduce((a, b) => (a.savedAt >= b.savedAt ? a : b));
-  return cloneWeights(latest.data);
+  const newestFirst = rows.sort((a, b) => b.savedAt - a.savedAt);
+  for (const row of newestFirst) {
+    try { return cloneWeights(row.data); } catch { /* fall back to the prior complete version */ }
+  }
+  return null;
 }
 
 console.log('[MLWeightManager] IndexedDB weight persistence ready');

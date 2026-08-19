@@ -4,7 +4,9 @@ export interface FusionState { readonly position: Float32Array; readonly velocit
 
 const N = 15;
 const SIGMA = N * 2 + 1;
-const ALPHA = 1e-3;
+// A very small alpha combined with Float32 storage produces enormous cancelling
+// weights. 0.25 keeps the sigma cloud local without destroying precision.
+const ALPHA = 0.25;
 const BETA = 2;
 const KAPPA = 0;
 const LAMBDA = ALPHA * ALPHA * (N + KAPPA) - N;
@@ -50,7 +52,9 @@ export class UKFEngine {
 
   predict(timestamp: number): FusionState {
     if (!this.initialized) { this.lastTimestamp = timestamp; return this.publish(timestamp); }
-    const dt = Math.max(1 / 240, Math.min((timestamp - this.lastTimestamp) * 0.001, 1 / 20));
+    const elapsed = (timestamp - this.lastTimestamp) * 0.001;
+    if (elapsed <= 0) return this.publish(this.lastTimestamp);
+    const dt = Math.min(elapsed, 0.1);
     this.lastTimestamp = timestamp;
     this.computeSigmaPoints();
     for (let s = 0; s < SIGMA; s += 1) this.propagateSigma(s * N, dt);
@@ -71,9 +75,11 @@ export class UKFEngine {
   updatePose6DoF(m: Pose6DoFMeasurement): FusionState {
     if (!this.initialized) { this.x[0] = m.position[0]; this.x[1] = m.position[1]; this.x[2] = m.position[2]; this.x[QW] = m.orientation[3]; this.x[QX] = m.orientation[0]; this.x[QY] = m.orientation[1]; this.x[QZ] = m.orientation[2]; this.x[SCALE] = m.scale ?? 1; this.initialized = true; this.lastTimestamp = m.timestamp; }
     else this.predict(m.timestamp);
+    const dot = this.x[QX] * m.orientation[0] + this.x[QY] * m.orientation[1] + this.x[QZ] * m.orientation[2] + this.x[QW] * m.orientation[3];
+    const sign = dot < 0 ? -1 : 1;
     const r = Math.max(0.00001, 0.004 / Math.max(m.confidence, 0.05));
     this.scalarUpdate(0, m.position[0], r); this.scalarUpdate(1, m.position[1], r); this.scalarUpdate(2, m.position[2], r);
-    this.scalarUpdate(QW, m.orientation[3], r); this.scalarUpdate(QX, m.orientation[0], r); this.scalarUpdate(QY, m.orientation[1], r); this.scalarUpdate(QZ, m.orientation[2], r);
+    this.scalarUpdate(QW, m.orientation[3] * sign, r); this.scalarUpdate(QX, m.orientation[0] * sign, r); this.scalarUpdate(QY, m.orientation[1] * sign, r); this.scalarUpdate(QZ, m.orientation[2] * sign, r);
     if (m.scale !== undefined) this.scalarUpdateScale(m.scale, r);
     this.normalizeQuaternion(this.x, QW);
     return this.publish(m.timestamp);
@@ -97,9 +103,10 @@ export class UKFEngine {
 
   private computeSigmaPoints(): void { this.cholesky(); this.sigma.set(this.x, 0); for (let c = 0; c < N; c += 1) for (let r = 0; r < N; r += 1) { const v = GAMMA * this.scratch[r * N + c]; this.sigma[(1 + c) * N + r] = this.x[r] + v; this.sigma[(1 + N + c) * N + r] = this.x[r] - v; } }
 
-  private unscentedMeanCovariance(dt: number): void { this.mean.fill(0); this.p.fill(0); for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WM0 : WI; const o = s * N; for (let i = 0; i < N; i += 1) this.mean[i] += w * this.propagated[o + i]; } this.normalizeQuaternion(this.mean, QW); for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WC0 : WI; const o = s * N; for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] += w * (this.propagated[o + i] - this.mean[i]) * (this.propagated[o + j] - this.mean[j]); } this.x.set(this.mean); const q = this.processNoise * dt; for (let i = 0; i < N; i += 1) this.p[i * N + i] += q + EPS; }
+  private unscentedMeanCovariance(dt: number): void { this.mean.fill(0); this.p.fill(0); for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WM0 : WI; const o = s * N; for (let i = 0; i < N; i += 1) this.mean[i] += w * this.propagated[o + i]; } this.normalizeQuaternion(this.mean, QW); for (let s = 0; s < SIGMA; s += 1) { const w = s === 0 ? WC0 : WI; const o = s * N; for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] += w * (this.propagated[o + i] - this.mean[i]) * (this.propagated[o + j] - this.mean[j]); } this.x.set(this.mean); const q = this.processNoise * dt; for (let i = 0; i < N; i += 1) this.p[i * N + i] += q + EPS; this.symmetrizeCovariance(); }
 
-  private scalarUpdate(index: number, measurement: number, noise: number): void { const innovationVariance = this.p[index * N + index] + noise; for (let i = 0; i < N; i += 1) this.k[i] = this.p[i * N + index] / innovationVariance; const residual = measurement - this.x[index]; for (let i = 0; i < N; i += 1) this.x[i] += this.k[i] * residual; for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] -= this.k[i] * this.p[index * N + j]; }
+  private scalarUpdate(index: number, measurement: number, noise: number): void { const innovationVariance = Math.max(EPS, this.p[index * N + index] + noise); for (let i = 0; i < N; i += 1) this.k[i] = this.p[i * N + index] / innovationVariance; const residual = measurement - this.x[index]; for (let i = 0; i < N; i += 1) this.x[i] += this.k[i] * residual; this.scratch.set(this.p); for (let i = 0; i < N; i += 1) for (let j = 0; j < N; j += 1) this.p[i * N + j] = this.scratch[i * N + j] - this.k[i] * this.scratch[index * N + j] - this.scratch[i * N + index] * this.k[j] + this.k[i] * innovationVariance * this.k[j]; this.symmetrizeCovariance(); }
+  private symmetrizeCovariance(): void { for (let i = 0; i < N; i += 1) { this.p[i * N + i] = Math.max(this.p[i * N + i], EPS); for (let j = 0; j < i; j += 1) { const v = (this.p[i * N + j] + this.p[j * N + i]) * 0.5; this.p[i * N + j] = v; this.p[j * N + i] = v; } } }
   private cholesky(): void { this.scratch.fill(0); for (let i = 0; i < N; i += 1) for (let j = 0; j <= i; j += 1) { let sum = this.p[i * N + j]; for (let k = 0; k < j; k += 1) sum -= this.scratch[i * N + k] * this.scratch[j * N + k]; this.scratch[i * N + j] = i === j ? Math.sqrt(Math.max(sum, EPS)) : sum / Math.max(this.scratch[j * N + j], EPS); } }
   private normalizeQuaternion(a: Float32Array, o: number): void { const inv = 1 / Math.max(EPS, Math.hypot(a[o], a[o + 1], a[o + 2], a[o + 3])); a[o] *= inv; a[o + 1] *= inv; a[o + 2] *= inv; a[o + 3] *= inv; }
   private resetCovariance(): void { for (let i = 0; i < N; i += 1) this.p[i * N + i] = i < 3 ? 0.015 : i < 6 ? 0.08 : i < 9 ? 0.18 : i < 13 ? 0.025 : 0.01; }

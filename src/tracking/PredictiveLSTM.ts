@@ -72,6 +72,12 @@ export class PredictiveLSTM {
     await saveWeights(LSTM_WEIGHT_KEY, this.toArrays());
   }
 
+  /** Returns a defensive copy of every persisted tensor for deterministic backup/reload validation. */
+  exportWeightTensors(): Float32Array[] { return this.toArrays(); }
+
+  /** Loads a complete validated persisted tensor set; corrupted or partial sets are rejected. */
+  importWeightTensors(tensors: Float32Array[]): boolean { return this.loadFromArrays(tensors); }
+
   /** Predicts future pose at the requested horizon. */
   predict(state: FusionState, horizonMs: 16.667 | 33.334 | number = 16.667): PredictedPose {
     const dt = horizonMs * 0.001;
@@ -139,12 +145,12 @@ export class PredictiveLSTM {
   }
 
   private loadFromArrays(arrays: Float32Array[]): boolean {
-    if (arrays.length === 5) {
+    if (arrays.length === 5 && this.validCombinedShapes(arrays)) {
       this.weights = { inputKernel: new Float32Array(arrays[0]), recurrentKernel: new Float32Array(arrays[1]), bias: new Float32Array(arrays[2]), projection: new Float32Array(arrays[3]), projectionBias: new Float32Array(arrays[4]) };
       this.reset();
       return true;
     }
-    if (arrays.length !== 14) return false;
+    if (arrays.length !== 14 || !this.validSplitShapes(arrays)) return false;
     const h = this.hiddenSize;
     const gates = h * 4;
     const inputKernel = new Float32Array(INPUT * gates);
@@ -160,6 +166,22 @@ export class PredictiveLSTM {
     this.weights = { inputKernel, recurrentKernel, bias, projection: new Float32Array(arrays[12]), projectionBias: new Float32Array(arrays[13]) };
     this.reset();
     return true;
+  }
+
+  private validCombinedShapes(arrays: Float32Array[]): boolean {
+    const h = this.hiddenSize;
+    return arrays.every((tensor) => tensor instanceof Float32Array && tensor.every(Number.isFinite))
+      && arrays[0].length === INPUT * h * 4 && arrays[1].length === h * h * 4 && arrays[2].length === h * 4
+      && arrays[3].length === h * OUTPUT && arrays[4].length === OUTPUT;
+  }
+
+  private validSplitShapes(arrays: Float32Array[]): boolean {
+    const h = this.hiddenSize;
+    return arrays.every((tensor) => tensor instanceof Float32Array && tensor.every(Number.isFinite))
+      && arrays.slice(0, 4).every((tensor) => tensor.length === INPUT * h)
+      && arrays.slice(4, 8).every((tensor) => tensor.length === h * h)
+      && arrays.slice(8, 12).every((tensor) => tensor.length === h)
+      && arrays[12].length === h * OUTPUT && arrays[13].length === OUTPUT;
   }
 
   /** Creates deterministic default LSTM weights. */
