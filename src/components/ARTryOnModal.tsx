@@ -22,6 +22,8 @@ import { ARControls } from './ARControls';
 import { WebGPUScene } from './WebGPUScene';
 import { QuickLookViewer } from './QuickLookViewer';
 import { WebXRScene } from './WebXRScene';
+import { Fallback3DViewer } from './Fallback3DViewer';
+import { containModalFocus } from '../utils/modalFocus';
 
 /** Props for the top-level AR try-on modal. */
 export interface ARTryOnModalProps {
@@ -57,6 +59,7 @@ function rendererKind(): 'webgpu' | 'webgl2' | 'webgl1' {
 }
 
 export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
+  const dialogRef = useDialogFocus();
   const videoRef = useRef<HTMLVideoElement>(null);
   const closeRequestedRef = useRef(false);
   const trackingTimeoutRef = useRef<number | null>(null);
@@ -118,7 +121,6 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     createInteractive3DAdapter(rendererKind()),
   ], setDiagnostics), [destroy, setActive, startTracking, stopCamera, webxrAdapter]);
 
-  const adaptiveDpr = useMemo<[number, number]>(() => [1, Math.min(window.devicePixelRatio, 1.75)], []);
   const combinedProgress = Math.min(100, Math.round(loadingState.mediapipe * 0.7 + (isLoading ? 0 : 30)));
   const isReady = !isLoading && loadingState.mediapipe >= 100 && loadingState.camera && !criticalError;
 
@@ -253,16 +255,17 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   if (diagnostics?.experience === 'interactive-3d') {
     return (
       <FallbackModal title="Interactive 3D preview" onClose={closeAR}>
-        <div className="flex h-52 w-52 items-center justify-center rounded-3xl border border-white/10 bg-neutral-900 text-7xl" aria-label={QUICK_LOOK_PRODUCT_NAME}>
-          💍
+        <div className="h-72 w-full" aria-label={`Interactive model of ${QUICK_LOOK_PRODUCT_NAME}`}>
+          <Fallback3DViewer ringModelUrl={`${import.meta.env.BASE_URL}models/nhan.glb`} fallbackReason="DEVICE_UNSUPPORTED" />
         </div>
-        <p className="mt-4 text-center text-sm text-white/65">Camera AR is unavailable, so you can still inspect the product in a static 3D-safe fallback.</p>
+        <p className="mt-4 text-center text-sm text-white/65">Camera AR is unavailable. Drag the model to inspect the ring from every angle.</p>
       </FallbackModal>
     );
   }
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black text-white antialiased"
       role="dialog"
       aria-modal="true"
@@ -284,7 +287,6 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
           videoRef={videoRef}
           facingMode={facingMode}
           onMount={markLoaded}
-          dpr={adaptiveDpr}
           ambientLight={ambientLight}
         />
 
@@ -321,7 +323,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
 
 function FallbackModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black text-white antialiased" role="dialog" aria-modal="true" aria-label={title}>
+    <div ref={useDialogFocus()} className="fixed inset-0 z-50 flex items-center justify-center bg-black text-white antialiased" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
       <div className="relative flex w-full max-w-sm flex-col items-center rounded-[2rem] border border-white/10 bg-neutral-950 p-6 shadow-2xl">
         <button onClick={onClose} className="absolute right-4 top-4 min-h-10 min-w-10 rounded-full border border-white/15 text-xl font-light" aria-label="Close AR try-on">
           ×
@@ -331,6 +333,13 @@ function FallbackModal({ title, onClose, children }: { title: string; onClose: (
       </div>
     </div>
   );
+}
+
+function useDialogFocus(): React.RefObject<HTMLDivElement> {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previous = useRef<HTMLElement | null>(typeof document === 'undefined' ? null : document.activeElement as HTMLElement | null);
+  useEffect(() => dialogRef.current ? containModalFocus(dialogRef.current, previous.current) : undefined, []);
+  return dialogRef;
 }
 
 function GuidanceOverlay({ ambientLight }: { ambientLight: ReturnType<typeof useAmbientLightAdapter> }) {

@@ -60,11 +60,13 @@ interface RingSceneProps {
   ambientLight?: AmbientLightState;
   materialRendererMode?: RingRendererMode;
   gemstoneQuality?: GemstoneQuality;
+  depthIntervalMs?: number;
+  environmentQuality?: GemstoneQuality;
 }
 
 const DEPTH_INPUT_SIZE = 518;
 
-function CameraDepthOcclusion({ videoRef, tierRef }: { videoRef?: React.RefObject<HTMLVideoElement | null>; tierRef: React.MutableRefObject<DepthOcclusionTier> }) {
+function CameraDepthOcclusion({ videoRef, tierRef, intervalMs = 100 }: { videoRef?: React.RefObject<HTMLVideoElement | null>; tierRef: React.MutableRefObject<DepthOcclusionTier>; intervalMs?: number }) {
   const { scene } = useThree();
   const pipeline = useMemo(() => new WebXRDepthManager({ modelUrl: `${import.meta.env.BASE_URL}models/depth/depth_anything_v2_small.onnx` }), []);
   const enabled = import.meta.env.VITE_ENABLE_MONOCULAR_DEPTH === 'true';
@@ -74,9 +76,12 @@ function CameraDepthOcclusion({ videoRef, tierRef }: { videoRef?: React.RefObjec
     void pipeline.start();
     let callback = 0;
     let cancelled = false;
+    let lastCapture = 0;
     const video = videoRef?.current;
     const capture = async () => {
-      if (cancelled || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !pipeline.canAcceptCameraFrame()) return;
+      const now = performance.now();
+      if (cancelled || now - lastCapture < intervalMs || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !pipeline.canAcceptCameraFrame()) return;
+      lastCapture = now;
       const started = performance.now();
       try {
         const bitmap = await createImageBitmap(video, { resizeWidth: DEPTH_INPUT_SIZE, resizeHeight: DEPTH_INPUT_SIZE, resizeQuality: 'low' });
@@ -99,14 +104,14 @@ function CameraDepthOcclusion({ videoRef, tierRef }: { videoRef?: React.RefObjec
       else if (callback) window.clearInterval(callback);
       pipeline.dispose();
     };
-  }, [enabled, pipeline, scene, tierRef, videoRef]);
+  }, [enabled, intervalMs, pipeline, scene, tierRef, videoRef]);
   return null;
 }
 
 // ── RingMesh — inner component, renders only after useGLTF resolves ──────────
 // Kept separate from the Suspense boundary so ErrorBoundary can catch
 // suspension errors without unmounting the whole scene.
-function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false, ambientLight, materialRendererMode = 'webgl', gemstoneQuality = 'HIGH' }: RingSceneProps) {
+function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing = false, ambientLight, materialRendererMode = 'webgl', gemstoneQuality = 'HIGH', depthIntervalMs = 100, environmentQuality = 'HIGH' }: RingSceneProps) {
   const { camera, gl } = useThree();
   const groupRef   = useRef<THREE.Group>(null);
   const debugBoxRef = useRef<THREE.Mesh>(null);
@@ -223,8 +228,8 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
 
   return (
     <>
-      <CameraDepthOcclusion videoRef={videoRef} tierRef={depthTierRef} />
-      <Environment preset="city" background={false} environmentIntensity={0.65 + (ambientLight?.exposure ?? 1) * 0.22} />
+      <CameraDepthOcclusion videoRef={videoRef} tierRef={depthTierRef} intervalMs={depthIntervalMs} />
+      {environmentQuality !== 'LOW' && <Environment preset="city" background={false} environmentIntensity={0.65 + (ambientLight?.exposure ?? 1) * 0.22} />}
       <ambientLight intensity={0.22 + (ambientLight?.exposure ?? 1) * 0.12} color={ambientLight?.keyColor ?? '#fff7e8'} />
       <hemisphereLight args={[ambientLight?.keyColor ?? '#fff7e8', '#24222a', 0.55]} />
       <rectAreaLight position={[0, 1.4, 1.6]} width={1.6} height={0.9} intensity={1.25 + (ambientLight?.exposure ?? 1) * 0.45} color={ambientLight?.keyColor ?? '#fff7e8'} />

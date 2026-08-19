@@ -1,5 +1,5 @@
 // FILE: src/components/WebGPUScene.tsx
-import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type CanvasProps } from '@react-three/fiber';
 import * as THREE from 'three';
 import { WebGLRenderer } from 'three';
@@ -7,9 +7,9 @@ import { WebGPURenderer } from 'three/webgpu';
 import { RingScene } from './RingScene';
 import type { HandTrackingResult } from '../types/ar.types';
 import type { AmbientLightState } from '../utils/AmbientLightAdapter';
+import { AdaptiveQualityController, qualitySettings, type QualityTier } from '../rendering/AdaptiveQualityController';
 
 type RenderTier = 'webgpu' | 'webgl2' | 'webgl1';
-type QualityTier = 'HIGH' | 'MEDIUM' | 'LOW';
 type ThreeRenderer = THREE.WebGLRenderer & { init?: () => Promise<void> };
 type RendererInitResult = { renderer: ThreeRenderer; tier: RenderTier };
 
@@ -31,13 +31,6 @@ export interface WebGPUSceneProps {
   ambientLight?: AmbientLightState;
 }
 
-const QUALITY: Record<QualityTier, { dpr: number; shadows: boolean }> = {
-  HIGH: { dpr: 2, shadows: true },
-  MEDIUM: { dpr: 1.5, shadows: false },
-  LOW: { dpr: 1, shadows: false },
-};
-
-const DOWNGRADE_ORDER: QualityTier[] = ['HIGH', 'MEDIUM', 'LOW'];
 
 /**
  * Returns whether the current browser exposes the WebGPU adapter API.
@@ -108,10 +101,6 @@ async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, reque
   }
 }
 
-function nextQualityTier(quality: QualityTier): QualityTier {
-  return DOWNGRADE_ORDER[Math.min(DOWNGRADE_ORDER.indexOf(quality) + 1, DOWNGRADE_ORDER.length - 1)];
-}
-
 function nextRenderTier(tier: RenderTier): RenderTier {
   if (tier === 'webgpu') return 'webgl2';
   if (tier === 'webgl2') return 'webgl1';
@@ -135,18 +124,23 @@ function RendererReadyNotifier({ onMount }: { onMount?: () => void }) {
   return null;
 }
 
-function FrameTimeMonitor({ tier, quality, onDowngrade }: { tier: RenderTier; quality: QualityTier; onDowngrade: (tier: RenderTier, quality: QualityTier, averageMs: number) => void }) {
-  const frameCountRef = useRef(0);
-  const emaMsRef = useRef(1000 / 60);
+function RendererLossMonitor({ onFailure }: { onFailure: () => void }) {
+  const { gl } = useThree();
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const lost = (event: Event) => { event.preventDefault(); onFailure(); };
+    canvas.addEventListener('webglcontextlost', lost, { once: true });
+    return () => canvas.removeEventListener('webglcontextlost', lost);
+  }, [gl, onFailure]);
+  return null;
+}
+
+function FrameTimeMonitor({ onQuality }: { onQuality: (quality: QualityTier, statistics: { averageMs: number; p95Ms: number }) => void }) {
+  const controller = useRef(new AdaptiveQualityController());
 
   useFrame((_, delta) => {
-    const frameMs = delta * 1000;
-    frameCountRef.current += 1;
-    emaMsRef.current += (frameMs - emaMsRef.current) / 8;
-    if (frameCountRef.current < 8 || emaMsRef.current <= 20) return;
-
-    onDowngrade(nextRenderTier(tier), nextQualityTier(quality), emaMsRef.current);
-    frameCountRef.current = 0;
+    const result = controller.current.sample(delta * 1000);
+    if (result.changed) onQuality(result.quality, result.statistics);
   });
 
   return null;
@@ -158,7 +152,7 @@ function FrameTimeMonitor({ tier, quality, onDowngrade }: { tier: RenderTier; qu
 export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount, dpr, ambientLight }: WebGPUSceneProps) {
   const [renderTier, setRenderTier] = useState<RenderTier>(() => (hasWebGPUSupport() ? 'webgpu' : 'webgl2'));
   const [qualityTier, setQualityTier] = useState<QualityTier>('HIGH');
-  const effectiveQuality = QUALITY[qualityTier];
+  const effectiveQuality = qualitySettings[qualityTier];
   const canvasDpr = dpr ?? effectiveQuality.dpr;
   const glFactory = useMemo<CanvasProps['gl']>(() => (async (canvas) => {
     const { renderer, tier } = await createRenderer(canvas, renderTier);
@@ -168,12 +162,15 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
     return renderer as THREE.WebGLRenderer;
   }) as CanvasProps['gl'], [renderTier]);
 
-  const handleDowngrade = (nextTier: RenderTier, nextQuality: QualityTier, averageMs: number): void => {
-    if (nextTier === renderTier && nextQuality === qualityTier) return;
-    setRenderTier(nextTier);
-    setQualityTier(nextQuality);
-    window.dispatchEvent(new CustomEvent('renderer:downgraded', { detail: { fromTier: renderTier, toTier: nextTier, fromQuality: qualityTier, toQuality: nextQuality, averageMs } }));
+  const handleQuality = (nextQuality: QualityTier, statistics: { averageMs: number; p95Ms: number }): void => {
+    setQualityTier((previous) => {
+      if (previous === nextQuality) return previous;
+      window.dispatchEvent(new CustomEvent('renderer:quality-changed', { detail: { fromQuality: previous, toQuality: nextQuality, ...statistics } }));
+      return nextQuality;
+    });
   };
+
+  const handleRendererFailure = useCallback(() => setRenderTier((current) => nextRenderTier(current)), []);
 
   return (
     <Canvas
@@ -199,7 +196,8 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
       dpr={canvasDpr}
     >
       <AdaptiveToneMapping ambientLight={ambientLight} />
-      <FrameTimeMonitor tier={renderTier} quality={qualityTier} onDowngrade={handleDowngrade} />
+      <RendererLossMonitor onFailure={handleRendererFailure} />
+      <FrameTimeMonitor onQuality={handleQuality} />
       <RendererReadyNotifier onMount={onMount} />
       <Suspense fallback={null}>
         <RingScene
@@ -209,6 +207,8 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
           enableRayTracing={renderTier === 'webgpu'}
           materialRendererMode={renderTier === 'webgpu' ? 'webgpu' : 'webgl'}
           gemstoneQuality={qualityTier}
+          depthIntervalMs={effectiveQuality.depthIntervalMs}
+          environmentQuality={qualityTier}
           ambientLight={ambientLight}
         />
       </Suspense>
