@@ -11,11 +11,23 @@ const HEAD = MODEL / HEADS;
 const LAYERS = 2;
 const OUTPUT = 7;
 
-function xavier(length: number, fanIn: number, fanOut: number, seed: number): Float32Array {
+function splitmix32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x9e3779b9) >>> 0;
+    let z = state;
+    z = Math.imul(z ^ (z >>> 16), 0x21f0aaad);
+    z = Math.imul(z ^ (z >>> 15), 0x735a2d97);
+    return ((z ^ (z >>> 15)) >>> 0) / 4294967296;
+  };
+}
+
+const initRandom = splitmix32(42);
+
+function xavier(length: number, fanIn: number, fanOut: number): Float32Array {
   const a = new Float32Array(length);
-  let s = seed >>> 0;
   const limit = Math.sqrt(6 / (fanIn + fanOut));
-  for (let i = 0; i < length; i += 1) { s = (1664525 * s + 1013904223) >>> 0; a[i] = ((s / 4294967295) * 2 - 1) * limit; }
+  for (let i = 0; i < length; i += 1) a[i] = (initRandom() * 2 - 1) * limit;
   return a;
 }
 
@@ -35,15 +47,15 @@ export class PredictiveTransformer {
   private filled = 0;
   private cursor = 0;
 
-  private readonly inW = xavier(INPUT * MODEL, INPUT, MODEL, 0x54464d31);
-  private readonly pos = xavier(SEQ * MODEL, SEQ, MODEL, 0x54464d32);
-  private readonly wq = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, 0x54464d33);
-  private readonly wk = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, 0x54464d34);
-  private readonly wv = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, 0x54464d35);
-  private readonly wo = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, 0x54464d36);
-  private readonly w1 = xavier(LAYERS * MODEL * FF, MODEL, FF, 0x54464d37);
-  private readonly w2 = xavier(LAYERS * FF * MODEL, FF, MODEL, 0x54464d38);
-  private readonly outW = xavier(MODEL * OUTPUT, MODEL, OUTPUT, 0x54464d39);
+  private readonly inW = xavier(INPUT * MODEL, INPUT, MODEL);
+  private readonly pos = xavier(SEQ * MODEL, SEQ, MODEL);
+  private readonly wq = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
+  private readonly wk = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
+  private readonly wv = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
+  private readonly wo = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
+  private readonly w1 = xavier(LAYERS * MODEL * FF, MODEL, FF);
+  private readonly w2 = xavier(LAYERS * FF * MODEL, FF, MODEL);
+  private readonly outW = xavier(MODEL * OUTPUT, MODEL, OUTPUT);
 
   reset(): void { this.history.fill(0); this.filled = 0; this.cursor = 0; }
 

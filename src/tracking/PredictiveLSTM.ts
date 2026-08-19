@@ -1,3 +1,4 @@
+import { LSTM_WEIGHT_KEY, MLWeightManager } from './MLWeightManager';
 import type { FusionState } from './UKFEngine';
 
 export interface PredictiveLSTMWeights {
@@ -17,7 +18,7 @@ function sigmoid(x: number): number { return 1 / (1 + Math.exp(-Math.max(-40, Ma
 
 export class PredictiveLSTM {
   private readonly hiddenSize: number;
-  private readonly weights: PredictiveLSTMWeights;
+  private weights: PredictiveLSTMWeights;
   private readonly hidden: Float32Array;
   private readonly cell: Float32Array;
   private readonly gates: Float32Array;
@@ -35,9 +36,20 @@ export class PredictiveLSTM {
     this.gates = new Float32Array(hiddenSize * 4);
     this.input = new Float32Array(INPUT);
     this.output = { position: this.outPosition, orientation: this.outOrientation, horizonMs: 0, confidence: 0 };
+    if (!weights) void this.loadPersistedWeights();
   }
 
   reset(): void { this.hidden.fill(0); this.cell.fill(0); this.confidence = 0.5; }
+
+  async loadPersistedWeights(): Promise<boolean> {
+    const persisted = await MLWeightManager.read(LSTM_WEIGHT_KEY, this.hiddenSize).catch(() => null);
+    if (!persisted) return false;
+    this.weights = persisted;
+    this.reset();
+    return true;
+  }
+
+  getWeights(): PredictiveLSTMWeights { return this.weights; }
 
   predict(state: FusionState, horizonMs: 16.667 | 33.334 | number = 16.667): PredictedPose {
     const dt = horizonMs * 0.001;
