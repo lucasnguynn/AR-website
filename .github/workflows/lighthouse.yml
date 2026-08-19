@@ -1,0 +1,64 @@
+# FILE: .github/workflows/lighthouse.yml
+name: Lighthouse Audit
+
+on:
+  workflow_run:
+    workflows: ['Build & Deploy']
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  lighthouse:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Wait for Pages propagation
+        run: sleep 60
+
+      - name: Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v11
+        with:
+          urls: |
+            https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+      - name: Assert thresholds
+        run: |
+          node --input-type=module <<'NODE'
+          import { existsSync, readdirSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const resultDirectory = '.lighthouseci';
+          if (!existsSync(resultDirectory)) {
+            throw new Error('Missing .lighthouseci results directory');
+          }
+
+          const resultFile = readdirSync(resultDirectory)
+            .filter((fileName) => fileName.endsWith('.json') && !fileName.endsWith('.manifest.json'))
+            .sort()
+            .at(0);
+
+          if (!resultFile) {
+            throw new Error('Missing Lighthouse JSON result file');
+          }
+
+          const report = JSON.parse(readFileSync(join(resultDirectory, resultFile), 'utf8'));
+          const categories = report.categories;
+          const performance = categories.performance.score;
+          const accessibility = categories.accessibility.score;
+          const bestPractices = categories['best-practices'].score;
+
+          if (performance < 0.80) throw new Error(`Perf < 80: ${performance}`);
+          if (accessibility < 0.90) throw new Error(`A11y < 90: ${accessibility}`);
+          if (bestPractices < 0.90) throw new Error(`BP < 90: ${bestPractices}`);
+
+          console.log(`Lighthouse PASS | perf=${performance} a11y=${accessibility} bp=${bestPractices}`);
+          NODE
+# VERIFY: Build & Deploy success on main triggers Lighthouse thresholds for the GitHub Pages subpath URL.
