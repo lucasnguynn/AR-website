@@ -26,7 +26,8 @@
     "zustand": "^4.5.2",
     "@tensorflow/tfjs-backend-webgpu": "^4.22.0",
     "@tensorflow/tfjs-core": "^4.22.0",
-    "@tensorflow/tfjs-converter": "^4.22.0"
+    "@tensorflow/tfjs-converter": "^4.22.0",
+    "onnxruntime-web": "^1.20.1"
   },
   "devDependencies": {
     "@gltf-transform/core": "^3.10.1",

@@ -1,3 +1,4 @@
+// FILE: src/hook/useHandTracking.ts
 /**
  * useHandTracking.ts
  *
@@ -6,11 +7,14 @@
  * on-device inference and are never uploaded by this hook.
  */
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, type RefObject } from 'react';
 import type { HandTrackingResult, LoadingState, TrackingMetrics } from '../types/ar.types';
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
 import { verifyWorkerBlobIntegrity } from '../utils/SecurityUtils';
+
+const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
+const MEDIAPIPE_WASM_PATH = 'wasm/vision_wasm_internal.wasm';
 
 type HandTrackingWorkerOutMessage =
   | { type: 'READY' }
@@ -21,8 +25,11 @@ type HandTrackingWorkerOutMessage =
   | { type: 'PAUSED' }
   | { type: 'DESTROYED' };
 
+/**
+ * Public controls and state references for hand tracking.
+ */
 export interface UseHandTrackingReturn {
-  resultRef: React.RefObject<HandTrackingResult | null>;
+  resultRef: RefObject<HandTrackingResult | null>;
   loadingState: LoadingState;
   startTracking: (video: HTMLVideoElement) => void;
   setActive: (active: boolean) => void;
@@ -32,6 +39,9 @@ export interface UseHandTrackingReturn {
   getMetrics: () => TrackingMetrics | null;
 }
 
+/**
+ * Creates and controls the verified MediaPipe hand-tracking worker lifecycle.
+ */
 export function useHandTracking(): UseHandTrackingReturn {
   const workerRef = useRef<Worker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -100,10 +110,21 @@ export function useHandTracking(): UseHandTrackingReturn {
       const workerUrl = new URL('../workers/mediapipe.worker.ts', import.meta.url);
       const workerVerified = await verifyWorkerBlobIntegrity(workerUrl);
       if (!workerVerified) {
-        throw new Error('MediaPipe worker integrity verification failed. Refusing to start hand tracking.');
+        window.dispatchEvent(new CustomEvent('ar:security-violation', {
+          detail: { asset: workerUrl.toString(), reason: 'SRI_MISMATCH', ts: Date.now() },
+        }));
+        setLoadingState((prev) => ({
+          ...prev,
+          ready: false,
+          error: 'MediaPipe worker integrity verification failed. Refusing to start hand tracking.',
+        }));
+        return;
       }
 
-      const wasmResponse = await fetch('/wasm/vision_wasm_internal.wasm', {
+      const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
+      const wasmUrl = new URL(MEDIAPIPE_WASM_PATH, assetBaseUrl);
+      const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
+      const wasmResponse = await fetch(wasmUrl, {
         cache: 'force-cache',
         credentials: 'same-origin',
       });
@@ -165,7 +186,7 @@ export function useHandTracking(): UseHandTrackingReturn {
         }
       });
 
-      worker.postMessage({ type: 'INIT', payload: { wasmBlobUrl } });
+      worker.postMessage({ type: 'INIT', payload: { wasmBlobUrl, modelUrl: modelUrl.toString() } });
     }
 
     createWorker().catch((error: unknown) => {
@@ -251,3 +272,4 @@ export function useHandTracking(): UseHandTrackingReturn {
 
   return { resultRef, loadingState, startTracking, setActive, pause, resume, destroy: destroyWorker, getMetrics };
 }
+// VERIFY: console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed')

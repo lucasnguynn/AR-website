@@ -1,19 +1,24 @@
+// FILE: src/workers/handpose.worker.ts
 import {
   FilesetResolver,
   HandLandmarker,
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
 
-type Backend = 'micro-handpose' | 'mediapipe';
 type WorkerState = 'INIT' | 'READY' | 'PROCESS' | 'DESTROY';
 type RingLandmarkIndex = (typeof RING_LANDMARK_INDICES)[number];
 
 type WorkerInMessage =
-  | { type: 'INIT' }
+  | { type: 'INIT'; payload: InitPayload }
   | { type: 'DETECT'; payload: FramePayload }
   | { type: 'PAUSE' }
   | { type: 'RESUME' }
   | { type: 'DESTROY' };
+
+interface InitPayload {
+  wasmBlobUrl: string;
+  modelUrl: string;
+}
 
 interface FramePayload {
   buffer: ArrayBuffer;
@@ -55,51 +60,23 @@ interface TrackingMetrics {
 }
 
 type WorkerOutMessage =
-  | { type: 'READY'; payload: { backend: Backend } }
+  | { type: 'READY'; payload: { backend: 'mediapipe' } }
   | { type: 'PROGRESS'; payload: { phase: 'wasm' | 'model'; progress: number } }
-  | { type: 'RESULT'; payload: { hands: TrackingResult[]; detected: boolean; frameTimestamp: number; metrics: TrackingMetrics; backend: Backend } }
+  | { type: 'RESULT'; payload: { hands: TrackingResult[]; detected: boolean; frameTimestamp: number; metrics: TrackingMetrics; backend: 'mediapipe' } }
   | { type: 'ERROR'; payload: { message: string; state: WorkerState } }
   | { type: 'PAUSED' }
   | { type: 'DESTROYED' };
 
-interface MicroLandmark {
-  x: number;
-  y: number;
-  z?: number;
-  visibility?: number;
-}
-
-interface MicroHand {
-  keypoints?: MicroLandmark[];
-  landmarks?: MicroLandmark[];
-  worldKeypoints?: MicroLandmark[];
-  worldLandmarks?: MicroLandmark[];
-  handedness?: string;
-  score?: number;
-}
-
-interface MicroDetector {
-  estimateHands?(input: OffscreenCanvas, options?: { timestamp?: number; crop?: CropHint | null; roi?: CropHint | null }): Promise<MicroHand[]>;
-  detect?(input: OffscreenCanvas, options?: { timestamp?: number; crop?: CropHint | null; roi?: CropHint | null }): Promise<MicroHand[]>;
-  dispose?: () => void;
-  close?: () => void;
-}
-
-interface MicroModule {
-  createDetector?: (options: { backend: 'webgpu'; maxHands: number }) => Promise<MicroDetector>;
-  HandPoseDetector?: new (options: { backend: 'webgpu'; maxHands: number }) => MicroDetector;
-  default?: MicroModule['createDetector'];
-}
-
-const MEDIAPIPE_VERSION = '0.10.14';
-const MEDIAPIPE_WASM_CDN_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`;
-const HAND_LANDMARKER_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const RING_LANDMARK_INDICES = [0, 4, 5, 8, 13, 14, 15, 16, 17] as const;
-const CONFIG = { NUM_HANDS: 1, MIN_DETECTION_CONFIDENCE: 0.75, MIN_PRESENCE_CONFIDENCE: 0.75, MIN_TRACKING_CONFIDENCE: 0.8, ROI_PADDING: 0.18 } as const;
+const CONFIG = {
+  NUM_HANDS: 1,
+  MIN_DETECTION_CONFIDENCE: 0.75,
+  MIN_PRESENCE_CONFIDENCE: 0.75,
+  MIN_TRACKING_CONFIDENCE: 0.8,
+  ROI_PADDING: 0.18,
+} as const;
 
 let state: WorkerState = 'INIT';
-let backend: Backend = 'mediapipe';
-let microDetector: MicroDetector | null = null;
 let handLandmarker: HandLandmarker | null = null;
 let paused = false;
 let activeFrame: FramePayload | null = null;
@@ -119,11 +96,11 @@ function getMetrics(): TrackingMetrics {
   return { ...metrics, inferenceFps: metrics.avgInferenceMs > 0 ? 1000 / metrics.avgInferenceMs : 0 };
 }
 
-function normalizeLandmark(index: RingLandmarkIndex, landmark: MicroLandmark | NormalizedLandmark): RingLandmark {
+function normalizeLandmark(index: RingLandmarkIndex, landmark: NormalizedLandmark): RingLandmark {
   return { index, x: landmark.x, y: landmark.y, z: landmark.z ?? 0, visibility: landmark.visibility };
 }
 
-function extractRingLandmarks(landmarks: readonly (MicroLandmark | NormalizedLandmark)[] | undefined): RingLandmark[] {
+function extractRingLandmarks(landmarks: readonly NormalizedLandmark[] | undefined): RingLandmark[] {
   if (!landmarks) return [];
   return RING_LANDMARK_INDICES.flatMap((index) => (landmarks[index] ? [normalizeLandmark(index, landmarks[index])] : []));
 }
@@ -148,61 +125,30 @@ function ensureCanvas(width: number, height: number): OffscreenCanvasRenderingCo
   return canvasContext;
 }
 
-async function importMicroHandpose(): Promise<MicroModule> {
-  return (new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<MicroModule>)('@svenflow/micro-handpose');
-}
-
-async function initializeMicroHandpose(): Promise<boolean> {
-  if (!('gpu' in navigator) || !navigator.gpu) return false;
-  const module = await importMicroHandpose();
-  if (module.createDetector || module.default) {
-    microDetector = await (module.createDetector ?? module.default)?.({ backend: 'webgpu', maxHands: CONFIG.NUM_HANDS }) ?? null;
-  } else if (module.HandPoseDetector) {
-    microDetector = new module.HandPoseDetector({ backend: 'webgpu', maxHands: CONFIG.NUM_HANDS });
-  }
-  backend = microDetector ? 'micro-handpose' : 'mediapipe';
-  return Boolean(microDetector);
-}
-
-async function applyWasmLoaderWorkaround(wasmFileset: { wasmLoaderPath: string }): Promise<void> {
-  const response = await fetch(wasmFileset.wasmLoaderPath, { cache: 'force-cache' });
-  if (!response.ok) throw new Error(`Failed to fetch MediaPipe WASM loader (${response.status})`);
-  (0, eval)(await response.text());
-}
-
-async function initializeMediaPipe(): Promise<void> {
+async function initializeMediaPipe({ wasmBlobUrl, modelUrl }: InitPayload): Promise<void> {
+  if (state === 'DESTROY' || handLandmarker) return;
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
-  const wasmFileset = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_CDN_URL, false);
-  await applyWasmLoaderWorkaround(wasmFileset);
+  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBlobUrl, false);
+  wasmFileset.wasmBinaryPath = wasmBlobUrl;
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 0 } });
   handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
-    baseOptions: { modelAssetPath: HAND_LANDMARKER_MODEL_URL, delegate: 'GPU' },
+    baseOptions: { modelAssetPath: modelUrl, delegate: 'GPU' },
     runningMode: 'VIDEO',
     numHands: CONFIG.NUM_HANDS,
     minHandDetectionConfidence: CONFIG.MIN_DETECTION_CONFIDENCE,
     minHandPresenceConfidence: CONFIG.MIN_PRESENCE_CONFIDENCE,
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
+  console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
-}
-
-async function initialize(): Promise<void> {
-  if (state === 'DESTROY' || microDetector || handLandmarker) return;
-  postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 0 } });
-  try {
-    if (!(await initializeMicroHandpose())) await initializeMediaPipe();
-  } catch (error) {
-    if (backend !== 'mediapipe') await initializeMediaPipe();
-    else throw error;
-  }
   state = 'READY';
-  postMessageSafe({ type: 'READY', payload: { backend } });
+  postMessageSafe({ type: 'READY', payload: { backend: 'mediapipe' } });
 }
 
 function queueFrame(frame: FramePayload): void {
   metrics.frameCount += 1;
-  if (state === 'DESTROY' || paused || (!microDetector && !handLandmarker) || frame.timestamp <= lastProcessedTimestamp) {
+  if (state === 'DESTROY' || paused || !handLandmarker || frame.timestamp <= lastProcessedTimestamp) {
     metrics.droppedFrames += 1;
     return;
   }
@@ -219,26 +165,14 @@ async function drainLatestFrame(): Promise<void> {
   if (state !== 'READY' || paused || !pendingFrame) return;
   activeFrame = pendingFrame;
   pendingFrame = null;
-  await processActiveFrame();
+  processActiveFrame();
 }
 
-async function detectHands(frame: FramePayload): Promise<TrackingResult[]> {
+function detectHands(frame: FramePayload): TrackingResult[] {
   const context = ensureCanvas(frame.width, frame.height);
   context.putImageData(new ImageData(new Uint8ClampedArray(frame.buffer), frame.width, frame.height), 0, 0);
-  if (backend === 'micro-handpose' && microDetector) {
-    const detect = microDetector.estimateHands?.bind(microDetector) ?? microDetector.detect?.bind(microDetector);
-    if (!detect) throw new Error('micro-handpose detector does not expose estimateHands or detect');
-    const result = await detect(canvas as OffscreenCanvas, { timestamp: frame.timestamp, crop: previousCropHint, roi: previousCropHint });
-    return result.map((hand) => ({
-      handedness: hand.handedness ?? 'Unknown',
-      landmarks: extractRingLandmarks(hand.keypoints ?? hand.landmarks),
-      worldLandmarks: extractRingLandmarks(hand.worldKeypoints ?? hand.worldLandmarks),
-      confidence: hand.score ?? 0,
-      timestamp: frame.timestamp,
-    }));
-  }
-  if (!handLandmarker) return [];
-  const result = handLandmarker.detectForVideo(canvas as OffscreenCanvas, frame.timestamp);
+  if (!handLandmarker || !canvas) return [];
+  const result = handLandmarker.detectForVideo(canvas, frame.timestamp);
   return result.landmarks.map((landmarks, index) => ({
     handedness: result.handedness?.[index]?.[0]?.displayName ?? result.handedness?.[index]?.[0]?.categoryName ?? 'Unknown',
     landmarks: extractRingLandmarks(landmarks),
@@ -248,14 +182,14 @@ async function detectHands(frame: FramePayload): Promise<TrackingResult[]> {
   }));
 }
 
-async function processActiveFrame(): Promise<void> {
+function processActiveFrame(): void {
   if (!activeFrame || state !== 'READY') return;
   const frame = activeFrame;
   activeFrame = null;
   state = 'PROCESS';
   const startTime = performance.now();
   try {
-    const hands = await detectHands(frame);
+    const hands = detectHands(frame);
     previousCropHint = computeCropHint(hands[0]?.landmarks ?? []);
     const inferenceTime = performance.now() - startTime;
     metrics.lastInferenceMs = inferenceTime;
@@ -263,13 +197,13 @@ async function processActiveFrame(): Promise<void> {
     metrics.avgInferenceMs = (metrics.avgInferenceMs * (metrics.processedFrames - 1) + inferenceTime) / metrics.processedFrames;
     lastProcessedTimestamp = frame.timestamp;
     state = 'READY';
-    postMessageSafe({ type: 'RESULT', payload: { hands, detected: hands.length > 0, frameTimestamp: frame.timestamp, metrics: getMetrics(), backend } });
+    postMessageSafe({ type: 'RESULT', payload: { hands, detected: hands.length > 0, frameTimestamp: frame.timestamp, metrics: getMetrics(), backend: 'mediapipe' } });
   } catch (error) {
     metrics.droppedFrames += 1;
     state = 'READY';
     postMessageSafe({ type: 'ERROR', payload: { message: error instanceof Error ? error.message : 'Detection failed', state } });
   }
-  await drainLatestFrame();
+  void drainLatestFrame();
 }
 
 function destroyWorker(): void {
@@ -280,10 +214,7 @@ function destroyWorker(): void {
   previousCropHint = null;
   canvas = null;
   canvasContext = null;
-  microDetector?.dispose?.();
-  microDetector?.close?.();
   handLandmarker?.close();
-  microDetector = null;
   handLandmarker = null;
   self.postMessage({ type: 'DESTROYED' } satisfies WorkerOutMessage);
 }
@@ -292,7 +223,7 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
   if (state === 'DESTROY') return;
   switch (event.data.type) {
     case 'INIT':
-      initialize().catch((error: unknown) => postMessageSafe({ type: 'ERROR', payload: { message: `Handpose initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`, state } }));
+      initializeMediaPipe(event.data.payload).catch((error: unknown) => postMessageSafe({ type: 'ERROR', payload: { message: `Handpose initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`, state } }));
       break;
     case 'DETECT':
       queueFrame(event.data.payload);
@@ -313,3 +244,4 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
 };
 
 export {};
+// VERIFY: console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed')

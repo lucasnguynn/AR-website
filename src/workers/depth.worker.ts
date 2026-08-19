@@ -1,3 +1,4 @@
+// FILE: src/workers/depth.worker.ts
 type WorkerGlobal = typeof self & {
   caches?: CacheStorage;
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -34,10 +35,8 @@ let frameCounter = 0;
 
 async function importOnnxRuntimeWebGpu(): Promise<OrtModule> {
   if (ort) return ort;
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<OrtModule>;
-  const packageName = 'onnxruntime-web';
-  const backendPath = 'webgpu';
-  ort = await dynamicImport(`${packageName}/${backendPath}`);
+  const runtimeModule = 'onnxruntime-web/webgpu';
+  ort = await import(/* @vite-ignore */ runtimeModule) as OrtModule;
   return ort;
 }
 
@@ -132,3 +131,4 @@ workerScope.addEventListener('message', (event: MessageEvent<RequestMessage>) =>
   estimate(message.frameId, message.image)
     .catch((error: unknown) => workerScope.postMessage({ type: 'error', frameId: message.frameId, message: error instanceof Error ? error.message : String(error) } satisfies ResponseMessage));
 });
+// VERIFY: console.log('ONNX Runtime WebGPU loaded without eval-compatible dynamic import')

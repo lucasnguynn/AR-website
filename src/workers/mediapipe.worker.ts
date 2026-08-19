@@ -1,3 +1,4 @@
+// FILE: src/workers/mediapipe.worker.ts
 /**
  * mediapipe.worker.ts
  *
@@ -20,7 +21,7 @@ import {
 type WorkerState = 'INIT' | 'READY' | 'PROCESS' | 'DEGRADED' | 'DESTROY';
 
 type WorkerInMessage =
-  | { type: 'INIT'; payload: { wasmBlobUrl: string } }
+  | { type: 'INIT'; payload: { wasmBlobUrl: string; modelUrl: string } }
   | { type: 'DETECT'; payload: FramePayload }
   | { type: 'PAUSE' }
   | { type: 'RESUME' }
@@ -62,8 +63,6 @@ type WorkerOutMessage =
 // Constants
 // ──────────────────────────────────────────────────────────────────────────────
 
-const MEDIAPIPE_WASM_BASE_PATH = '/wasm';
-const HAND_LANDMARKER_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 const CONFIG = {
   NUM_HANDS: 1,
@@ -221,7 +220,7 @@ function drainLatestFrame(): void {
 // Lifecycle
 // ──────────────────────────────────────────────────────────────────────────────
 
-async function initializeMediaPipe(wasmBlobUrl: string): Promise<void> {
+async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promise<void> {
   if (state === 'DESTROY' || handLandmarker) return;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
@@ -229,7 +228,6 @@ async function initializeMediaPipe(wasmBlobUrl: string): Promise<void> {
   // FilesetResolver normally points at a JS loader that may hit CSP-sensitive dynamic-code paths.
   // Passing the pre-fetched Blob URL keeps the binary on a blob: URL and bypasses the previous inline-loader workaround.
   const wasmFileset = await FilesetResolver.forVisionTasks(wasmBlobUrl, false);
-  wasmFileset.wasmLoaderPath = `${MEDIAPIPE_WASM_BASE_PATH}/vision_wasm_internal.js`;
   wasmFileset.wasmBinaryPath = wasmBlobUrl;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
@@ -237,7 +235,7 @@ async function initializeMediaPipe(wasmBlobUrl: string): Promise<void> {
 
   handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
     baseOptions: {
-      modelAssetPath: HAND_LANDMARKER_MODEL_URL,
+      modelAssetPath: modelUrl,
       delegate: 'GPU',
     },
     runningMode: 'VIDEO',
@@ -247,6 +245,7 @@ async function initializeMediaPipe(wasmBlobUrl: string): Promise<void> {
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
+  console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });
@@ -336,7 +335,7 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
 
   switch (message.type) {
     case 'INIT':
-      initializeMediaPipe(message.payload.wasmBlobUrl).catch((error: unknown) => {
+      initializeMediaPipe(message.payload.wasmBlobUrl, message.payload.modelUrl).catch((error: unknown) => {
         reportError(`MediaPipe initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       });
       break;
@@ -363,3 +362,4 @@ self.onmessage = (event: MessageEvent<WorkerInMessage>) => {
 };
 
 export {};
+// VERIFY: console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed')
