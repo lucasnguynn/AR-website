@@ -1,4 +1,5 @@
 import { createVerifiedWorker } from '../utils/SecurityUtils';
+
 export interface MonocularDepthResult {
   readonly frameId: number;
   readonly width: number;
@@ -17,25 +18,33 @@ export class MonocularDepthEstimator {
   private pending = new Map<number, (result: MonocularDepthResult | null) => void>();
   private frameId = 0;
   private lastResult: MonocularDepthResult | null = null;
+  private initializing: Promise<void> | null = null;
+  private inFlight = false;
 
-  constructor(private readonly modelUrl = '/models/depth/model.json') {}
+  constructor(private readonly modelUrl = '/models/depth/depth_anything_v2_small.onnx') {}
 
   async initialize(): Promise<void> {
-    if (this.worker) return;
+    if (this.worker) return this.initializing ?? Promise.resolve();
     this.worker = createVerifiedWorker(new URL('../workers/depth.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => this.handleMessage(event.data);
-    this.worker.postMessage({ type: 'init', modelUrl: this.modelUrl });
+    this.initializing = new Promise((resolve) => {
+      const worker = this.worker!;
+      const previousHandler = worker.onmessage;
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        if (event.data.type === 'ready') resolve();
+        previousHandler?.call(worker, event);
+      };
+      worker.postMessage({ type: 'init', modelUrl: this.modelUrl });
+    });
+    return this.initializing;
   }
 
-  async estimate(image: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas): Promise<MonocularDepthResult | null> {
-    await this.initialize();
-    const worker = this.worker;
-    if (!worker) return null;
-    const frameId = ++this.frameId;
-    return new Promise((resolve) => {
-      this.pending.set(frameId, resolve);
-      worker.postMessage({ type: 'estimate', frameId, image }, image instanceof ImageBitmap ? [image] : []);
+  estimate(image: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas): MonocularDepthResult | null {
+    void this.initialize().then(() => this.queueEstimate(image)).catch((error: unknown) => {
+      this.inFlight = false;
+      console.warn('Monocular depth estimator failed to initialize.', error);
     });
+    return this.lastResult;
   }
 
   getLastResult(): MonocularDepthResult | null {
@@ -48,23 +57,29 @@ export class MonocularDepthEstimator {
     this.worker?.terminate();
     this.worker = null;
     this.lastResult = null;
+    this.initializing = null;
+    this.inFlight = false;
+  }
+
+  private queueEstimate(image: ImageBitmap | ImageData | HTMLCanvasElement | OffscreenCanvas): void {
+    if (!this.worker || this.inFlight) return;
+    const frameId = ++this.frameId;
+    this.inFlight = true;
+    this.pending.set(frameId, () => undefined);
+    this.worker.postMessage({ type: 'estimate', frameId, image }, image instanceof ImageBitmap ? [image] : []);
   }
 
   private handleMessage(message: WorkerResponse): void {
     if (message.type === 'ready') return;
     if (message.type === 'error') {
-      if (message.frameId) this.pending.get(message.frameId)?.(null);
       if (message.frameId) this.pending.delete(message.frameId);
+      this.inFlight = false;
       console.warn('Monocular depth estimator failed.', message.message);
       return;
     }
-    const resolve = this.pending.get(message.frameId);
     this.pending.delete(message.frameId);
-    if (message.type === 'skipped') {
-      resolve?.(this.lastResult);
-      return;
-    }
+    this.inFlight = false;
+    if (message.type === 'skipped') return;
     this.lastResult = { frameId: message.frameId, width: message.width, height: message.height, depth: message.depth };
-    resolve?.(this.lastResult);
   }
 }
