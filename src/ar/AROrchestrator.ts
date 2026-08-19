@@ -18,6 +18,7 @@ export interface ARExperienceAdapter {
   start(): Promise<void>;
   stop(): Promise<void>;
   diagnostics(): ARDiagnostics;
+  onUnexpectedStop?(listener: () => void): () => void;
 }
 
 export type DiagnosticsListener = (diagnostics: ARDiagnostics) => void;
@@ -32,7 +33,17 @@ export class AROrchestrator {
   constructor(
     private readonly adapters: readonly ARExperienceAdapter[],
     private readonly onDiagnostics: DiagnosticsListener = () => undefined,
-  ) {}
+  ) {
+    for (const adapter of adapters) {
+      adapter.onUnexpectedStop?.(() => {
+        if (this.active !== adapter) return;
+        this.active = null;
+        const generation = ++this.generation;
+        this.startPromise = this.selectAndStart(generation).finally(() => { this.startPromise = null; });
+        void this.startPromise.catch(() => undefined);
+      });
+    }
+  }
 
   get activeKind(): ARExperienceKind | null { return this.active?.kind ?? null; }
   diagnostics(): ARDiagnostics | null { return this.active?.diagnostics() ?? null; }
