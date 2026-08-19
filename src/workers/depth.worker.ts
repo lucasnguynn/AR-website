@@ -1,65 +1,62 @@
 // FILE: src/workers/depth.worker.ts
+import * as ort from 'onnxruntime-web/webgpu';
+
 type WorkerGlobal = typeof self & {
   caches?: CacheStorage;
   postMessage(message: unknown, transfer?: Transferable[]): void;
   addEventListener(type: 'message', listener: (event: MessageEvent<RequestMessage>) => void): void;
 };
 
-type OrtTensor = { data: Float32Array | number[]; dims: readonly number[] };
-type OrtSession = { inputNames: readonly string[]; outputNames: readonly string[]; run(feeds: Record<string, unknown>): Promise<Record<string, OrtTensor>> };
-type OrtModule = { Tensor: new (type: 'float32', data: Float32Array, dims: readonly number[]) => unknown; InferenceSession: { create(model: string | ArrayBuffer, options: { executionProviders: readonly string[] }) : Promise<OrtSession> } };
+type DepthTier = 'monocular-depth' | 'degraded-depth';
+type OrtTensor = { data: Float32Array | readonly number[]; dims: readonly number[] };
+type OrtSession = { inputNames: readonly string[]; outputNames: readonly string[]; run(feeds: Record<string, ort.Tensor>): Promise<Record<string, OrtTensor>> };
 
 type RequestMessage =
   | { type: 'init'; modelUrl?: string }
-  | { type: 'estimate'; frameId: number; image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCanvasElement };
+  | { type: 'estimate'; frameId: number; image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCanvasElement; tier?: DepthTier };
 
 type ResponseMessage =
   | { type: 'ready' }
-  | { type: 'depth'; frameId: number; width: number; height: number; depth: Float32Array }
+  | { type: 'depth'; frameId: number; width: number; height: number; depth: Float32Array; tier: DepthTier; averageMs: number }
   | { type: 'skipped'; frameId: number }
   | { type: 'error'; frameId?: number; message: string };
 
 const workerScope = self as WorkerGlobal;
 const INPUT_SIZE = 518;
-const MODEL_CACHE = 'ar-depth-anything-v2-small-v1';
+const MODEL_CACHE = 'webar-models-v1';
 const DEFAULT_MODEL_URL = '/models/depth/depth_anything_v2_small.onnx';
 const IMAGENET_MEAN = [0.485, 0.456, 0.406] as const;
 const IMAGENET_STD = [0.229, 0.224, 0.225] as const;
 
-let ort: OrtModule | null = null;
+ort.env.wasm.wasmPaths = '/wasm/ort/';
+
 let session: OrtSession | null = null;
 let canvas: OffscreenCanvas | null = null;
 let context: OffscreenCanvasRenderingContext2D | null = null;
 let busy = false;
-let frameCounter = 0;
-
-async function importOnnxRuntimeWebGpu(): Promise<OrtModule> {
-  if (ort) return ort;
-  const runtimeModule = 'onnxruntime-web/webgpu';
-  ort = await import(/* @vite-ignore */ runtimeModule) as OrtModule;
-  return ort;
-}
+let lastInferenceAt = 0;
+let averageMs = 0;
 
 async function cachedModelBuffer(modelUrl: string): Promise<ArrayBuffer> {
   const request = new Request(modelUrl, { credentials: 'same-origin' });
-  if (!workerScope.caches) return fetch(request).then((response) => response.arrayBuffer());
+  if (!workerScope.caches) {
+    const response = await fetch(request);
+    if (!response.ok) throw new Error(`Failed to fetch depth model: ${response.status} ${response.statusText}`);
+    return response.arrayBuffer();
+  }
 
   const cache = await workerScope.caches.open(MODEL_CACHE);
   const cached = await cache.match(request);
-  if (cached) return cached.arrayBuffer();
-
-  const response = await fetch(request);
+  const response = cached ?? await fetch(request);
   if (!response.ok) throw new Error(`Failed to fetch depth model: ${response.status} ${response.statusText}`);
-  await cache.put(request, response.clone());
+  if (!cached) await cache.put(request, response.clone());
   return response.arrayBuffer();
 }
 
 async function init(modelUrl = DEFAULT_MODEL_URL): Promise<void> {
   if (session) return;
-  if (!('gpu' in navigator)) throw new Error('WebGPU is not available for ONNX Runtime Web depth inference.');
-  const runtime = await importOnnxRuntimeWebGpu();
   const model = await cachedModelBuffer(modelUrl);
-  session = await runtime.InferenceSession.create(model, { executionProviders: ['webgpu'] });
+  session = await ort.InferenceSession.create(model, { executionProviders: ['webgpu', 'wasm'], graphOptimizationLevel: 'all' });
 }
 
 function getContext(): OffscreenCanvasRenderingContext2D {
@@ -72,7 +69,15 @@ function getContext(): OffscreenCanvasRenderingContext2D {
 function imageToTensor(image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCanvasElement): Float32Array {
   const ctx = getContext();
   ctx.clearRect(0, 0, INPUT_SIZE, INPUT_SIZE);
-  ctx.drawImage(image as CanvasImageSource, 0, 0, INPUT_SIZE, INPUT_SIZE);
+  if (image instanceof ImageData) {
+    const source = new OffscreenCanvas(image.width, image.height);
+    const sourceContext = source.getContext('2d');
+    if (!sourceContext) throw new Error('Unable to create ImageData preprocessing canvas.');
+    sourceContext.putImageData(image, 0, 0);
+    ctx.drawImage(source, 0, 0, INPUT_SIZE, INPUT_SIZE);
+  } else {
+    ctx.drawImage(image, 0, 0, INPUT_SIZE, INPUT_SIZE);
+  }
   const rgba = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE).data;
   const input = new Float32Array(3 * INPUT_SIZE * INPUT_SIZE);
   const plane = INPUT_SIZE * INPUT_SIZE;
@@ -95,16 +100,17 @@ function coerceDepth(output: OrtTensor): Float32Array {
   return depth;
 }
 
-async function estimate(frameId: number, image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCanvasElement): Promise<void> {
-  frameCounter += 1;
-  if (busy || frameCounter % 3 !== 1) {
+async function estimate(frameId: number, image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCanvasElement, tier: DepthTier = 'monocular-depth'): Promise<void> {
+  const now = performance.now();
+  const minimumIntervalMs = tier === 'degraded-depth' ? 100 : 33;
+  if (busy || now - lastInferenceAt < minimumIntervalMs) {
     workerScope.postMessage({ type: 'skipped', frameId } satisfies ResponseMessage);
     return;
   }
   busy = true;
   try {
     if (!session) await init();
-    if (!session || !ort) throw new Error('Depth Anything v2 Small session was not initialized.');
+    if (!session) throw new Error('Depth Anything v2 Small session was not initialized.');
     const input = imageToTensor(image);
     const inputName = session.inputNames[0] ?? 'input';
     const feeds = { [inputName]: new ort.Tensor('float32', input, [1, 3, INPUT_SIZE, INPUT_SIZE]) };
@@ -112,7 +118,11 @@ async function estimate(frameId: number, image: ImageBitmap | ImageData | Offscr
     const output = outputs[session.outputNames[0]] ?? Object.values(outputs)[0];
     if (!output) throw new Error('Depth Anything v2 Small produced no output tensor.');
     const depth = coerceDepth(output);
-    workerScope.postMessage({ type: 'depth', frameId, width: INPUT_SIZE, height: INPUT_SIZE, depth } satisfies ResponseMessage, [depth.buffer]);
+    const elapsedMs = performance.now() - now;
+    averageMs = averageMs === 0 ? elapsedMs : averageMs * 0.8 + elapsedMs * 0.2;
+    lastInferenceAt = performance.now();
+    const reportedTier: DepthTier = averageMs > 30 ? 'degraded-depth' : tier;
+    workerScope.postMessage({ type: 'depth', frameId, width: INPUT_SIZE, height: INPUT_SIZE, depth, tier: reportedTier, averageMs } satisfies ResponseMessage, [depth.buffer]);
   } finally {
     busy = false;
     if (image instanceof ImageBitmap) image.close();
@@ -128,7 +138,7 @@ workerScope.addEventListener('message', (event: MessageEvent<RequestMessage>) =>
     return;
   }
 
-  estimate(message.frameId, message.image)
+  estimate(message.frameId, message.image, message.tier)
     .catch((error: unknown) => workerScope.postMessage({ type: 'error', frameId: message.frameId, message: error instanceof Error ? error.message : String(error) } satisfies ResponseMessage));
 });
-// VERIFY: console.log('ONNX Runtime WebGPU loaded without eval-compatible dynamic import')
+// VERIFY: console.log('ONNX Runtime WebGPU uses Cache API model reuse with webgpu/wasm fallback')
