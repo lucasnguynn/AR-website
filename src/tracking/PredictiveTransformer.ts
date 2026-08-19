@@ -24,13 +24,10 @@ function splitmix32(seed: number): () => number {
   };
 }
 
-const GLOBAL_SEED = 42;
-const _rng = splitmix32(GLOBAL_SEED);
-
-function xavier(length: number, fanIn: number, fanOut: number): Float32Array {
+function xavier(length: number, fanIn: number, fanOut: number, rng: () => number): Float32Array {
   const a = new Float32Array(length);
   const limit = Math.sqrt(6 / (fanIn + fanOut));
-  for (let i = 0; i < length; i += 1) a[i] = (_rng() * 2 - 1) * limit;
+  for (let i = 0; i < length; i += 1) a[i] = (rng() * 2 - 1) * limit;
   return a;
 }
 
@@ -51,15 +48,24 @@ export class PredictiveTransformer {
   private filled = 0;
   private cursor = 0;
 
-  private readonly inW = xavier(INPUT * MODEL, INPUT, MODEL);
-  private readonly pos = xavier(SEQ * MODEL, SEQ, MODEL);
-  private readonly wq = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
-  private readonly wk = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
-  private readonly wv = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
-  private readonly wo = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL);
-  private readonly w1 = xavier(LAYERS * MODEL * FF, MODEL, FF);
-  private readonly w2 = xavier(LAYERS * FF * MODEL, FF, MODEL);
-  private readonly outW = xavier(MODEL * OUTPUT, MODEL, OUTPUT);
+  private readonly inW: Float32Array;
+  private readonly pos: Float32Array;
+  private readonly wq: Float32Array;
+  private readonly wk: Float32Array;
+  private readonly wv: Float32Array;
+  private readonly wo: Float32Array;
+  private readonly w1: Float32Array;
+  private readonly w2: Float32Array;
+  private readonly outW: Float32Array;
+
+  constructor(seed = 42) {
+    const rng = splitmix32(seed);
+    this.inW = xavier(INPUT * MODEL, INPUT, MODEL, rng); this.pos = xavier(SEQ * MODEL, SEQ, MODEL, rng);
+    this.wq = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, rng); this.wk = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, rng);
+    this.wv = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, rng); this.wo = xavier(LAYERS * MODEL * MODEL, MODEL, MODEL, rng);
+    this.w1 = xavier(LAYERS * MODEL * FF, MODEL, FF, rng); this.w2 = xavier(LAYERS * FF * MODEL, FF, MODEL, rng);
+    this.outW = xavier(MODEL * OUTPUT, MODEL, OUTPUT, rng);
+  }
 
   /** Clears temporal history while preserving deterministic weights. */
   reset(): void { this.history.fill(0); this.filled = 0; this.cursor = 0; }

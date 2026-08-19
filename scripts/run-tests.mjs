@@ -31,7 +31,8 @@ try {
     ['tests/webxr.test.ts', 'runWebXRTests'], 
     ['tests/depth-pipeline.test.ts', 'runDepthPipelineTests'], 
     ['tests/integrity.test.ts', 'runIntegrityTests'], 
-    ['tests/material-strategy.test.ts', 'runMaterialStrategyTests']
+    ['tests/material-strategy.test.ts', 'runMaterialStrategyTests'],
+    ['tests/pose-pipeline.test.ts', 'runPosePipelineTests']
   ]) {
     const output = join(directory, `${exported}.mjs`);
     await build({ entryPoints: [source], outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node20' });

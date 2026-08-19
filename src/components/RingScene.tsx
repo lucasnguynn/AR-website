@@ -34,15 +34,13 @@ import {
   computeAnatomicalRingPose,
   projectRingLandmarks,
 } from '../utils/coordinateMapping';
-import { RingTrackingStabilizer } from '../utils/trackingStabilizer';
-import type { RingPoseSample } from '../utils/trackingStabilizer';
+import { UKFPosePipeline } from '../tracking/PosePipeline';
 import { useRayTracingPipeline } from './RayTracingPipeline';
 import { WebXRDepthManager, type DepthOcclusionTier } from '../services/WebXRDepthManager';
 import type { GemstoneQuality, RingRendererMode } from '../materials/ringMaterialStrategy';
 
 const FINGER_OCCLUDER_RENDER_ORDER = -1;
 const RING_RENDER_ORDER = 20;
-const MOBILE_SAFE_RING_SCALE = 0.015;
 const FINGER_OCCLUDER_DEBUG_COLOR = '#D5FD50';
 const FINGER_OCCLUDER_RADIAL_SEGMENTS = 24;
 const FINGER_OCCLUDER_RADIUS_FRACTION = 0.18;
@@ -117,8 +115,8 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
   const { scene }  = useRingModel(undefined, { rendererMode: materialRendererMode, quality: gemstoneQuality, preset: 'silver' });
   useRayTracingPipeline({ enabled: enableRayTracing, ringRoot: scene });
 
-  // Tracking stabilizer — state machine + outlier rejection + adaptive filters
-  const stabilizer = useRef(new RingTrackingStabilizer());
+  const posePipeline = useRef(new UKFPosePipeline());
+  const lastProjectedTimestamp = useRef<number | null>(null);
   const projectedLandmarks = useRef<Record<number, THREE.Vector3>>({
     [LM.INDEX_MCP]: new THREE.Vector3(),
     [LM.RING_MCP]: new THREE.Vector3(),
@@ -128,14 +126,6 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
   const rawPosition = useRef(new THREE.Vector3());
   const rawQuaternion = useRef(new THREE.Quaternion());
   const rawScale = useRef(new THREE.Vector3(1, 1, 1));
-  const sampleRef = useRef<RingPoseSample>({
-    position: rawPosition.current,
-    quaternion: rawQuaternion.current,
-    scale: 1,
-    confidence: 0,
-    timestamp: 0,
-    landmarks: undefined,
-  });
   const fallbackVideoRef = useRef({
     videoWidth: 1,
     videoHeight: 1,
@@ -161,15 +151,8 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
 
     const result = resultRef.current;
 
-    if (!result || !result.detected || result.hands.length === 0) {
-      const stabilized = stabilizer.current.update(null);
-      group.visible = stabilized.visible;
-      occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
-      debugBox.visible = stabilized.visible;
-      return;
-    }
-
-    const hand = result.hands[0];
+    const hand = result?.detected ? result.hands[0] : undefined;
+    const sourceTimestamp = result?.frameTimestamp ?? hand?.timestamp ?? null;
 
     const actualVideo = videoRef?.current;
     const fallbackVideo = fallbackVideoRef.current;
@@ -184,61 +167,46 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
     projParams.camera = camera as THREE.PerspectiveCamera;
     projParams.isMirrored = facingMode === 'user';
 
-    if (!projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) {
-      const stabilized = stabilizer.current.update(null);
-      group.visible = stabilized.visible;
-      occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
-      debugBox.visible = stabilized.visible;
-      return;
+    if (hand && sourceTimestamp !== null && sourceTimestamp !== lastProjectedTimestamp.current
+      && projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) {
+      const poseScale = computeAnatomicalRingPose(projectedLandmarks.current, { position: rawPosition.current, quaternion: rawQuaternion.current, scale: rawScale.current });
+      if (poseScale !== null) {
+        rawPosition.current.y += OFFSET_Y;
+        rawPosition.current.z += OFFSET_Z;
+        posePipeline.current.ingest({
+          sourceTimestamp,
+          position: [rawPosition.current.x, rawPosition.current.y, rawPosition.current.z],
+          quaternion: [rawQuaternion.current.x, rawQuaternion.current.y, rawQuaternion.current.z, rawQuaternion.current.w],
+          scale: rawScale.current.x,
+          scaleMode: 'visual-relative',
+          confidence: hand.confidence,
+        });
+        lastProjectedTimestamp.current = sourceTimestamp;
+      }
     }
 
-    const poseScale = computeAnatomicalRingPose(
-      projectedLandmarks.current,
-      {
-        position: rawPosition.current,
-        quaternion: rawQuaternion.current,
-        scale: rawScale.current,
-      },
-    );
-    if (poseScale === null) {
-      const stabilized = stabilizer.current.update(null);
-      group.visible = stabilized.visible;
-      occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
-      debugBox.visible = stabilized.visible;
-      return;
-    }
-
-    rawPosition.current.y += OFFSET_Y;
-    rawPosition.current.z += OFFSET_Z;
-
-    const sample = sampleRef.current;
-    sample.scale = rawScale.current.x;
-    sample.confidence = hand.confidence;
-    sample.timestamp = result.frameTimestamp ?? hand.timestamp;
-    sample.landmarks = hand.landmarks;
-
-    const stabilized = stabilizer.current.update(sample);
-
-    group.visible = stabilized.visible;
-    occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
-    debugBox.visible = stabilized.visible;
-    if (!stabilized.visible) return;
+    const pose = posePipeline.current.sample(performance.now());
+    const visible = pose?.visible ?? false;
+    group.visible = visible;
+    occluder.visible = visible && depthTierRef.current === 'geometric-proxy';
+    debugBox.visible = visible;
+    if (!pose) return;
 
     const mcpToPip = projectedLandmarks.current[LM.RING_MCP].distanceTo(projectedLandmarks.current[LM.RING_PIP]);
     const occluderRadius = Math.max(mcpToPip * FINGER_OCCLUDER_RADIUS_FRACTION, 0.004);
     const occluderHeight = Math.max(mcpToPip * FINGER_OCCLUDER_HEIGHT_FRACTION, occluderRadius * 3);
 
-    occluder.position.copy(stabilized.position);
-    occluder.quaternion.copy(stabilized.quaternion);
+    occluder.position.fromArray(pose.position);
+    occluder.quaternion.fromArray(pose.quaternion);
     occluder.scale.set(occluderRadius * 2, occluderHeight, occluderRadius * 2);
 
-    debugBox.position.copy(stabilized.position);
-    debugBox.quaternion.copy(stabilized.quaternion);
+    debugBox.position.fromArray(pose.position);
+    debugBox.quaternion.fromArray(pose.quaternion);
     debugBox.scale.set(1, 1, 1);
 
-    group.position.copy(stabilized.position);
-    group.quaternion.copy(stabilized.quaternion);
-    group.scale.set(MOBILE_SAFE_RING_SCALE, MOBILE_SAFE_RING_SCALE, MOBILE_SAFE_RING_SCALE);
+    group.position.fromArray(pose.position);
+    group.quaternion.fromArray(pose.quaternion);
+    group.scale.setScalar(pose.scale);
   });
 
   // Dispose cloned geometry/materials on unmount to prevent GPU memory leaks.
@@ -248,6 +216,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
     });
 
     return () => {
+      posePipeline.current.reset();
       disposeRingScene(scene);
     };
   }, [scene]);
