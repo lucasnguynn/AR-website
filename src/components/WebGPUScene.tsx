@@ -8,6 +8,9 @@ import type { AmbientLightState } from '../utils/AmbientLightAdapter';
 type RenderTier = 'webgpu' | 'webgl2' | 'webgl1';
 type QualityTier = 'HIGH' | 'MEDIUM' | 'LOW';
 type ThreeRenderer = THREE.WebGLRenderer & { init?: () => Promise<void> };
+type AdaptiveRenderer = ThreeRenderer & { shadowMap?: THREE.WebGLRenderer['shadowMap'] };
+type WebGPUModule = { WebGPURenderer?: new (parameters: Record<string, unknown>) => AdaptiveRenderer };
+type RendererInitResult = { renderer: ThreeRenderer; tier: RenderTier };
 
 declare global {
   interface Navigator {
@@ -58,37 +61,47 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
   return renderer;
 }
 
-async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<ThreeRenderer> {
+async function resolveWebGPURenderer(): Promise<WebGPUModule | null> {
+  try {
+    const importWebGPU = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<unknown>;
+    const mod = await importWebGPU('three/' + 'webgpu') as WebGPUModule;
+    if (typeof mod.WebGPURenderer === 'function') return mod;
+  } catch (error) {
+    console.warn('three/webgpu is unavailable; falling back to WebGL2.', error);
+  }
+  return null;
+}
+
+async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<RendererInitResult> {
   if (requestedTier === 'webgpu' && hasWebGPUSupport()) {
-    try {
-      // Dùng ép kiểu qua 'unknown as any' để vượt qua lỗi TS2352 của TypeScript strict mode
-      const mod = await import(/* @vite-ignore */'three/webgpu') as unknown as { WebGPURenderer: any };
-      const WebGPURenderer = mod.WebGPURenderer;
+    const mod = await resolveWebGPURenderer();
+    if (mod?.WebGPURenderer) {
+      try {
+        const renderer = new mod.WebGPURenderer({
+          canvas,
+          alpha: true,
+          antialias: true,
+          powerPreference: 'high-performance',
+        });
 
-      const renderer = new WebGPURenderer({
-        canvas,
-        alpha: true,
-        antialias: true,
-        powerPreference: 'high-performance',
-      }) as unknown as ThreeRenderer;
-
-      await renderer.init?.();
-      renderer.setClearColor?.(0x000000, 0);
-      renderer.outputColorSpace = THREE.SRGBColorSpace;
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      return renderer;
-    } catch (error) {
-      console.warn('WebGPU renderer failed; falling back to WebGL2.', error);
-      return createWebGLRenderer(canvas, 'webgl2');
+        await renderer.init?.();
+        renderer.setClearColor?.(0x000000, 0);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        return { renderer, tier: 'webgpu' };
+      } catch (error) {
+        console.warn('WebGPU renderer failed; falling back to WebGL2.', error);
+      }
     }
   }
 
   try {
-    return createWebGLRenderer(canvas, requestedTier === 'webgl1' ? 'webgl1' : 'webgl2');
+    const fallbackTier = requestedTier === 'webgl1' ? 'webgl1' : 'webgl2';
+    return { renderer: createWebGLRenderer(canvas, fallbackTier), tier: fallbackTier };
   } catch (error) {
     if (requestedTier === 'webgl1') throw error;
     console.warn('WebGL2 renderer failed; falling back to WebGL1.', error);
-    return createWebGLRenderer(canvas, 'webgl1');
+    return { renderer: createWebGLRenderer(canvas, 'webgl1'), tier: 'webgl1' };
   }
 }
 
@@ -120,24 +133,17 @@ function RendererReadyNotifier({ onMount }: { onMount?: () => void }) {
 }
 
 function FrameTimeMonitor({ tier, quality, onDowngrade }: { tier: RenderTier; quality: QualityTier; onDowngrade: (tier: RenderTier, quality: QualityTier, averageMs: number) => void }) {
-  const cycleCountRef = useRef(0);
-  const slowCycleCountRef = useRef(0);
-  const totalMsRef = useRef(0);
+  const frameCountRef = useRef(0);
+  const emaMsRef = useRef(1000 / 60);
 
   useFrame((_, delta) => {
-    totalMsRef.current += delta * 1000;
-    cycleCountRef.current += 1;
-    if (cycleCountRef.current < 30) return;
+    const frameMs = delta * 1000;
+    frameCountRef.current += 1;
+    emaMsRef.current += (frameMs - emaMsRef.current) / 8;
+    if (frameCountRef.current < 8 || emaMsRef.current <= 20) return;
 
-    const averageMs = totalMsRef.current / cycleCountRef.current;
-    slowCycleCountRef.current = averageMs > 20 ? slowCycleCountRef.current + 1 : 0;
-    cycleCountRef.current = 0;
-    totalMsRef.current = 0;
-
-    if (slowCycleCountRef.current >= 3) {
-      slowCycleCountRef.current = 0;
-      onDowngrade(nextRenderTier(tier), nextQualityTier(quality), averageMs);
-    }
+    onDowngrade(nextRenderTier(tier), nextQualityTier(quality), emaMsRef.current);
+    frameCountRef.current = 0;
   });
 
   return null;
@@ -148,7 +154,13 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
   const [qualityTier, setQualityTier] = useState<QualityTier>('HIGH');
   const effectiveQuality = QUALITY[qualityTier];
   const canvasDpr = dpr ?? effectiveQuality.dpr;
-  const glFactory = useMemo<CanvasProps['gl']>(() => ((canvas) => createRenderer(canvas, renderTier)) as CanvasProps['gl'], [renderTier]);
+  const glFactory = useMemo<CanvasProps['gl']>(() => (async (canvas) => {
+    const { renderer, tier } = await createRenderer(canvas, renderTier);
+    if (tier !== renderTier) {
+      window.requestAnimationFrame(() => setRenderTier(tier));
+    }
+    return renderer as THREE.WebGLRenderer;
+  }) as CanvasProps['gl'], [renderTier]);
 
   const handleDowngrade = (nextTier: RenderTier, nextQuality: QualityTier, averageMs: number): void => {
     if (nextTier === renderTier && nextQuality === qualityTier) return;
@@ -170,7 +182,9 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
         gl.outputColorSpace = THREE.SRGBColorSpace;
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = ambientLight?.exposure ?? (renderTier === 'webgpu' ? 1.05 : 1.0);
-        gl.shadowMap.enabled = effectiveQuality.shadows;
+        if (gl.shadowMap) {
+          gl.shadowMap.enabled = effectiveQuality.shadows;
+        }
         scene.userData.rendererMode = renderTier;
         scene.userData.qualityTier = qualityTier;
         scene.userData.ambientColorTemperature = ambientLight?.colorTemperature;
