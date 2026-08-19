@@ -1,74 +1,48 @@
+# FILE: .github/workflows/asset-pipeline.yml
 name: Asset Pipeline
 
 on:
   push:
+    branches: [main]
     paths:
+      - 'src/assets/models/**/*.glb'
       - 'public/models/**/*.glb'
-      - 'scripts/compress-model.js'
+      - 'scripts/glb_to_usdz.py'
+      - 'scripts/generate-sri.js'
       - '.github/workflows/asset-pipeline.yml'
   workflow_dispatch:
 
 jobs:
-  optimize-ar-assets:
+  convert:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          npm install
-          python -m pip install --upgrade pip usd-core
-
-      - name: Compress GLB models
-        run: npm run compress-model
-
-      - name: Convert GLB models to USDZ
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          from pxr import Usd, UsdGeom
-          import zipfile
-
-          model_dir = Path('public/models')
-          for glb_path in model_dir.glob('*.glb'):
-              usdz_path = glb_path.with_suffix('.usdz')
-              usda_path = usdz_path.with_suffix('.usda')
-              
-              # 1. Tạo file USD mô tả asset
-              stage = Usd.Stage.CreateNew(str(usda_path))
-              root = UsdGeom.Xform.Define(stage, '/Root')
-              stage.SetDefaultPrim(root.GetPrim())
-              
-              # Thêm reference trỏ trực tiếp đến tên file GLB nằm cùng trong container
-              refs = root.GetPrim().GetReferences()
-              refs.AddReference(glb_path.name)
-              stage.Save()
-              
-              # 2. Đóng gói thành file .usdz (Bản chất là file zip không nén) bằng zipfile chuẩn của Python
-              with zipfile.ZipFile(usdz_path, 'w', zipfile.ZIP_STORED) as usdz:
-                  usdz.write(usda_path, arcname='scene.usda')
-                  usdz.write(glb_path, arcname=glb_path.name)
-              
-              usda_path.unlink(missing_ok=True)
-              print(f'Successfully created {usdz_path}')
-          PY
-
-      - name: Upload optimized AR assets
-        uses: actions/upload-artifact@v4
+      - run: pip install usd-core Pillow numpy
+      - uses: actions/setup-node@v4
         with:
-          name: optimized-ar-assets
-          path: |
-            public/models/**/*.glb
-            public/models/**/*.usdz
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm install -g @gltf-transform/cli
+      - name: Compress GLB
+        run: |
+          mkdir -p public/models
+          for f in src/assets/models/*.glb public/models/*.glb; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .glb)
+            gltf-transform optimize "$f" "public/models/${name}.glb" \
+              --compress draco --texture-compress ktx2
+          done
+      - name: Convert to USDZ
+        run: for f in public/models/*.glb; do python3 scripts/glb_to_usdz.py "$f"; done
+      - name: Generate SRI
+        run: node scripts/generate-sri.js public/models/
+      - name: Commit
+        run: |
+          git config user.email "actions@github.com" && git config user.name "GitHub Actions"
+          git add public/models/ src/generated/
+          git diff --staged --quiet || (git commit -m "ci: assets compressed + USDZ [skip ci]" && git push)
+# VERIFY: echo "Asset Pipeline converts GLB assets to optimized GLB, USDZ, and SRI manifests"
