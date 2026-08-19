@@ -14,10 +14,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'three-core': ['three'],
-          'three-webgpu': ['three/webgpu', 'three/tsl'],
           mediapipe: ['@mediapipe/tasks-vision'],
-          tfjs: ['@tensorflow/tfjs-core', '@tensorflow/tfjs-backend-webgpu'],
-          onnxruntime: ['onnxruntime-web'],
         },
       },
     },

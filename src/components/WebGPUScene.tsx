@@ -3,7 +3,7 @@ import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type CanvasProps } from '@react-three/fiber';
 import * as THREE from 'three';
 import { WebGLRenderer } from 'three';
-import { WebGPURenderer } from 'three/webgpu';
+import WebGPURenderer from 'three/addons/renderers/webgpu/WebGPURenderer.js';
 import { RingScene } from './RingScene';
 import type { HandTrackingResult } from '../types/ar.types';
 import type { AmbientLightState } from '../utils/AmbientLightAdapter';

@@ -16,7 +16,7 @@
  *     consistent with how ARTryOnModal.tsx's RingScene worked.
  */
 
-import React, { Suspense, useRef, useEffect } from 'react';
+import React, { Suspense, useRef, useEffect, useMemo } from 'react';
 import { Environment } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -37,6 +37,7 @@ import {
 import { RingTrackingStabilizer } from '../utils/trackingStabilizer';
 import type { RingPoseSample } from '../utils/trackingStabilizer';
 import { useRayTracingPipeline } from './RayTracingPipeline';
+import { WebXRDepthManager, type DepthOcclusionTier } from '../services/WebXRDepthManager';
 
 const FINGER_OCCLUDER_RENDER_ORDER = -1;
 const RING_RENDER_ORDER = 20;
@@ -60,6 +61,47 @@ interface RingSceneProps {
   ambientLight?: AmbientLightState;
 }
 
+const DEPTH_INPUT_SIZE = 518;
+
+function CameraDepthOcclusion({ videoRef, tierRef }: { videoRef?: React.RefObject<HTMLVideoElement | null>; tierRef: React.MutableRefObject<DepthOcclusionTier> }) {
+  const { scene } = useThree();
+  const pipeline = useMemo(() => new WebXRDepthManager({ modelUrl: `${import.meta.env.BASE_URL}models/depth/depth_anything_v2_small.onnx` }), []);
+  const enabled = import.meta.env.VITE_ENABLE_MONOCULAR_DEPTH === 'true';
+
+  useEffect(() => {
+    scene.add(pipeline.occlusionProxy);
+    void pipeline.start();
+    let callback = 0;
+    let cancelled = false;
+    const video = videoRef?.current;
+    const capture = async () => {
+      if (cancelled || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !pipeline.canAcceptCameraFrame()) return;
+      const started = performance.now();
+      try {
+        const bitmap = await createImageBitmap(video, { resizeWidth: DEPTH_INPUT_SIZE, resizeHeight: DEPTH_INPUT_SIZE, resizeQuality: 'low' });
+        if (cancelled) { bitmap.close(); return; }
+        pipeline.update({ cameraFrame: bitmap, captureMs: performance.now() - started });
+        tierRef.current = pipeline.getTier();
+      } catch {
+        tierRef.current = 'geometric-proxy';
+      }
+    };
+    const onFrame = () => {
+      void capture();
+      if (!cancelled && video?.requestVideoFrameCallback) callback = video.requestVideoFrameCallback(onFrame);
+    };
+    if (enabled && video?.requestVideoFrameCallback) callback = video.requestVideoFrameCallback(onFrame);
+    else if (enabled) callback = window.setInterval(() => void capture(), 100);
+    return () => {
+      cancelled = true;
+      if (video?.cancelVideoFrameCallback && callback) video.cancelVideoFrameCallback(callback);
+      else if (callback) window.clearInterval(callback);
+      pipeline.dispose();
+    };
+  }, [enabled, pipeline, scene, tierRef, videoRef]);
+  return null;
+}
+
 // ── RingMesh — inner component, renders only after useGLTF resolves ──────────
 // Kept separate from the Suspense boundary so ErrorBoundary can catch
 // suspension errors without unmounting the whole scene.
@@ -68,6 +110,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
   const groupRef   = useRef<THREE.Group>(null);
   const debugBoxRef = useRef<THREE.Mesh>(null);
   const occluderRef = useRef<THREE.Mesh>(null);
+  const depthTierRef = useRef<DepthOcclusionTier>('geometric-proxy');
   const { scene }  = useRingModel();
   useRayTracingPipeline({ enabled: enableRayTracing, ringRoot: scene });
 
@@ -118,7 +161,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
     if (!result || !result.detected || result.hands.length === 0) {
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
-      occluder.visible = stabilized.visible;
+      occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
       debugBox.visible = stabilized.visible;
       return;
     }
@@ -141,7 +184,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
     if (!projectRingLandmarks(hand.landmarks, projParams, projectedLandmarks.current)) {
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
-      occluder.visible = stabilized.visible;
+      occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
       debugBox.visible = stabilized.visible;
       return;
     }
@@ -157,7 +200,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
     if (poseScale === null) {
       const stabilized = stabilizer.current.update(null);
       group.visible = stabilized.visible;
-      occluder.visible = stabilized.visible;
+      occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
       debugBox.visible = stabilized.visible;
       return;
     }
@@ -174,7 +217,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
     const stabilized = stabilizer.current.update(sample);
 
     group.visible = stabilized.visible;
-    occluder.visible = stabilized.visible;
+    occluder.visible = stabilized.visible && depthTierRef.current === 'geometric-proxy';
     debugBox.visible = stabilized.visible;
     if (!stabilized.visible) return;
 
@@ -208,6 +251,7 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableRayTracing =
 
   return (
     <>
+      <CameraDepthOcclusion videoRef={videoRef} tierRef={depthTierRef} />
       <Environment preset="city" background={false} environmentIntensity={0.65 + (ambientLight?.exposure ?? 1) * 0.22} />
       <ambientLight intensity={0.22 + (ambientLight?.exposure ?? 1) * 0.12} color={ambientLight?.keyColor ?? '#fff7e8'} />
       <hemisphereLight args={[ambientLight?.keyColor ?? '#fff7e8', '#24222a', 0.55]} />

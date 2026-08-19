@@ -68,6 +68,16 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   const [hudVisible, setHudVisible] = useState(false);
   const [sizeEstimate, setSizeEstimate] = useState<RingSizeEstimate | null>(null);
   const [diagnostics, setDiagnostics] = useState<ARDiagnostics | null>(null);
+  useEffect(() => {
+    const updateDepth = (event: Event) => {
+      const detail = (event as CustomEvent<{ tier?: ARDiagnostics['depth'] }>).detail;
+      if (!detail?.tier) return;
+      const tier = detail.tier;
+      setDiagnostics((current) => current ? { ...current, depth: tier } : current);
+    };
+    window.addEventListener('ar:depth-diagnostics', updateDepth);
+    return () => window.removeEventListener('ar:depth-diagnostics', updateDepth);
+  }, []);
   const {
     cameraState,
     facingMode,

@@ -226,19 +226,30 @@ export function computeRingScale(
 let _captureCanvas: OffscreenCanvas | null = null;
 let _captureCtx: OffscreenCanvasRenderingContext2D | null = null;
 
+export function inferenceFrameSize(width: number, height: number, longestEdge = 384): { width: number; height: number } {
+  if (width <= 0 || height <= 0) return { width: 0, height: 0 };
+  const scale = Math.min(1, longestEdge / Math.max(width, height));
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
+
 export function captureVideoFrame(
   video: HTMLVideoElement,
 ): { buffer: ArrayBuffer; width: number; height: number } | null {
-  const w = video.videoWidth;
-  const h = video.videoHeight;
-  if (w === 0 || h === 0) return null;
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  if (sourceWidth === 0 || sourceHeight === 0) return null;
+
+  // MediaPipe's hand model does not benefit from a multi-megapixel RGBA input.
+  // Resize before readback so the fallback copies at most ~0.15 MP rather than
+  // the complete camera frame (often 2-8 MP on mobile devices).
+  const { width: w, height: h } = inferenceFrameSize(sourceWidth, sourceHeight);
 
   if (!_captureCanvas || _captureCanvas.width !== w || _captureCanvas.height !== h) {
     _captureCanvas = new OffscreenCanvas(w, h);
     _captureCtx = _captureCanvas.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
   }
 
-  _captureCtx!.drawImage(video, 0, 0, w, h);
+  _captureCtx!.drawImage(video, 0, 0, sourceWidth, sourceHeight, 0, 0, w, h);
   const imageData = _captureCtx!.getImageData(0, 0, w, h);
 
   return {
