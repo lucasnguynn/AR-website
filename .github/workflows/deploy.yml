@@ -33,35 +33,25 @@ jobs:
           node-version: '20'
           cache: npm
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-modules-
-
-      - name: Cache generated models
-        uses: actions/cache@v4
-        with:
-          path: public/models
-          key: ${{ runner.os }}-models-${{ hashFiles('assets/models/raw/**') }}
-          restore-keys: |
-            ${{ runner.os }}-models-
-
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Build production assets
-        run: npm run build:assets
+      - name: Type check
+        run: npx tsc --noEmit
 
-      - name: Build application
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm exec --package vitest -- vitest run --passWithNoTests
+
+      - name: Build static site
         run: npm run build
 
-      - name: Generate worker SRI hashes
-        run: npm run generate:sri
+      - name: Generate asset integrity manifest
+        run: node scripts/generate-sri.js
 
-      - name: Rebuild application with SRI manifest
+      - name: Rebuild with generated integrity hashes
         run: npm run build
 
       - name: Create 404.html for SPA routing
