@@ -26,13 +26,14 @@ export type UnversionedMediaPipeOutboundMessage = MediaPipeOutboundMessage exten
 
 export type DepthTier = 'monocular-depth' | 'degraded-depth';
 export type DepthInboundMessage = Versioned<
-  | { type: 'INIT'; payload: { modelUrl?: string } }
+  | { type: 'INIT'; payload: { model: ArrayBuffer } }
   | { type: 'DETECT'; payload: { frameId: number; image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCanvasElement; tier?: DepthTier } }
   | { type: 'PAUSE' | 'RESUME' | 'DESTROY' }
 >;
 export type DepthOutboundMessage = Versioned<
-  | { type: 'READY' | 'DESTROYED' }
-  | { type: 'RESULT'; payload: { frameId: number; width: number; height: number; depth: Float32Array; tier: DepthTier; averageMs: number } }
+  | { type: 'READY'; payload: { provider: 'webgpu' | 'wasm' } }
+  | { type: 'DESTROYED' }
+  | { type: 'RESULT'; payload: { frameId: number; width: number; height: number; depth: Float32Array; tier: DepthTier; averageMs: number; provider: 'webgpu' | 'wasm' } }
   | { type: 'DEGRADED'; payload: { frameId: number; reason: 'backpressure' } }
   | { type: 'ERROR'; payload: { message: string; frameId?: number } }
 >;
@@ -58,11 +59,24 @@ export function validateDepthInbound(value: unknown): value is DepthInboundMessa
   if (!versioned(value)) return false;
   if (value.type === 'PAUSE' || value.type === 'RESUME' || value.type === 'DESTROY') return true;
   if (!record(value.payload)) return false;
-  if (value.type === 'INIT') return value.payload.modelUrl === undefined || typeof value.payload.modelUrl === 'string';
+  if (value.type === 'INIT') return value.payload.model instanceof ArrayBuffer && value.payload.model.byteLength > 0;
   return value.type === 'DETECT' && Number.isFinite(value.payload.frameId) && record(value.payload.image);
 }
 export function validateDepthOutbound(value: unknown): value is DepthOutboundMessage {
-  return versioned(value) && (value.type === 'READY' || value.type === 'DESTROYED' || (['RESULT', 'DEGRADED', 'ERROR'].includes(value.type) && record(value.payload)));
+  if (!versioned(value)) return false;
+  if (value.type === 'DESTROYED') return true;
+  if (!record(value.payload)) return false;
+  if (value.type === 'READY') return value.payload.provider === 'webgpu' || value.payload.provider === 'wasm';
+  if (value.type === 'DEGRADED') return Number.isFinite(value.payload.frameId) && value.payload.reason === 'backpressure';
+  if (value.type === 'ERROR') return typeof value.payload.message === 'string';
+  return value.type === 'RESULT'
+    && Number.isFinite(value.payload.frameId)
+    && Number.isFinite(value.payload.width)
+    && Number.isFinite(value.payload.height)
+    && value.payload.depth instanceof Float32Array
+    && (value.payload.tier === 'monocular-depth' || value.payload.tier === 'degraded-depth')
+    && Number.isFinite(value.payload.averageMs)
+    && (value.payload.provider === 'webgpu' || value.payload.provider === 'wasm');
 }
 
 export function protocolMessage<T extends { type: string }>(message: T): T & { protocolVersion: WorkerProtocolVersion } {

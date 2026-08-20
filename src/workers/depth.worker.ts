@@ -1,9 +1,10 @@
 // FILE: src/workers/depth.worker.ts
 import * as ort from 'onnxruntime-web/webgpu';
+import ortWasmSimdUrl from 'onnxruntime-web/dist/ort-wasm-simd-threaded.wasm?url';
+import ortWasmJsepUrl from 'onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm?url';
 import { protocolMessage, validateDepthInbound, type DepthTier } from '../protocol/workerProtocol';
 
 type WorkerGlobal = typeof self & {
-  caches?: CacheStorage;
   postMessage(message: unknown, transfer?: Transferable[]): void;
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
 };
@@ -12,12 +13,13 @@ const workerScope = self as WorkerGlobal;
 type OrtTensor = { data: Float32Array | readonly number[]; dims: readonly number[] };
 type OrtSession = { inputNames: readonly string[]; outputNames: readonly string[]; run(feeds: Record<string, ort.Tensor>): Promise<Record<string, OrtTensor>> };
 const INPUT_SIZE = 518;
-const MODEL_CACHE = 'webar-models-v1';
-const DEFAULT_MODEL_URL = '/models/depth/depth_anything_v2_small.onnx';
 const IMAGENET_MEAN = [0.485, 0.456, 0.406] as const;
 const IMAGENET_STD = [0.229, 0.224, 0.225] as const;
 
-ort.env.wasm.wasmPaths = '/wasm/ort/';
+(ort.env.wasm as unknown as { wasmPaths: string | Record<string, string> }).wasmPaths = {
+  'ort-wasm-simd-threaded.wasm': ortWasmSimdUrl,
+  'ort-wasm-simd-threaded.jsep.wasm': ortWasmJsepUrl,
+};
 
 let session: OrtSession | null = null;
 let canvas: OffscreenCanvas | null = null;
@@ -25,27 +27,17 @@ let context: OffscreenCanvasRenderingContext2D | null = null;
 let busy = false;
 let lastInferenceAt = 0;
 let averageMs = 0;
+let provider: 'webgpu' | 'wasm' = 'wasm';
 
-async function cachedModelBuffer(modelUrl: string): Promise<ArrayBuffer> {
-  const request = new Request(modelUrl, { credentials: 'same-origin' });
-  if (!workerScope.caches) {
-    const response = await fetch(request);
-    if (!response.ok) throw new Error(`Failed to fetch depth model: ${response.status} ${response.statusText}`);
-    return response.arrayBuffer();
-  }
-
-  const cache = await workerScope.caches.open(MODEL_CACHE);
-  const cached = await cache.match(request);
-  const response = cached ?? await fetch(request);
-  if (!response.ok) throw new Error(`Failed to fetch depth model: ${response.status} ${response.statusText}`);
-  if (!cached) await cache.put(request, response.clone());
-  return response.arrayBuffer();
-}
-
-async function init(modelUrl = DEFAULT_MODEL_URL): Promise<void> {
+async function init(model: ArrayBuffer): Promise<void> {
   if (session) return;
-  const model = await cachedModelBuffer(modelUrl);
-  session = await ort.InferenceSession.create(model, { executionProviders: ['webgpu', 'wasm'], graphOptimizationLevel: 'all' });
+  try {
+    session = await ort.InferenceSession.create(model, { executionProviders: ['webgpu'], graphOptimizationLevel: 'all' });
+    provider = 'webgpu';
+  } catch {
+    session = await ort.InferenceSession.create(model, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    provider = 'wasm';
+  }
 }
 
 function getContext(): OffscreenCanvasRenderingContext2D {
@@ -83,9 +75,19 @@ function imageToTensor(image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCa
 
 function coerceDepth(output: OrtTensor): Float32Array {
   const values = output.data instanceof Float32Array ? output.data : new Float32Array(output.data);
-  if (values.length === INPUT_SIZE * INPUT_SIZE) return new Float32Array(values);
   const depth = new Float32Array(INPUT_SIZE * INPUT_SIZE);
   depth.set(values.subarray(0, depth.length));
+  // Depth Anything emits relative inverse depth. Robust normalization turns it
+  // into conservative camera-space meters consumed by the fragment depth pass.
+  const finite = Array.from(depth).filter(Number.isFinite).sort((a, b) => a - b);
+  if (finite.length === 0) throw new Error('Depth Anything output contained no finite samples.');
+  const low = finite[Math.floor(finite.length * 0.02)];
+  const high = finite[Math.floor(finite.length * 0.98)];
+  const range = Math.max(high - low, 1e-6);
+  for (let i = 0; i < depth.length; i += 1) {
+    const inverse = Math.min(1, Math.max(0, (depth[i] - low) / range));
+    depth[i] = 0.65 - inverse * 0.47;
+  }
   return depth;
 }
 
@@ -98,7 +100,6 @@ async function estimate(frameId: number, image: ImageBitmap | ImageData | Offscr
   }
   busy = true;
   try {
-    if (!session) await init();
     if (!session) throw new Error('Depth Anything v2 Small session was not initialized.');
     const input = imageToTensor(image);
     const inputName = session.inputNames[0] ?? 'input';
@@ -111,7 +112,7 @@ async function estimate(frameId: number, image: ImageBitmap | ImageData | Offscr
     averageMs = averageMs === 0 ? elapsedMs : averageMs * 0.8 + elapsedMs * 0.2;
     lastInferenceAt = performance.now();
     const reportedTier: DepthTier = averageMs > 30 ? 'degraded-depth' : tier;
-    workerScope.postMessage(protocolMessage({ type: 'RESULT', payload: { frameId, width: INPUT_SIZE, height: INPUT_SIZE, depth, tier: reportedTier, averageMs } }), [depth.buffer]);
+    workerScope.postMessage(protocolMessage({ type: 'RESULT', payload: { frameId, width: INPUT_SIZE, height: INPUT_SIZE, depth, tier: reportedTier, averageMs, provider } }), [depth.buffer]);
   } finally {
     busy = false;
     if (image instanceof ImageBitmap) image.close();
@@ -125,8 +126,8 @@ workerScope.addEventListener('message', (event: MessageEvent<unknown>) => {
   }
   const message = event.data;
   if (message.type === 'INIT') {
-    init(message.payload.modelUrl)
-      .then(() => workerScope.postMessage(protocolMessage({ type: 'READY' })))
+    init(message.payload.model)
+      .then(() => workerScope.postMessage(protocolMessage({ type: 'READY', payload: { provider } })))
       .catch((error: unknown) => workerScope.postMessage(protocolMessage({ type: 'ERROR', payload: { message: error instanceof Error ? error.message : String(error) } })));
     return;
   }
