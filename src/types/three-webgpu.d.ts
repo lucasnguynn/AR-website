@@ -85,6 +85,8 @@ declare module 'three/tsl' {
   export function dot(a: TSLNode, b: TSLNode): TSLNode;
   /** Maximum value node. */
   export function max(a: TSLNode, b: TSLNode | number): TSLNode;
+  /** Returns zero below the edge and one at or above it. */
+  export function step(edge: TSLNode | number, value: TSLNode): TSLNode;
   /** Clamp value node. */
   export function clamp(value: TSLNode, min: TSLNode | number, max: TSLNode | number): TSLNode;
   /** World-space normal accessor node. */

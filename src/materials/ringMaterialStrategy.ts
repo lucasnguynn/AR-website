@@ -11,7 +11,7 @@ export type RingMaterialRole = 'metal' | 'gemstone' | 'accent';
 export interface RingMaterialSemantic {
   readonly role: RingMaterialRole;
   readonly gemstone?: GemstoneType;
-  readonly source: 'extras' | 'exact-model-map' | 'name' | 'pbr-fallback';
+  readonly source: 'extras' | 'name' | 'pbr-fallback';
 }
 
 const GEM_TYPES: readonly GemstoneType[] = ['diamond', 'sapphire', 'ruby', 'emerald', 'amethyst'];
@@ -29,12 +29,14 @@ export function classifyRingMaterial(mesh: THREE.Mesh, material: THREE.Material)
   const explicitRole = stringValue(extras.materialRole)?.toLowerCase();
   const explicitGem = stringValue(extras.gemstoneType)?.toLowerCase();
   const gem = GEM_TYPES.find((type) => type === explicitGem);
-  if (explicitRole === 'gemstone' || gem) return { role: 'gemstone', gemstone: gem ?? 'diamond', source: 'extras' };
+  // The role is authoritative even when an exporter left stale gemstoneType metadata behind.
+  if (explicitRole === 'gemstone') return { role: 'gemstone', gemstone: gem ?? 'diamond', source: 'extras' };
   if (explicitRole === 'metal') return { role: 'metal', source: 'extras' };
   if (explicitRole === 'accent') return { role: 'accent', source: 'extras' };
+  if (gem) return { role: 'gemstone', gemstone: gem, source: 'extras' };
 
-  // The shipped nhan.glb contains one stable node/material pair named "model" and no extras.
-  if (mesh.name === 'model' && material.name === 'model') return { role: 'metal', source: 'exact-model-map' };
+  // Stable, exact exporter names precede fuzzy naming and PBR heuristics.
+  if (mesh.name === 'model' && material.name === 'model') return { role: 'metal', source: 'name' };
 
   const names = `${mesh.name} ${material.name}`;
   const namedGem = GEM_TYPES.find((type) => names.toLowerCase().includes(type));

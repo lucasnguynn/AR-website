@@ -11,12 +11,16 @@ function mesh(name: string, material: THREE.Material): THREE.Mesh {
 export function runMaterialStrategyTests(): void {
   const exportedMetal = new THREE.MeshStandardMaterial({ name: 'model', metalness: 0.05 });
   assert.deepEqual(classifyRingMaterial(mesh('model', exportedMetal), exportedMetal), {
-    role: 'metal', source: 'exact-model-map',
+    role: 'metal', source: 'name',
   });
 
   const explicitGem = new THREE.MeshStandardMaterial({ name: 'opaque-export-name' });
   explicitGem.userData = { materialRole: 'gemstone', gemstoneType: 'ruby' };
   assert.equal(classifyRingMaterial(mesh('Part_02', explicitGem), explicitGem).gemstone, 'ruby');
+
+  const authoritativeMetal = new THREE.MeshStandardMaterial({ name: 'Diamond' });
+  authoritativeMetal.userData = { materialRole: 'metal', gemstoneType: 'ruby' };
+  assert.equal(classifyRingMaterial(mesh('Ruby', authoritativeMetal), authoritativeMetal).role, 'metal', 'materialRole has priority over gemstoneType and naming');
 
   const pbrMetal = new THREE.MeshStandardMaterial({ name: 'unlabeled', metalness: 0.8 });
   assert.equal(classifyRingMaterial(mesh('unlabeled', pbrMetal), pbrMetal).role, 'metal');
@@ -46,6 +50,11 @@ export function runMaterialStrategyTests(): void {
   assert.equal(gpuMetal.userData.jewelryMode, 'webgpu-tsl');
   const gpuGem = webgpu.materialFor(gemMesh, gemSource);
   assert.equal(gpuGem.userData.gemstoneType, 'sapphire');
+  assert.deepEqual(gpuGem.userData.opticalTerms, ['cauchy-dispersion', 'beer-lambert-absorption', 'fresnel', 'total-internal-reflection', 'caustics']);
+  assert.equal(gpuGem.userData.spectralSampleCount, 8);
+  webgpu.setQuality('LOW');
+  assert.equal((gemMesh.material as THREE.Material).userData.spectralSampleCount, 3);
+  assert.equal((gemMesh.material as THREE.Material).userData.gemstoneUniforms.causticStrength.value, 0);
 
   let disposed = 0;
   (liveMetal.material as THREE.Material).addEventListener('dispose', () => { disposed += 1; });

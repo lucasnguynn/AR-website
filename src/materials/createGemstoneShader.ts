@@ -11,6 +11,7 @@ import {
   positionWorld,
   reflect,
   refract as tslRefract,
+  step,
   texture,
   timerLocal,
   uniform,
@@ -103,11 +104,19 @@ function createGemstoneColorFn(sampleCount: number) { return Fn(([
 
   const transmitted = alphaNode.negate().mul(pathNode).exp();
   const absorbed = acc.div(float(sampleCount)).mul(transmitted);
-  const criticalCos = asGemNode(float(1)).div(cauchyANode).asin().cos();
-  const refracted = asGemNode(tslRefract(viewNode.negate(), normalNode, asGemNode(float(1)).div(cauchyANode)));
-  const tirMask = asGemNode(max(asGemNode(float(0)), criticalCos.sub(asGemNode(dot(asTslNode(refracted.normalize()), asTslNode(normalNode.normalize()))))));
+  // Schlick Fresnel plus the internal critical-angle test. TIR forces reflection;
+  // otherwise Fresnel continuously mixes the reflected and transmitted paths.
+  const cosTheta = asGemNode(max(dot(asTslNode(viewNode), asTslNode(normalNode)), dot(asTslNode(viewNode.negate()), asTslNode(normalNode))));
+  const oneMinusCos = asGemNode(float(1)).sub(cosTheta);
+  const fresnelPower = oneMinusCos.mul(oneMinusCos).mul(oneMinusCos).mul(oneMinusCos).mul(oneMinusCos);
+  const r0Base = cauchyANode.sub(float(1)).div(cauchyANode.add(float(1)));
+  const r0 = r0Base.mul(r0Base);
+  const fresnel = r0.add(asGemNode(float(1)).sub(r0).mul(fresnelPower));
+  const sinThetaSquared = asGemNode(float(1)).sub(cosTheta.mul(cosTheta));
+  const tirMask = asGemNode(step(float(1), cauchyANode.mul(cauchyANode).mul(sinThetaSquared)));
   const tirBounce = envSample(asGemNode(reflect(asTslNode(viewNode.negate()), asTslNode(normalNode))));
-  const tirMixed = mix(absorbed, tirBounce, tirMask.mul(0.7));
+  const reflectionWeight = asGemNode(max(asTslNode(fresnel), asTslNode(tirMask)));
+  const tirMixed = mix(absorbed, tirBounce, reflectionWeight);
   const causticOffset = timeNode.mul(0.5).sin().mul(0.02);
   const causticUV = asGemNode(vec2(positionNode.x, positionNode.z)).mul(causticScaleNode).add(asGemNode(vec2(causticOffset, causticOffset)));
   const caustic = asGemNode(texture(asTslNode(causticTextureNode), asTslNode(causticUV))).r.mul(causticStrengthNode);
@@ -143,6 +152,8 @@ export function createGemstoneMaterial(type: GemstoneType, causticTex: THREE.Tex
     metalnessNode: float(0),
   });
   mat.userData.gemstoneType = type;
+  mat.userData.opticalTerms = ['cauchy-dispersion', 'beer-lambert-absorption', 'fresnel', 'total-internal-reflection', 'caustics'];
+  mat.userData.spectralSampleCount = sampleCount;
   mat.userData.gemstoneCausticTexture = causticTex;
   mat.userData.gemstoneUniforms = {
     cauchyA: { value: g.A },
