@@ -64,8 +64,6 @@ interface RingSceneProps {
   environmentQuality?: GemstoneQuality;
 }
 
-const DEPTH_INPUT_SIZE = 518;
-
 function CameraDepthOcclusion({ videoRef, tierRef, intervalMs = 100 }: { videoRef?: React.RefObject<HTMLVideoElement | null>; tierRef: React.MutableRefObject<DepthOcclusionTier>; intervalMs?: number }) {
   const { scene } = useThree();
   const pipeline = useMemo(() => new WebXRDepthManager({ modelUrl: `${import.meta.env.BASE_URL}models/depth/depth_anything_v2_small.onnx` }), []);
@@ -84,7 +82,9 @@ function CameraDepthOcclusion({ videoRef, tierRef, intervalMs = 100 }: { videoRe
       lastCapture = now;
       const started = performance.now();
       try {
-        const bitmap = await createImageBitmap(video, { resizeWidth: DEPTH_INPUT_SIZE, resizeHeight: DEPTH_INPUT_SIZE, resizeQuality: 'low' });
+        // Transfer the decoded frame directly. Resize and the sole RGBA readback
+        // happen in the worker, off the render thread.
+        const bitmap = await createImageBitmap(video);
         if (cancelled) { bitmap.close(); return; }
         pipeline.update({ cameraFrame: bitmap, captureMs: performance.now() - started });
         tierRef.current = pipeline.getTier();

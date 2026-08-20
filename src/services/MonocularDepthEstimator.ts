@@ -1,5 +1,5 @@
 // FILE: src/services/MonocularDepthEstimator.ts
-import { createVerifiedWorker } from '../utils/SecurityUtils';
+import { createVerifiedWorker, fetchVerifiedAsset } from '../utils/SecurityUtils';
 import type { DepthOcclusionTier } from './WebXRDepthManager';
 import { protocolMessage, validateDepthOutbound, type DepthOutboundMessage } from '../protocol/workerProtocol';
 
@@ -22,6 +22,7 @@ export interface DepthEstimatorDiagnostics {
   readonly failures: number;
   readonly inferenceP50Ms: number;
   readonly inferenceP95Ms: number;
+  readonly provider: 'webgpu' | 'wasm' | 'unavailable';
 }
 
 /**
@@ -39,12 +40,16 @@ export class MonocularDepthEstimator {
   private failures = 0;
   private readonly timings: number[] = [];
   private unavailable = false;
+  private provider: 'webgpu' | 'wasm' | 'unavailable' = 'unavailable';
   private preferredTier: Extract<DepthOcclusionTier, 'monocular-depth' | 'degraded-depth'> = 'monocular-depth';
 
   constructor(private readonly modelUrl = '/models/depth/depth_anything_v2_small.onnx') {}
 
   async initialize(): Promise<void> {
     if (this.worker) return this.initializing ?? Promise.resolve();
+    // Verify the immutable model before allocating a worker/GPU resource. A
+    // missing or corrupt optional asset therefore fails closed without leaks.
+    const { bytes: model } = await fetchVerifiedAsset(this.modelUrl);
     this.worker = await createVerifiedWorker(new URL('../workers/depth.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<unknown>) => this.receiveMessage(event.data);
     this.initializing = new Promise((resolve, reject) => {
@@ -52,13 +57,16 @@ export class MonocularDepthEstimator {
       if (!worker) throw new Error('Depth worker was not created after integrity verification.');
       const previousHandler = worker.onmessage;
       worker.onmessage = (event: MessageEvent<unknown>) => {
-        if (validateDepthOutbound(event.data) && event.data.type === 'READY') resolve();
+        if (validateDepthOutbound(event.data) && event.data.type === 'READY') {
+          this.provider = event.data.payload.provider;
+          resolve();
+        }
         if (validateDepthOutbound(event.data) && event.data.type === 'ERROR' && event.data.payload.frameId === undefined) {
           reject(new Error(event.data.payload.message));
         }
         previousHandler?.call(worker, event);
       };
-      worker.postMessage(protocolMessage({ type: 'INIT', payload: { modelUrl: this.modelUrl } }));
+      worker.postMessage(protocolMessage({ type: 'INIT', payload: { model } }), [model]);
     });
     return this.initializing;
   }
@@ -81,6 +89,9 @@ export class MonocularDepthEstimator {
       this.inFlight = false;
       this.unavailable = true;
       this.failures += 1;
+      this.worker?.terminate();
+      this.worker = null;
+      this.initializing = null;
       if (image instanceof ImageBitmap) image.close();
       console.warn('Monocular depth estimator failed to initialize.', error);
     });
@@ -97,7 +108,7 @@ export class MonocularDepthEstimator {
   diagnostics(): DepthEstimatorDiagnostics {
     const sorted = [...this.timings].sort((a, b) => a - b);
     const percentile = (fraction: number) => sorted.length === 0 ? 0 : sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
-    return { inFlight: this.inFlight, submitted: this.submitted, dropped: this.dropped, failures: this.failures, inferenceP50Ms: percentile(0.5), inferenceP95Ms: percentile(0.95) };
+    return { inFlight: this.inFlight, submitted: this.submitted, dropped: this.dropped, failures: this.failures, inferenceP50Ms: percentile(0.5), inferenceP95Ms: percentile(0.95), provider: this.provider };
   }
 
   /** Terminates the depth worker and resolves queued inference requests. */

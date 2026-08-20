@@ -55,6 +55,7 @@ export interface DepthDiagnostics {
   readonly depthLatencyMs: number;
   readonly transitions: number;
   readonly failures: number;
+  readonly provider: 'webxr' | 'webgpu' | 'wasm' | 'geometric-proxy' | 'unavailable';
 }
 
 export interface DepthFrameInput extends DepthUpdateOptions {
@@ -138,7 +139,8 @@ export class WebXRDepthManager implements DepthPipeline {
     const sorted = [...this.captureTimings].sort((a, b) => a - b);
     const percentile = (fraction: number) => sorted.length === 0 ? 0 : sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
     const estimator = this.monocularEstimator.diagnostics();
-    return { tier: this.activeTier, captureP50Ms: percentile(0.5), captureP95Ms: percentile(0.95), inferenceP50Ms: estimator.inferenceP50Ms, inferenceP95Ms: estimator.inferenceP95Ms, queueDrops: estimator.dropped, depthLatencyMs: this.lastDepthLatencyMs, transitions: this.transitions, failures: estimator.failures };
+    const provider = this.activeTier === 'webxr-depth' ? 'webxr' : this.activeTier === 'geometric-proxy' ? 'geometric-proxy' : estimator.provider;
+    return { tier: this.activeTier, captureP50Ms: percentile(0.5), captureP95Ms: percentile(0.95), inferenceP50Ms: estimator.inferenceP50Ms, inferenceP95Ms: estimator.inferenceP95Ms, queueDrops: estimator.dropped, depthLatencyMs: this.lastDepthLatencyMs, transitions: this.transitions, failures: estimator.failures, provider };
   }
 
   canAcceptCameraFrame(): boolean { return !this.disposed && this.monocularEstimator.canAcceptFrame(); }
@@ -156,9 +158,13 @@ export class WebXRDepthManager implements DepthPipeline {
     const result = this.monocularEstimator.estimate(input.cameraFrame, this.selectTier() === 'degraded-depth' ? 'degraded-depth' : 'monocular-depth');
     if (!result) return;
     this.lastDepthLatencyMs = performance.now() - before + result.averageMs;
-    this.gpuMisses = result.tier === 'degraded-depth' ? Math.min(this.adaptiveThreshold - 1, this.gpuMisses + 1) : Math.max(0, this.gpuMisses - 2);
+    // Sustained misses can reach the proxy tier; successful budget-compliant
+    // samples continuously decay the score and recover without remounting.
+    this.gpuMisses = result.tier === 'degraded-depth'
+      ? Math.min(this.MAX_MISSES, this.gpuMisses + Math.max(1, Math.ceil(result.averageMs / 30)))
+      : Math.max(0, this.gpuMisses - 3);
     this.uploadDepth(result.width, result.height, result.depth, true);
-    this.setTier(result.tier);
+    this.setTier(this.selectTier() === 'geometric-proxy' ? 'geometric-proxy' : result.tier);
   }
 
   /** Selects the best available depth tier while allowing recovery from transient GPU misses. */
