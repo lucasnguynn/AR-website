@@ -7,3 +7,5 @@ test-results/
 lhci-results/
 *.log
 .DS_Store
+node_modules/
+dist/
