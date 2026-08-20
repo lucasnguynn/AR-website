@@ -2,8 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 120_000, // Tăng gấp đôi tổng thời gian test
-  expect: { timeout: 30_000 }, // Chờ tối đa 30s cho mỗi action
+  timeout: 60_000, // Đưa về 60s vì bản production chạy rất nhanh
+  expect: { timeout: 15_000 },
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? [['line'], ['html', { open: 'never' }]] : 'line',
@@ -27,9 +27,10 @@ export default defineConfig({
     } 
   }],
   webServer: {
-    command: 'npm run dev -- --host 127.0.0.1 --port 4173',
+    // THAY ĐỔI CỐT LÕI: Build thành công mới mở server preview
+    command: 'npm run build && npm run preview -- --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000, // Cho phép máy chủ Vite 2 phút để khởi động
+    timeout: 120_000,
   },
 });
