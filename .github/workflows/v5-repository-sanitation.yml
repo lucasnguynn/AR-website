@@ -1,0 +1,89 @@
+name: V5 repository sanitation
+
+on:
+  push:
+    branches:
+      - v5/v5-0-repository-sanitation
+
+jobs:
+  sanitize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inspect and remove tracked generated artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly allowed=(node_modules dist coverage .cache)
+          readonly required_assets=(
+            public/models/nhan.glb
+            public/models/nhan.usdz
+            public/models/nhan-preview.png
+            public/models/hand_landmarker.task
+            public/wasm/vision_wasm_internal.wasm
+          )
+          proposed="$(mktemp)"
+          trap 'rm -f "$proposed"' EXIT
+
+          total=0
+          for directory in "${allowed[@]}"; do
+            count="$(git ls-files -z -- "$directory" | awk 'BEGIN { RS = "\\0" } END { print NR }')"
+            echo "$directory/: $count tracked path(s)"
+            total="$((total + count))"
+          done
+
+          git ls-files -z -- "${allowed[@]}" > "$proposed"
+          mapfile -d '' paths < "$proposed"
+          [[ "$total" -eq "${#paths[@]}" ]] || {
+            echo "Candidate count does not match the printed inventory" >&2
+            exit 1
+          }
+
+          for path in "${paths[@]}"; do
+            case "$path" in
+              node_modules/*|dist/*|coverage/*|.cache/*) ;;
+              *) echo "Unsafe deletion candidate: $path" >&2; exit 1 ;;
+            esac
+          done
+
+          if ((total > 0)); then
+            git rm -r --cached --ignore-unmatch node_modules dist coverage .cache
+          fi
+
+          for directory in "${allowed[@]}"; do
+            if [[ -n "$(git ls-files -- "$directory")" ]]; then
+              echo "Sanitation verification failed for $directory/" >&2
+              exit 1
+            fi
+          done
+
+          for asset in "${required_assets[@]}"; do
+            [[ -f "$asset" ]] || { echo "Required runtime asset is missing: $asset" >&2; exit 1; }
+            git ls-files --error-unmatch -- "$asset" >/dev/null || {
+              echo "Required runtime asset is not tracked: $asset" >&2
+              exit 1
+            }
+          done
+
+          bash scripts/validate-repository-hygiene.sh
+
+          mapfile -d '' staged_paths < <(git diff --cached --name-only -z)
+          for path in "${staged_paths[@]}"; do
+            case "$path" in
+              node_modules/*|dist/*|coverage/*|.cache/*) ;;
+              *) echo "Unsafe staged deletion: $path" >&2; exit 1 ;;
+            esac
+          done
+
+          if git diff --cached --quiet; then
+            echo "Nothing to sanitize; no commit required."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Sanitize generated repository artifacts"
+          git push origin HEAD:v5/v5-0-repository-sanitation
