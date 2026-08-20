@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
-      - run: npm install
+      - run: npm ci
       # Thêm || true để báo cáo lỗ hổng nhưng không làm sập CI/CD
       - run: npm audit --audit-level=high || true
       - name: Generate CycloneDX SBOM
