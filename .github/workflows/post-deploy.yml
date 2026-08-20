@@ -1,29 +1,26 @@
 name: Post-deploy evidence
 on:
-  workflow_run:
-    workflows: [Quality gate] # <-- Sửa dòng này từ [Deploy Pages] thành [Quality gate]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      deployment_url:
+        description: Cloudflare Pages deployment URL
+        required: true
+        type: string
 permissions: { contents: read }
 jobs:
   deployed-contract:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - run: npm ci
-      - name: Resolve deployment URL
-        run: echo "DEPLOY_URL=https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
-      - name: Smoke and asset checks
-        run: |
-          curl --fail --retry 5 --retry-delay 5 --show-error "$DEPLOY_URL"
-          curl --fail --show-error "${DEPLOY_URL}integrity-manifest.json" -o /tmp/integrity-manifest.json
-          node -e "const m=require('/tmp/integrity-manifest.json'); if(m.version!==1 || !Object.keys(m.assets).length) process.exit(1)"
+      - name: Verify HTTP headers and deployed Worker/WASM SHA-384
+        run: node scripts/verify-deployment-headers.mjs "${{ inputs.deployment_url }}"
       - name: Inspect response headers
-        run: curl --fail --show-error --head "$DEPLOY_URL" | tee response-headers.txt
+        run: curl --fail --show-error --head "${{ inputs.deployment_url }}" | tee response-headers.txt
       - name: Lighthouse thresholds
-        run: npx --yes @lhci/cli@0.14.0 autorun --config=.lighthouserc.json --collect.url="$DEPLOY_URL"
+        run: npx --yes @lhci/cli@0.14.0 autorun --config=.lighthouserc.json --collect.url="${{ inputs.deployment_url }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

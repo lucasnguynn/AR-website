@@ -14,7 +14,7 @@
     "check:bundle": "node scripts/check-bundle-size.js",
     "verify:integrity": "node scripts/verify-integrity-manifest.mjs",
     "lint:csp": "node scripts/lint-csp.mjs",
-    "quality": "npm run validate:dependencies && npm run validate:assets && npm run typecheck && npm run lint && npm test && npm run test:integration && npm run lint:csp && npm run build && npm run check:bundle",
+    "quality": "npm run validate:dependencies && npm run validate:assets && npm run typecheck && npm run lint && npm test && npm run test:integration && npm run lint:csp && npm run audit:privacy && npm run build && npm run check:bundle",
     "preview": "vite preview",
     "deploy": "gh-pages -d dist",
     "lod": "node scripts/generate-lod.js",
@@ -24,7 +24,8 @@
     "validate:ring-semantics": "node scripts/semanticize-ring-glb.mjs public/models/nhan.glb",
     "validate:dependencies": "node scripts/validate-dependencies.mjs",
     "generate:integrity": "node scripts/generate-integrity-manifest.mjs",
-    "verify:headers": "node scripts/verify-deployment-headers.mjs"
+    "verify:headers": "node scripts/verify-deployment-headers.mjs",
+    "audit:privacy": "node scripts/audit-privacy-boundary.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.14",
