@@ -13,7 +13,19 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], launchOptions: { args: ['--use-angle=swiftshader'] } } }],
+  projects: [{ 
+    name: 'chromium', 
+    use: { 
+      ...devices['Desktop Chrome'], 
+      launchOptions: { 
+        args: [
+          '--use-angle=swiftshader',
+          '--use-fake-ui-for-media-stream',
+          '--use-fake-device-for-media-stream'
+        ] 
+      } 
+    } 
+  }],
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173',
