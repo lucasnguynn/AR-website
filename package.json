@@ -21,6 +21,7 @@
     "compress-model": "node scripts/compress-model.js",
     "build:assets": "npm run lod && npm run compress-model",
     "validate:assets": "node scripts/validate-assets.mjs",
+    "validate:ring-semantics": "node scripts/semanticize-ring-glb.mjs public/models/nhan.glb",
     "validate:dependencies": "node scripts/validate-dependencies.mjs",
     "generate:integrity": "node scripts/generate-integrity-manifest.mjs",
     "verify:headers": "node scripts/verify-deployment-headers.mjs"
