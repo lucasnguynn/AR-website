@@ -26,14 +26,14 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - run: npm install -g @gltf-transform/cli
+      - run: npx --yes @gltf-transform/cli@4.2.1 --version
       - name: Compress GLB
         run: |
           mkdir -p public/models
           for f in src/assets/models/*.glb public/models/*.glb; do
             [ -f "$f" ] || continue
             name=$(basename "$f" .glb)
-            gltf-transform optimize "$f" "public/models/${name}.glb" \
+            npx --yes @gltf-transform/cli@4.2.1 optimize "$f" "public/models/${name}.glb" \
               --compress draco --texture-compress ktx2
           done
       - name: Convert to USDZ

@@ -6,32 +6,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  sanitize:
+  verify-clean-install:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-        
-      - name: 1. Remove dead dependencies
+        with: { node-version: 20, cache: npm }
+      - name: Reproduce the clean quality build twice
+        shell: bash
         run: |
-          npm uninstall @tensorflow/tfjs-backend-webgpu @tensorflow/tfjs-core @tensorflow/tfjs-converter @tensorflow/tfjs @svenflow/micro-handpose || true
-          
-      - name: 2. Untrack generated artifacts
-        run: |
-          git rm -r --cached node_modules dist coverage .cache || true
-          echo "node_modules/" >> .gitignore
-          echo "dist/" >> .gitignore
-          
-      - name: 3. Regenerate package-lock.json
-        run: npm install
-        
-      - name: 4. Commit and push changes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json .gitignore
-          git commit -m "chore: sanitize tracked directories, remove TFJS, and regenerate lockfile" || echo "Nothing to sanitize"
-          git push origin main
+          set -euo pipefail
+          lock_hash="$(sha384sum package-lock.json)"
+          for pass in 1 2; do
+            rm -rf node_modules dist
+            npm ci
+            test "$(sha384sum package-lock.json)" = "$lock_hash"
+            npm run quality
+            sha384sum dist/integrity-manifest.json > "/tmp/integrity-${pass}.sha384"
+          done
+          cmp /tmp/integrity-1.sha384 /tmp/integrity-2.sha384
+          git diff --exit-code -- package-lock.json
