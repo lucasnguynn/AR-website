@@ -11,6 +11,8 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
+    "test:e2e": "playwright test",
+    "test:e2e:stability": "playwright test --grep @stability",
     "check:bundle": "node scripts/check-bundle-size.js",
     "verify:integrity": "node scripts/verify-integrity-manifest.mjs",
     "lint:csp": "node scripts/lint-csp.mjs",
