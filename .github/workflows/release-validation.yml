@@ -1,0 +1,45 @@
+name: V5 release validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_stability:
+        description: Run the 10-minute stability gate
+        required: false
+        default: false
+        type: boolean
+
+permissions: { contents: read }
+
+jobs:
+  browser-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: Install pinned Playwright runner without changing the lockfile
+        run: npm install --no-save --package-lock=false @playwright/test@1.55.0
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e -- --grep-invert @stability
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: { name: playwright-evidence, path: "playwright-report/" }
+
+  stability:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_stability
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false @playwright/test@1.55.0
+      - run: npx playwright install --with-deps chromium
+      - run: STABILITY_DURATION_MS=600000 npm run test:e2e:stability
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: stability-evidence, path: "playwright-report/" }
