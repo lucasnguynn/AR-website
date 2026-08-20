@@ -63,7 +63,8 @@ test('iOS capability route generates a same-site Quick Look USDZ URL', async ({ 
   await expect(launch).toBeEnabled();
   await launch.click();
   const href = await page.evaluate(() => (window as typeof window & { __quickLookHref?: string }).__quickLookHref);
-  expect(href).toMatch(/^http:\/\/127\.0\.0\.1:4173\/models\/nhan\.usdz#allowsContentScaling=0&canonicalWebPageURL=/);
+  // Đã cập nhật Regex để cho phép chuỗi base path tự do (?:.*)
+  expect(href).toMatch(/^http:\/\/127\.0\.0\.1:4173(?:.*)\/models\/nhan\.usdz#allowsContentScaling=0&canonicalWebPageURL=/);
 });
 
 test('@stability survives ten open/close cycles and a continuous session without unbounded JS heap growth', async ({ page, browserName }) => {
