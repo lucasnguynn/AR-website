@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - run: npm install --global @lhci/cli@0.14.x
+      - run: npm ci
       - name: Resolve deployment URL
         run: echo "DEPLOY_URL=https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
       - name: Smoke and asset checks
@@ -23,7 +23,7 @@ jobs:
       - name: Inspect response headers
         run: curl --fail --show-error --head "$DEPLOY_URL" | tee response-headers.txt
       - name: Lighthouse thresholds
-        run: lhci autorun --config=.lighthouserc.json --collect.url="$DEPLOY_URL"
+        run: npx --yes @lhci/cli@0.14.0 autorun --config=.lighthouserc.json --collect.url="$DEPLOY_URL"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

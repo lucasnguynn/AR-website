@@ -6,6 +6,12 @@ const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1] ?? '';
 
 export default defineConfig({
   base: repoName ? `/${repoName}/` : '/',
+  resolve: {
+    dedupe: ['three'],
+  },
+  optimizeDeps: {
+    include: ['three', 'three/webgpu', 'three/tsl'],
+  },
   build: {
     target: 'es2022',
     assetsInlineLimit: 0,
