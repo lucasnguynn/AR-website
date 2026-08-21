@@ -18,9 +18,6 @@ import mediapipeWorkerUrl from '../workers/mediapipe.worker.ts?worker&url';
 const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
 const MEDIAPIPE_WASM_PATH = 'wasm/vision_wasm_internal.wasm';
 
-/**
- * Public controls and state references for hand tracking.
- */
 export interface UseHandTrackingReturn {
   resultRef: RefObject<HandTrackingResult | null>;
   loadingState: LoadingState;
@@ -32,9 +29,6 @@ export interface UseHandTrackingReturn {
   getMetrics: () => TrackingMetrics | null;
 }
 
-/**
- * Creates and controls the verified MediaPipe hand-tracking worker lifecycle.
- */
 export function useHandTracking(enabled = true): UseHandTrackingReturn {
   const workerRef = useRef<Worker | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -45,7 +39,6 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   const workerReadyRef = useRef(false);
   const inFlightRef = useRef(false);
   const degradedRef = useRef(false);
-  const wasmBlobUrlRef = useRef<string | null>(null);
   const modelBlobUrlRef = useRef<string | null>(null);
   const inferenceTimerRef = useRef<number | null>(null);
   const videoFrameCallbackRef = useRef<number | null>(null);
@@ -82,12 +75,10 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     inFlightRef.current = false;
     degradedRef.current = false;
 
-    if (wasmBlobUrlRef.current) {
-      URL.revokeObjectURL(wasmBlobUrlRef.current);
-      wasmBlobUrlRef.current = null;
+    if (modelBlobUrlRef.current) { 
+      URL.revokeObjectURL(modelBlobUrlRef.current); 
+      modelBlobUrlRef.current = null; 
     }
-
-    if (modelBlobUrlRef.current) { URL.revokeObjectURL(modelBlobUrlRef.current); modelBlobUrlRef.current = null; }
 
     if (!worker) return;
 
@@ -129,19 +120,14 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       }
 
       const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
-      const wasmUrl = new URL(MEDIAPIPE_WASM_PATH, assetBaseUrl);
+      const wasmBasePath = new URL('wasm', assetBaseUrl).toString();
       const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
-      const [wasmBlobUrl, modelBlobUrl] = await Promise.all([
-        createVerifiedAssetBlobUrl(wasmUrl, 'application/wasm'),
-        createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream'),
-      ]);
-      wasmBlobUrlRef.current = wasmBlobUrl;
+      const modelBlobUrl = await createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream');
+      
       modelBlobUrlRef.current = modelBlobUrl;
 
       if (cancelled) {
-        URL.revokeObjectURL(wasmBlobUrl);
         URL.revokeObjectURL(modelBlobUrl);
-        if (wasmBlobUrlRef.current === wasmBlobUrl) wasmBlobUrlRef.current = null;
         if (modelBlobUrlRef.current === modelBlobUrl) modelBlobUrlRef.current = null;
         return;
       }
@@ -193,7 +179,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         }
       });
 
-      worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl, modelUrl: modelBlobUrl } }));
+      worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl: wasmBasePath, modelUrl: modelBlobUrl } }));
     }
 
     createWorker().catch((error: unknown) => {
@@ -299,4 +285,3 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
 
   return { resultRef, loadingState, startTracking, setActive, pause, resume, destroy: destroyWorker, getMetrics };
 }
-// VERIFY: console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed')
