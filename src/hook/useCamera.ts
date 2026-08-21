@@ -108,6 +108,7 @@ export function useCamera(): UseCameraReturn {
     return () => {
       // Cleanup on unmount - but don't stop the camera here
       // The camera should be stopped explicitly by the component using it
+      cameraSystem.setCallbacks({});
       isSubscribedRef.current = false;
     };
   }, [cameraSystem]);

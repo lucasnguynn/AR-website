@@ -73,16 +73,45 @@ function imageToTensor(image: ImageBitmap | ImageData | OffscreenCanvas | HTMLCa
   return input;
 }
 
+function quickselect(values: Float32Array, k: number, left = 0, right = values.length - 1): number {
+  while (left < right) {
+    const pivot = values[(left + right) >>> 1];
+    let low = left;
+    let high = right;
+    while (low <= high) {
+      while (values[low] < pivot) low += 1;
+      while (values[high] > pivot) high -= 1;
+      if (low <= high) {
+        const value = values[low];
+        values[low] = values[high];
+        values[high] = value;
+        low += 1;
+        high -= 1;
+      }
+    }
+    if (k <= high) right = high;
+    else if (k >= low) left = low;
+    else break;
+  }
+  return values[k];
+}
+
 function coerceDepth(output: OrtTensor): Float32Array {
   const values = output.data instanceof Float32Array ? output.data : new Float32Array(output.data);
   const depth = new Float32Array(INPUT_SIZE * INPUT_SIZE);
   depth.set(values.subarray(0, depth.length));
   // Depth Anything emits relative inverse depth. Robust normalization turns it
   // into conservative camera-space meters consumed by the fragment depth pass.
-  const finite = Array.from(depth).filter(Number.isFinite).sort((a, b) => a - b);
-  if (finite.length === 0) throw new Error('Depth Anything output contained no finite samples.');
-  const low = finite[Math.floor(finite.length * 0.02)];
-  const high = finite[Math.floor(finite.length * 0.98)];
+  const finite = new Float32Array(depth.length);
+  let finiteCount = 0;
+  for (let i = 0; i < depth.length; i += 1) {
+    if (Number.isFinite(depth[i])) finite[finiteCount++] = depth[i];
+  }
+  if (finiteCount === 0) throw new Error('Depth Anything output contained no finite samples.');
+  const lowIndex = Math.floor(finiteCount * 0.02);
+  const highIndex = Math.floor(finiteCount * 0.98);
+  const low = quickselect(finite, lowIndex, 0, finiteCount - 1);
+  const high = quickselect(finite, highIndex, lowIndex, finiteCount - 1);
   const range = Math.max(high - low, 1e-6);
   for (let i = 0; i < depth.length; i += 1) {
     const inverse = Math.min(1, Math.max(0, (depth[i] - low) / range));

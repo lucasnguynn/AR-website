@@ -109,11 +109,10 @@ export class GestureDetector {
       const cooldown = this.computeCooldown(detection.type, maxVelocity);
       if (now - last < cooldown) return false;
       this.lastTrigger.set(detection.type, now);
-      console.log(`[GestureDetector] ${detection.type} cooldown=${cooldown.toFixed(1)}ms velocity=${maxVelocity.toFixed(4)}`);
+      if (import.meta.env.DEV) console.log(`[GestureDetector] ${detection.type} cooldown=${cooldown.toFixed(1)}ms velocity=${maxVelocity.toFixed(4)}`);
       return true;
     });
   }
 }
 
-console.log('[GestureDetector] adaptive PINCH/WAVE cooldowns ready');
 // VERIFY: PINCH cooldown ≠ WAVE cooldown logged in console.

@@ -1,5 +1,5 @@
 // src/hooks/useLoadingState.ts
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 const LOADING_TIMEOUT_MS = 12_000; // Force-dismiss after 12 s; prevents deadlock
 
@@ -24,10 +24,10 @@ export function useLoadingState() {
     return () => clearTimeout(timerRef.current);
   }, []);
 
-  const markLoaded = () => {
+  const markLoaded = useCallback(() => {
     clearTimeout(timerRef.current);
     setIsLoading(false);
-  };
+  }, []);
 
   return { isLoading, markLoaded };
 }

@@ -82,12 +82,12 @@ class FrameRingBuffer {
   constructor(private readonly size: number) {}
 
   push(frame: FramePayload): number {
-    if (this.frames.some((queuedFrame) => queuedFrame.timestamp >= frame.timestamp)) {
+    const newest = this.frames[this.frames.length - 1];
+    if (newest && newest.timestamp >= frame.timestamp) {
       return 1;
     }
 
     this.frames.push(frame);
-    this.frames.sort((a, b) => a.timestamp - b.timestamp);
 
     const staleDropCount = Math.max(0, this.frames.length - this.size);
     if (staleDropCount > 0) {
@@ -155,7 +155,7 @@ function extractRingLandmarks(landmarks: NormalizedLandmark[] | undefined): Ring
 function ensureCanvas(width: number, height: number): OffscreenCanvasRenderingContext2D {
   if (!canvas || canvas.width !== width || canvas.height !== height || !canvasContext) {
     canvas = new OffscreenCanvas(width, height);
-    canvasContext = canvas.getContext('2d', { willReadFrequently: false });
+    canvasContext = canvas.getContext('2d', { willReadFrequently: true });
   }
 
   if (!canvasContext) {
@@ -222,7 +222,7 @@ async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promi
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
-  console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed');
+  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });

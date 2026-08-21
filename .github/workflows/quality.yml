@@ -8,6 +8,8 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    env:
+      VITE_ENABLE_MONOCULAR_DEPTH: 'false'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,9 +26,15 @@ jobs:
       
       # 2. Tải mô hình AI SAU KHI test xong
       - name: Download Large ML Models
+        if: env.VITE_ENABLE_MONOCULAR_DEPTH == 'true'
         run: |
           mkdir -p public/models/depth
-          curl -L -o public/models/depth/depth_anything_v2_small.onnx https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/main/onnx/model.onnx
+          MODEL_COMMIT="18a1b01f0c2d63ce2ef42c16b25f3c1d0bd78f1c"
+          MODEL_SHA256="f63825f47d3365e41e67c8a36b65e2e0e6e5f842170a4c6266818158d389fe0d"
+          curl --fail --show-error --silent --location --proto '=https' --max-redirs 3 \
+            -o public/models/depth/depth_anything_v2_small.onnx \
+            "https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/${MODEL_COMMIT}/onnx/model.onnx"
+          echo "${MODEL_SHA256}  public/models/depth/depth_anything_v2_small.onnx" | sha256sum --check --strict
           
       # 3. Validate và Build (lúc này mô hình đã sẵn sàng)
       - run: npm run validate:assets
