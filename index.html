@@ -9,7 +9,14 @@
     -->
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💍</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; base-uri 'self'; object-src 'none'; form-action 'none'; upgrade-insecure-requests" />
+    <!--
+      DEVSECOPS FIX: Updated Content-Security-Policy to allow:
+      1. 'blob:' in script-src for MediaPipe WebAssembly workers.
+      2. 'unsafe-inline' in script-src for Vite/React injection.
+      3. External domains (raw.githack.com, raw.githubusercontent.com) in connect-src for Drei HDRI lighting.
+      4. 'data:' in connect-src.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob:; worker-src 'self' blob:; connect-src 'self' blob: data: https://raw.githack.com https://raw.githubusercontent.com https://*.githubusercontent.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; base-uri 'self'; object-src 'none'; form-action 'none'; upgrade-insecure-requests" />
     <title>WebAR Jewelry Try-On</title>
   </head>
   <body>
