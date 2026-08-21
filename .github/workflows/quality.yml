@@ -39,28 +39,22 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: quality-evidence, path: "dist/integrity-manifest.json" }
 
+  # Thay thế Cloudflare bằng GitHub Pages Deploy
   deploy:
     needs: quality
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pages: write
+      id-token: write
     environment:
-      name: production
-      url: ${{ steps.deploy.outputs.deployment-url }}
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
       - uses: actions/download-artifact@v4
         with: { name: production-dist, path: dist }
-      - name: Deploy immutable build to Cloudflare Pages
-        id: deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT }} --branch=main
-      - name: Verify production headers and compiled asset integrity
-        run: node scripts/verify-deployment-headers.mjs "${{ steps.deploy.outputs.deployment-url }}" dist/integrity-manifest.json
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: dist }
+      - id: deployment
+        uses: actions/deploy-pages@v4
