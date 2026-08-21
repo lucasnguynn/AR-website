@@ -14,10 +14,6 @@ import {
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Versioned protocol (shared with the main thread)
-// ──────────────────────────────────────────────────────────────────────────────
-
 import { protocolMessage, validateMediaPipeInbound, type MediaPipeFramePayload as FramePayload, type UnversionedMediaPipeOutboundMessage as WorkerOutMessage, type MediaPipeWorkerState as WorkerState } from '../protocol/workerProtocol';
 
 interface RingLandmark {
@@ -36,11 +32,6 @@ interface TrackingResult {
   timestamp: number;
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Constants
-// ──────────────────────────────────────────────────────────────────────────────
-
-
 const CONFIG = {
   NUM_HANDS: 1,
   MIN_DETECTION_CONFIDENCE: 0.75,
@@ -50,10 +41,6 @@ const CONFIG = {
 
 const HAND_LANDMARK_INDICES = Array.from({ length: 21 }, (_, index) => index) as HandLandmarkIndex[];
 type HandLandmarkIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20;
-
-// ──────────────────────────────────────────────────────────────────────────────
-// State
-// ──────────────────────────────────────────────────────────────────────────────
 
 let state: WorkerState = 'INIT';
 let handLandmarker: HandLandmarker | null = null;
@@ -118,10 +105,6 @@ function getMetrics(): TrackingMetrics {
     inferenceFps: metrics.avgInferenceMs > 0 ? 1000 / metrics.avgInferenceMs : 0,
   };
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────────────────
 
 function postMessageSafe(message: WorkerOutMessage): void {
   if (state !== 'DESTROY') {
@@ -193,19 +176,12 @@ function drainLatestFrame(): void {
   processActiveFrame();
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Lifecycle
-// ──────────────────────────────────────────────────────────────────────────────
-
-async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promise<void> {
+async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Promise<void> {
   if (state === 'DESTROY' || handLandmarker) return;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
 
-  // FilesetResolver normally points at a JS loader that may hit CSP-sensitive dynamic-code paths.
-  // Passing the pre-fetched Blob URL keeps the binary on a blob: URL and bypasses the previous inline-loader workaround.
-  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBlobUrl, false);
-  wasmFileset.wasmBinaryPath = wasmBlobUrl;
+  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBasePath, false);
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 0 } });
@@ -222,7 +198,7 @@ async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promi
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
-  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed');
+  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via base path');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });
@@ -343,4 +319,3 @@ self.onmessage = (event: MessageEvent<unknown>) => {
 };
 
 export {};
-// VERIFY: console.log('[MediaPipe] WASM loaded via blob: — eval() bypassed')
