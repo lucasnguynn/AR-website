@@ -162,19 +162,18 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
     return renderer as THREE.WebGLRenderer;
   }) as CanvasProps['gl'], [renderTier]);
 
-  const handleQuality = (nextQuality: QualityTier, statistics: { averageMs: number; p95Ms: number }): void => {
+  const handleQuality = useCallback((nextQuality: QualityTier, statistics: { averageMs: number; p95Ms: number }): void => {
     setQualityTier((previous) => {
       if (previous === nextQuality) return previous;
       window.dispatchEvent(new CustomEvent('renderer:quality-changed', { detail: { fromQuality: previous, toQuality: nextQuality, ...statistics } }));
       return nextQuality;
     });
-  };
+  }, []);
 
   const handleRendererFailure = useCallback(() => setRenderTier((current) => nextRenderTier(current)), []);
 
   return (
     <Canvas
-      key={renderTier}
       className="absolute inset-0 z-10"
       style={{ background: 'transparent', zIndex: 10, pointerEvents: 'none' }}
       gl={glFactory}

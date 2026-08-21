@@ -137,22 +137,19 @@ export function landmarkToWorld(
   return out;
 }
 
-function getLandmark(landmarks: NormalisedLandmark[], index: number): NormalisedLandmark | null {
-  for (let i = 0; i < landmarks.length; i += 1) {
-    if (landmarks[i].index === index) return landmarks[i];
-  }
-  return null;
-}
-
 export function projectRingLandmarks(
   landmarks: NormalisedLandmark[],
   params: ProjectionParams,
   out: Record<number, THREE.Vector3>,
 ): boolean {
-  const indexMcp = getLandmark(landmarks, LM.INDEX_MCP);
-  const ringMcp = getLandmark(landmarks, LM.RING_MCP);
-  const ringPip = getLandmark(landmarks, LM.RING_PIP);
-  const pinkyMcp = getLandmark(landmarks, LM.PINKY_MCP);
+  const byIndex: Array<NormalisedLandmark | undefined> = [];
+  for (const landmark of landmarks) {
+    if (landmark.index !== undefined) byIndex[landmark.index] = landmark;
+  }
+  const indexMcp = byIndex[LM.INDEX_MCP];
+  const ringMcp = byIndex[LM.RING_MCP];
+  const ringPip = byIndex[LM.RING_PIP];
+  const pinkyMcp = byIndex[LM.PINKY_MCP];
 
   if (!indexMcp || !ringMcp || !ringPip || !pinkyMcp) return false;
 
@@ -246,6 +243,7 @@ export function captureVideoFrame(
   const { width: w, height: h } = inferenceFrameSize(sourceWidth, sourceHeight);
 
   if (!_captureCanvas || _captureCanvas.width !== w || _captureCanvas.height !== h) {
+    (_captureCanvas as OffscreenCanvas & { close?: () => void } | null)?.close?.();
     _captureCanvas = new OffscreenCanvas(w, h);
     _captureCtx = _captureCanvas.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
   }

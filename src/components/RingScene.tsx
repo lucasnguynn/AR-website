@@ -240,10 +240,12 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableWebGPUEnhanc
         <meshBasicMaterial color={FINGER_OCCLUDER_DEBUG_COLOR} colorWrite={false} depthWrite={true} depthTest={true} />
       </mesh>
 
-      <mesh ref={debugBoxRef} visible={false} renderOrder={RING_RENDER_ORDER + 1}>
-        <boxGeometry args={[0.02, 0.02, 0.02]} />
-        <meshBasicMaterial color="#ff0000" wireframe depthTest={false} depthWrite={false} transparent />
-      </mesh>
+      {import.meta.env.DEV && (
+        <mesh ref={debugBoxRef} visible={false} renderOrder={RING_RENDER_ORDER + 1}>
+          <boxGeometry args={[0.02, 0.02, 0.02]} />
+          <meshBasicMaterial color="#ff0000" wireframe depthTest={false} depthWrite={false} transparent />
+        </mesh>
+      )}
 
       <group ref={groupRef} visible={false} renderOrder={RING_RENDER_ORDER}>
         <primitive object={scene} dispose={null} />

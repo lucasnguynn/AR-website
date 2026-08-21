@@ -40,6 +40,11 @@ export type DepthOutboundMessage = Versioned<
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): value is RecordValue { return typeof value === 'object' && value !== null; }
+function depthImage(value: unknown): value is ImageBitmap | ImageData | OffscreenCanvas {
+  return (typeof ImageBitmap !== 'undefined' && value instanceof ImageBitmap)
+    || (typeof ImageData !== 'undefined' && value instanceof ImageData)
+    || (typeof OffscreenCanvas !== 'undefined' && value instanceof OffscreenCanvas);
+}
 function versioned(value: unknown): value is RecordValue & { protocolVersion: WorkerProtocolVersion; type: string } {
   return record(value) && value.protocolVersion === WORKER_PROTOCOL_VERSION && typeof value.type === 'string';
 }
@@ -60,7 +65,7 @@ export function validateDepthInbound(value: unknown): value is DepthInboundMessa
   if (value.type === 'PAUSE' || value.type === 'RESUME' || value.type === 'DESTROY') return true;
   if (!record(value.payload)) return false;
   if (value.type === 'INIT') return value.payload.model instanceof ArrayBuffer && value.payload.model.byteLength > 0;
-  return value.type === 'DETECT' && Number.isFinite(value.payload.frameId) && record(value.payload.image);
+  return value.type === 'DETECT' && Number.isFinite(value.payload.frameId) && depthImage(value.payload.image);
 }
 export function validateDepthOutbound(value: unknown): value is DepthOutboundMessage {
   if (!versioned(value)) return false;

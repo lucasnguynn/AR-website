@@ -49,8 +49,10 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   const modelBlobUrlRef = useRef<string | null>(null);
   const inferenceTimerRef = useRef<number | null>(null);
   const videoFrameCallbackRef = useRef<number | null>(null);
+  const videoFrameCallbackOwnerRef = useRef<HTMLVideoElement | null>(null);
   const lastFrameSentAtRef = useRef(0);
   const gestureDetectorRef = useRef(new GestureDetector());
+  const [cameraSchedulerEpoch, setCameraSchedulerEpoch] = useState(0);
 
   const [loadingState, setLoadingState] = useState<LoadingState>({
     mediapipe: 0,
@@ -65,10 +67,11 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       window.clearInterval(inferenceTimerRef.current);
       inferenceTimerRef.current = null;
     }
-    const scheduledVideo = videoRef.current;
+    const scheduledVideo = videoFrameCallbackOwnerRef.current;
     if (videoFrameCallbackRef.current !== null && scheduledVideo?.cancelVideoFrameCallback) {
       scheduledVideo.cancelVideoFrameCallback(videoFrameCallbackRef.current);
       videoFrameCallbackRef.current = null;
+      videoFrameCallbackOwnerRef.current = null;
     }
 
     activeRef.current = false;
@@ -238,13 +241,17 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   }, []);
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (video?.requestVideoFrameCallback) {
+    if (videoRef.current?.requestVideoFrameCallback) {
       const onVideoFrame = () => {
         processFrame();
-        videoFrameCallbackRef.current = video.requestVideoFrameCallback(onVideoFrame);
+        const currentVideo = videoRef.current;
+        if (currentVideo?.requestVideoFrameCallback) {
+          videoFrameCallbackOwnerRef.current = currentVideo;
+          videoFrameCallbackRef.current = currentVideo.requestVideoFrameCallback(onVideoFrame);
+        }
       };
-      videoFrameCallbackRef.current = video.requestVideoFrameCallback(onVideoFrame);
+      videoFrameCallbackOwnerRef.current = videoRef.current;
+      videoFrameCallbackRef.current = videoRef.current.requestVideoFrameCallback(onVideoFrame);
     } else {
       inferenceTimerRef.current = window.setInterval(processFrame, 1000 / 30);
     }
@@ -253,17 +260,20 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         window.clearInterval(inferenceTimerRef.current);
         inferenceTimerRef.current = null;
       }
-      if (videoFrameCallbackRef.current !== null && video?.cancelVideoFrameCallback) {
-        video.cancelVideoFrameCallback(videoFrameCallbackRef.current);
+      const currentVideo = videoFrameCallbackOwnerRef.current;
+      if (videoFrameCallbackRef.current !== null && currentVideo?.cancelVideoFrameCallback) {
+        currentVideo.cancelVideoFrameCallback(videoFrameCallbackRef.current);
         videoFrameCallbackRef.current = null;
+        videoFrameCallbackOwnerRef.current = null;
       }
     };
-  }, [processFrame, loadingState.camera]);
+  }, [processFrame, loadingState.camera, cameraSchedulerEpoch]);
 
   const startTracking = useCallback((video: HTMLVideoElement) => {
     videoRef.current = video;
     activeRef.current = true;
     isPausedRef.current = false;
+    setCameraSchedulerEpoch((epoch) => epoch + 1);
     setLoadingState((prev) => ({ ...prev, camera: true }));
   }, []);
 

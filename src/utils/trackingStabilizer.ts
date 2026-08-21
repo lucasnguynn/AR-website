@@ -88,14 +88,17 @@ function finiteQuaternion(q: THREE.Quaternion): boolean {
   return Number.isFinite(q.x) && Number.isFinite(q.y) && Number.isFinite(q.z) && Number.isFinite(q.w) && Math.abs(q.lengthSq() - 1) < 0.15;
 }
 
-function landmark(landmarks: NormalisedLandmark[], index: number): NormalisedLandmark | null {
-  for (let i = 0; i < landmarks.length; i += 1) if (landmarks[i].index === index) return landmarks[i];
-  return null;
+function indexLandmarks(landmarks: NormalisedLandmark[]): Array<NormalisedLandmark | undefined> {
+  const indexed: Array<NormalisedLandmark | undefined> = [];
+  for (const point of landmarks) {
+    if (point.index !== undefined) indexed[point.index] = point;
+  }
+  return indexed;
 }
 
-function validLandmarkGeometry(landmarks: NormalisedLandmark[]): boolean {
+function validLandmarkGeometry(landmarks: Array<NormalisedLandmark | undefined>): boolean {
   for (let i = 0; i < REQUIRED.length; i += 1) {
-    const point = landmark(landmarks, REQUIRED[i]);
+    const point = landmarks[REQUIRED[i]];
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) return false;
     if (point.x < -0.15 || point.x > 1.15 || point.y < -0.15 || point.y > 1.15 || Math.abs(point.z) > 2.5) return false;
   }
@@ -203,8 +206,9 @@ export class RingTrackingStabilizer {
 
   private accept(sample: RingPoseSample, dt: number): boolean {
     if (sample.confidence < this.options.minConfidence || !finiteVector(sample.position) || !finiteQuaternion(sample.quaternion) || !Number.isFinite(sample.scale) || sample.scale <= 0) return false;
-    if (sample.landmarks && !validLandmarkGeometry(sample.landmarks)) return false;
-    const fingerLength = sample.landmarks ? this.fingerLength(sample.landmarks) : 0;
+    const indexedLandmarks = sample.landmarks ? indexLandmarks(sample.landmarks) : null;
+    if (indexedLandmarks && !validLandmarkGeometry(indexedLandmarks)) return false;
+    const fingerLength = indexedLandmarks ? this.fingerLength(indexedLandmarks) : 0;
     if (fingerLength > 0) {
       if (fingerLength < this.options.minFingerLength || fingerLength > this.options.maxFingerLength) return false;
       if (this.previousFingerLength > 0) {
@@ -220,8 +224,8 @@ export class RingTrackingStabilizer {
     return Math.log(ratio) / dt <= this.options.maxScaleRatioPerSecond;
   }
 
-  private fingerLength(landmarks: NormalisedLandmark[]): number {
-    const mcp = landmark(landmarks, LM.RING_MCP); const pip = landmark(landmarks, LM.RING_PIP);
+  private fingerLength(landmarks: Array<NormalisedLandmark | undefined>): number {
+    const mcp = landmarks[LM.RING_MCP]; const pip = landmarks[LM.RING_PIP];
     if (!mcp || !pip) return 0;
     const dx = pip.x - mcp.x; const dy = pip.y - mcp.y; const dz = pip.z - mcp.z;
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
