@@ -1,3 +1,5 @@
+import { AR_RUNTIME_CONFIG } from '../config/arRuntimeConfig';
+
 export type QualityTier = 'HIGH' | 'MEDIUM' | 'LOW';
 
 export interface FrameStatistics {
@@ -10,7 +12,7 @@ export interface FrameStatistics {
 
 const ORDER: readonly QualityTier[] = ['HIGH', 'MEDIUM', 'LOW'];
 
-/** Rolling, hysteretic quality policy. Renderer selection is deliberately not part of this class. */
+/** Rolling quality policy with asymmetric hysteresis to prevent tier flapping. */
 export class AdaptiveQualityController {
   private readonly samples: number[] = [];
   private tier: QualityTier;
@@ -27,9 +29,12 @@ export class AdaptiveQualityController {
     const bounded = Math.min(Math.max(frameMs, 0), 250);
     this.samples.push(bounded);
     if (this.samples.length > this.windowSize) this.samples.shift();
+
     const averageMs = this.samples.reduce((sum, value) => sum + value, 0) / this.samples.length;
     const sorted = [...this.samples].sort((a, b) => a - b);
-    const p95Ms = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+    const p95Ms = sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * 0.95))];
+
+    // Downgrade early enough to protect tracking stability. Upgrade much more slowly.
     const overloaded = this.samples.length >= 30 && (averageMs > 22 || p95Ms > 32);
     const recovered = this.samples.length >= 60 && averageMs < 17.5 && p95Ms < 22;
     this.overBudgetMs = overloaded ? this.overBudgetMs + bounded : 0;
@@ -42,18 +47,41 @@ export class AdaptiveQualityController {
       this.overBudgetMs = 0;
       this.underBudgetMs = 0;
       changed = true;
-    } else if (this.underBudgetMs >= 5_000 && index > 0) {
+    } else if (this.underBudgetMs >= 7_500 && index > 0) {
       this.tier = ORDER[index - 1];
       this.overBudgetMs = 0;
       this.underBudgetMs = 0;
       changed = true;
     }
-    return { quality: this.tier, changed, statistics: { averageMs, p95Ms, overBudgetMs: this.overBudgetMs, underBudgetMs: this.underBudgetMs, sampleCount: this.samples.length } };
+
+    return {
+      quality: this.tier,
+      changed,
+      statistics: {
+        averageMs,
+        p95Ms,
+        overBudgetMs: this.overBudgetMs,
+        underBudgetMs: this.underBudgetMs,
+        sampleCount: this.samples.length,
+      },
+    };
   }
 }
 
 export const qualitySettings: Record<QualityTier, { dpr: number; shadows: boolean; depthIntervalMs: number }> = {
-  HIGH: { dpr: 2, shadows: true, depthIntervalMs: 66 },
-  MEDIUM: { dpr: 1.5, shadows: false, depthIntervalMs: 100 },
-  LOW: { dpr: 1, shadows: false, depthIntervalMs: 180 },
+  HIGH: {
+    dpr: AR_RUNTIME_CONFIG.performance.HIGH.dpr,
+    shadows: AR_RUNTIME_CONFIG.performance.HIGH.shadows,
+    depthIntervalMs: AR_RUNTIME_CONFIG.performance.HIGH.depthIntervalMs,
+  },
+  MEDIUM: {
+    dpr: AR_RUNTIME_CONFIG.performance.MEDIUM.dpr,
+    shadows: AR_RUNTIME_CONFIG.performance.MEDIUM.shadows,
+    depthIntervalMs: AR_RUNTIME_CONFIG.performance.MEDIUM.depthIntervalMs,
+  },
+  LOW: {
+    dpr: AR_RUNTIME_CONFIG.performance.LOW.dpr,
+    shadows: AR_RUNTIME_CONFIG.performance.LOW.shadows,
+    depthIntervalMs: AR_RUNTIME_CONFIG.performance.LOW.depthIntervalMs,
+  },
 };
