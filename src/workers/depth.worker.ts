@@ -125,6 +125,9 @@ async function estimate(frameId: number, image: ImageBitmap | ImageData | Offscr
   const minimumIntervalMs = tier === 'degraded-depth' ? 100 : 33;
   if (busy || now - lastInferenceAt < minimumIntervalMs) {
     workerScope.postMessage(protocolMessage({ type: 'DEGRADED', payload: { frameId, reason: 'backpressure' } }));
+    // The ImageBitmap is transferred to this worker. Returning before the main
+    // try/finally would otherwise retain its decoder/GPU resources.
+    if (image instanceof ImageBitmap) image.close();
     return;
   }
   busy = true;
