@@ -28,6 +28,7 @@ const directory = await mkdtemp(join(tmpdir(), 'ar-tests-'));
 const suites = {
   unit: [
     ['tests/orchestration.test.ts', 'run'], 
+    ['tests/camera-system.test.ts', 'runCameraSystemTests'],
     ['tests/webxr.test.ts', 'runWebXRTests'], 
     ['tests/depth-pipeline.test.ts', 'runDepthPipelineTests'], 
     ['tests/integrity.test.ts', 'runIntegrityTests'], 
