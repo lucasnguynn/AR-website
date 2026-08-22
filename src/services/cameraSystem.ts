@@ -373,7 +373,8 @@ export class CameraSystem {
       }
 
       const settings = videoTracks[0].getSettings();
-      console.info(`[Camera] ${settings.width}×${settings.height} facing=${settings.facingMode}`);
+      // facingMode is undefined on desktop cameras (no front/back distinction) — default to 'unknown'
+      console.info(`[Camera] ${settings.width}×${settings.height} facing=${settings.facingMode ?? 'unknown'}`);
       this.stream = stream;
     } catch (error) {
       throw error;
