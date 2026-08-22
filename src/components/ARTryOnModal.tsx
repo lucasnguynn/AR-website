@@ -55,8 +55,10 @@ function hasWebGLSupport(): boolean {
   return true;
 }
 
-function rendererKind(): 'webgpu' | 'webgl2' {
-  return Boolean(navigator.gpu) ? 'webgpu' : 'webgl2';
+function rendererKind(): 'webgl2' {
+  // React18 + R3F8 production Canvas uses the validated synchronous WebGL2 path.
+  // navigator.gpu is only a hardware capability signal, not the active renderer.
+  return 'webgl2';
 }
 
 export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
@@ -75,7 +77,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   const [videoReady, setVideoReady] = useState(false);
   const [experienceRequested, setExperienceRequested] = useState(false);
 
-  const { resultRef, loadingState, startTracking, setActive, destroy } = useHandTracking(trackingEnabled);
+  const { resultRef, loadingState, startTracking, restartTracking, setActive, destroy } = useHandTracking(trackingEnabled);
   const { isLoading, markLoaded } = useLoadingState();
   const ambientLight = useAmbientLightAdapter(videoRef);
   const [hudVisible, setHudVisible] = useState(false);
@@ -151,15 +153,33 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   const retryExperience = useCallback(async () => {
     setCriticalError(null);
     (resultRef as React.MutableRefObject<typeof resultRef.current>).current = null;
-    if (cameraHasError) {
-      await recoverCamera();
-      return;
+    const video = videoRef.current;
+
+    try {
+      if (cameraHasError) {
+        await recoverCamera();
+        if (video) restartTracking(video);
+        return;
+      }
+
+      if (loadingState.error) {
+        if (video) restartTracking(video);
+        return;
+      }
+
+      // Hand-not-detected recovery should not tear down a healthy camera.
+      if (video) {
+        startTracking(video);
+        setActive(true);
+      }
+    } catch (error) {
+      setCriticalError({
+        title: 'Unable to restart AR',
+        message: error instanceof Error ? error.message : 'Camera or hand tracking could not restart.',
+        retryable: true,
+      });
     }
-    if (videoRef.current) {
-      await startCameraFromRef(videoRef.current, facingMode);
-      startTracking(videoRef.current);
-    }
-  }, [cameraHasError, facingMode, recoverCamera, resultRef, startTracking]);
+  }, [cameraHasError, loadingState.error, recoverCamera, restartTracking, resultRef, setActive, startTracking]);
 
   // WebXR immersive sessions require transient user activation. Starting from an
   // effect loses that browser gesture. Keep startup behind the explicit button below.
