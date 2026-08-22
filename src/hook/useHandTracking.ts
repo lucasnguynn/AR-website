@@ -1,6 +1,10 @@
 // FILE: src/hook/useHandTracking.ts
 /**
  * useHandTracking.ts
+ *
+ * Owns the MediaPipe worker lifecycle and keeps all camera frames local to this
+ * browser session. Frames are transferred only to the same-origin Web Worker for
+ * on-device inference and are never uploaded by this hook.
  */
 
 import { useEffect, useRef, useCallback, useState, type RefObject } from 'react';
@@ -101,7 +105,8 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     async function createWorker(): Promise<void> {
       const workerUrl = new URL(mediapipeWorkerUrl, window.location.href);
       try {
-        worker = await createVerifiedWorker(workerUrl, { type: 'module' });
+        // DEVSECOPS FIX: Gỡ bỏ { type: 'module' } để giải phóng lệnh importScripts() của AI
+        worker = await createVerifiedWorker(workerUrl);
       } catch (error) {
         window.dispatchEvent(new CustomEvent('ar:security-violation', {
           detail: { asset: workerUrl.toString(), reason: 'SRI_MISMATCH', ts: Date.now() },
@@ -115,10 +120,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       }
 
       const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
-      
-      // DEVSECOPS FIX: Sử dụng CDN trực tiếp để chống lỗi 404 do thiếu file WASM trên server local
       const wasmBasePath = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
-      
       const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
       const modelBlobUrl = await createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream');
       
