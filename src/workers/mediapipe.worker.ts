@@ -29,7 +29,7 @@ interface TrackingResult {
 
 const CONFIG = {
   NUM_HANDS: 1,
-  // DEVSECOPS FIX: Hạ ngưỡng tự tin xuống 40% để AI nhạy bén hơn với môi trường thiếu sáng và camera nhiễu hạt
+  // Đã hạ ngưỡng tự tin xuống 0.4 để tăng độ nhạy trong môi trường thực tế
   MIN_DETECTION_CONFIDENCE: 0.4,
   MIN_PRESENCE_CONFIDENCE: 0.4,
   MIN_TRACKING_CONFIDENCE: 0.4,
@@ -43,8 +43,6 @@ let handLandmarker: HandLandmarker | null = null;
 let paused = false;
 let activeFrame: FramePayload | null = null;
 let lastProcessedTimestamp = -1;
-let canvas: OffscreenCanvas | null = null;
-let canvasContext: OffscreenCanvasRenderingContext2D | null = null;
 
 const metrics = {
   frameCount: 0,
@@ -131,19 +129,6 @@ function extractRingLandmarks(landmarks: NormalizedLandmark[] | undefined): Ring
   });
 }
 
-function ensureCanvas(width: number, height: number): OffscreenCanvasRenderingContext2D {
-  if (!canvas || canvas.width !== width || canvas.height !== height || !canvasContext) {
-    canvas = new OffscreenCanvas(width, height);
-    canvasContext = canvas.getContext('2d', { willReadFrequently: true });
-  }
-
-  if (!canvasContext) {
-    throw new Error('Failed to acquire OffscreenCanvas 2D context');
-  }
-
-  return canvasContext;
-}
-
 function queueFrame(frame: FramePayload): void {
   metrics.frameCount += 1;
 
@@ -185,7 +170,8 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
   handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
     baseOptions: {
       modelAssetPath: modelUrl,
-      delegate: 'GPU', 
+      // Ép buộc dùng CPU để tránh xung đột WebGL chết người trên trình duyệt
+      delegate: 'CPU', 
     },
     runningMode: 'VIDEO',
     numHands: CONFIG.NUM_HANDS,
@@ -194,7 +180,7 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
-  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded successfully via CDN');
+  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded successfully via CDN - GPU disabled');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });
@@ -209,11 +195,12 @@ function processActiveFrame(): void {
   const startTime = performance.now();
 
   try {
-    const context = ensureCanvas(frame.width, frame.height);
+    // DEVSECOPS FIX: Tạo ImageData thô và truyền trực tiếp cho MediaPipe,
+    // loại bỏ hoàn toàn OffscreenCanvas để triệt tiêu lỗi WebGL Device Lost.
     const imageData = new ImageData(new Uint8ClampedArray(frame.buffer), frame.width, frame.height);
-    context.putImageData(imageData, 0, 0);
 
-    const result = handLandmarker.detectForVideo(canvas as OffscreenCanvas, frame.timestamp);
+    const result = handLandmarker.detectForVideo(imageData, frame.timestamp);
+    
     const hands: TrackingResult[] = result.landmarks.map((landmarks, index) => {
       const category = result.handedness?.[index]?.[0];
 
@@ -266,8 +253,6 @@ function destroyWorker(): void {
   paused = true;
   activeFrame = null;
   frameRingBuffer.clear();
-  canvas = null;
-  canvasContext = null;
 
   if (handLandmarker) {
     handLandmarker.close();
