@@ -1,28 +1,48 @@
-name: V5 repository sanitation
+name: Reproducible build sanitation
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 3 * * 0'
   push:
     branches: [main]
-  workflow_dispatch:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.ts'
+      - 'scripts/**'
+      - '.github/workflows/v5-repository-sanitation.yml'
+
+permissions:
+  contents: read
 
 jobs:
   verify-clean-install:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - name: Reproduce the clean quality build twice
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Reproduce the clean production build twice
         shell: bash
         run: |
           set -euo pipefail
           lock_hash="$(sha384sum package-lock.json)"
+
           for pass in 1 2; do
             rm -rf node_modules dist
             npm ci
             test "$(sha384sum package-lock.json)" = "$lock_hash"
-            npm run quality
+            npm run build
             sha384sum dist/integrity-manifest.json > "/tmp/integrity-${pass}.sha384"
           done
+
           cmp /tmp/integrity-1.sha384 /tmp/integrity-2.sha384
           git diff --exit-code -- package-lock.json
