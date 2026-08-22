@@ -1,10 +1,10 @@
-// FILE: src/utils/PrivacyTelemetry.ts
+import { AR_RUNTIME_CONFIG } from '../config/arRuntimeConfig';
+
 type PrivacyClean = { readonly __brand: 'privacy-clean' };
 
-/**
- * Whitelisted privacy-safe AR telemetry event names.
- */
 export type AREventName =
+  | 'AR_CTA_CLICKED'
+  | 'AR_MODE_SELECTED'
   | 'AR_SESSION_STARTED'
   | 'AR_SESSION_ENDED'
   | 'AR_TRACKING_ACQUIRED'
@@ -12,80 +12,85 @@ export type AREventName =
   | 'AR_MODEL_LOADED'
   | 'AR_PRESET_CHANGED'
   | 'AR_QUICKLOOK_LAUNCHED'
-  | 'AR_GESTURE_DETECTED';
+  | 'AR_GESTURE_DETECTED'
+  | 'AR_FALLBACK_SELECTED'
+  | 'AR_FATAL_ERROR';
 
-/**
- * Privacy-sanitized telemetry payload that intentionally excludes PII, camera frames, landmarks, and biometric fields.
- */
+export type SafeARContext = {
+  readonly experience?: string;
+  readonly renderer?: string;
+  readonly depthTier?: string;
+  readonly qualityTier?: string;
+  readonly reasonCode?: string;
+};
+
 export type SafeEventPayload = PrivacyClean & {
   eventName: AREventName;
   timestamp: number;
   sessionId: string;
-  deviceClass: string;
-  arState: string;
-  durationMs?: number;
+  durationMs: number;
+  sku: string;
+  assetVersion: string;
+  context?: SafeARContext;
 };
 
-const TELEMETRY_ENDPOINT = '/telemetry/ar';
-const startedAt = performance.now();
+const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
 let ephemeralSessionId: string | null = null;
 
 function dntEnabled(): boolean {
+  if (typeof navigator === 'undefined') return false;
   return navigator.doNotTrack === '1' || (navigator as Navigator & { msDoNotTrack?: string }).msDoNotTrack === '1';
 }
 
 function getSessionId(): string {
   if (ephemeralSessionId) return ephemeralSessionId;
-  ephemeralSessionId = crypto.randomUUID();
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    ephemeralSessionId = crypto.randomUUID();
+  } else {
+    // Ephemeral only; never persisted and never derived from device/user data.
+    ephemeralSessionId = `ar-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
   return ephemeralSessionId;
 }
 
-function isAREventName(value: unknown): value is AREventName {
-  return (
-    value === 'AR_SESSION_STARTED' ||
-    value === 'AR_SESSION_ENDED' ||
-    value === 'AR_TRACKING_ACQUIRED' ||
-    value === 'AR_TRACKING_LOST' ||
-    value === 'AR_MODEL_LOADED' ||
-    value === 'AR_PRESET_CHANGED' ||
-    value === 'AR_QUICKLOOK_LAUNCHED' ||
-    value === 'AR_GESTURE_DETECTED'
-  );
+function clean(value: string | undefined, max: number): string | undefined {
+  if (!value) return undefined;
+  const sanitized = String(value).replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, max);
+  return sanitized || undefined;
 }
 
-/**
- * Returns a branded payload containing only privacy-safe AR telemetry fields.
- */
-export function sanitizePayload(raw: Record<string, unknown>): SafeEventPayload {
-  const { eventName, arState, deviceClass, durationMs } = raw;
-  const safeEventName: AREventName = isAREventName(eventName) ? eventName : 'AR_SESSION_STARTED';
-  const payload: SafeEventPayload = {
+function sanitizeContext(context?: SafeARContext): SafeARContext | undefined {
+  if (!context) return undefined;
+  const safe = {
+    experience: clean(context.experience, 48),
+    renderer: clean(context.renderer, 32),
+    depthTier: clean(context.depthTier, 32),
+    qualityTier: clean(context.qualityTier, 16),
+    reasonCode: clean(context.reasonCode, 64),
+  } satisfies SafeARContext;
+
+  return Object.values(safe).some(Boolean) ? safe : undefined;
+}
+
+export function sanitizePayload(eventName: AREventName, context?: SafeARContext): SafeEventPayload {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const safeContext = sanitizeContext(context);
+  return {
     __brand: 'privacy-clean',
-    eventName: safeEventName,
+    eventName,
     timestamp: Date.now(),
     sessionId: getSessionId(),
-    deviceClass: String(deviceClass ?? 'unknown'),
-    arState: String(arState ?? ''),
-    ...(typeof durationMs === 'number' ? { durationMs } : {}),
+    durationMs: Math.max(0, Math.round(now - startedAt)),
+    sku: AR_RUNTIME_CONFIG.product.sku,
+    assetVersion: AR_RUNTIME_CONFIG.product.assetVersion,
+    ...(safeContext ? { context: safeContext } : {}),
   };
-  console.info('[Privacy] Payload sanitized — no PII keys');
-  return payload;
 }
 
-/**
- * Sends privacy-safe AR telemetry with an ephemeral in-memory session identifier.
- */
-export function sendPrivacyTelemetry(eventName: AREventName): boolean {
-  if (dntEnabled()) return false;
-
-  const payload = sanitizePayload({
-    eventName,
-    arState: 'unknown',
-    deviceClass: 'unknown',
-    durationMs: Math.round(performance.now() - startedAt),
-  });
-
+/** No camera frame, landmark, hand geometry, IP-derived identifier or PII is accepted. */
+export function sendPrivacyTelemetry(eventName: AREventName, context?: SafeARContext): boolean {
+  if (!AR_RUNTIME_CONFIG.features.telemetry || dntEnabled() || typeof navigator === 'undefined' || typeof navigator.sendBeacon !== 'function') return false;
+  const payload = sanitizePayload(eventName, context);
   const body = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-  return navigator.sendBeacon(TELEMETRY_ENDPOINT, body);
+  return navigator.sendBeacon(AR_RUNTIME_CONFIG.telemetryEndpoint, body);
 }
-// VERIFY: console.log('[Privacy] Payload sanitized — no PII keys')
