@@ -38,6 +38,7 @@ import { UKFPosePipeline } from '../tracking/PosePipeline';
 import { useJewelryRenderingEnhancer } from './JewelryRenderingEnhancer';
 import { WebXRDepthManager, type DepthOcclusionTier } from '../services/WebXRDepthManager';
 import type { GemstoneQuality, RingRendererMode } from '../materials/ringMaterialStrategy';
+import { AR_RUNTIME_CONFIG } from '../config/arRuntimeConfig';
 
 const FINGER_OCCLUDER_RENDER_ORDER = -1;
 const RING_RENDER_ORDER = 20;
@@ -60,14 +61,16 @@ interface RingSceneProps {
   ambientLight?: AmbientLightState;
   materialRendererMode?: RingRendererMode;
   gemstoneQuality?: GemstoneQuality;
+  /** Fixed GLB LOD for the current session; do not swap assets on adaptive shader changes. */
+  modelQuality?: GemstoneQuality;
   depthIntervalMs?: number;
   environmentQuality?: GemstoneQuality;
 }
 
 function CameraDepthOcclusion({ videoRef, tierRef, intervalMs = 100 }: { videoRef?: React.RefObject<HTMLVideoElement | null>; tierRef: React.MutableRefObject<DepthOcclusionTier>; intervalMs?: number }) {
   const { scene } = useThree();
-  const pipeline = useMemo(() => new WebXRDepthManager({ modelUrl: `${import.meta.env.BASE_URL}models/depth/depth_anything_v2_small.onnx` }), []);
-  const enabled = import.meta.env.VITE_ENABLE_MONOCULAR_DEPTH === 'true';
+  const pipeline = useMemo(() => new WebXRDepthManager({ modelUrl: AR_RUNTIME_CONFIG.assets.depthModel }), []);
+  const enabled = AR_RUNTIME_CONFIG.features.monocularDepth;
 
   useEffect(() => {
     scene.add(pipeline.occlusionProxy);
@@ -97,7 +100,7 @@ function CameraDepthOcclusion({ videoRef, tierRef, intervalMs = 100 }: { videoRe
       if (!cancelled && video?.requestVideoFrameCallback) callback = video.requestVideoFrameCallback(onFrame);
     };
     if (enabled && video?.requestVideoFrameCallback) callback = video.requestVideoFrameCallback(onFrame);
-    else if (enabled) callback = window.setInterval(() => void capture(), 100);
+    else if (enabled) callback = window.setInterval(() => void capture(), Math.max(intervalMs, 100));
     return () => {
       cancelled = true;
       if (video?.cancelVideoFrameCallback && callback) video.cancelVideoFrameCallback(callback);
@@ -111,13 +114,13 @@ function CameraDepthOcclusion({ videoRef, tierRef, intervalMs = 100 }: { videoRe
 // ── RingMesh — inner component, renders only after useGLTF resolves ──────────
 // Kept separate from the Suspense boundary so ErrorBoundary can catch
 // suspension errors without unmounting the whole scene.
-function RingMesh({ resultRef, videoRef, facingMode = 'user', enableWebGPUEnhancements = false, ambientLight, materialRendererMode = 'webgl', gemstoneQuality = 'HIGH', depthIntervalMs = 100, environmentQuality = 'HIGH' }: RingSceneProps) {
+function RingMesh({ resultRef, videoRef, facingMode = 'user', enableWebGPUEnhancements = false, ambientLight, materialRendererMode = 'webgl', gemstoneQuality = 'HIGH', modelQuality = gemstoneQuality, depthIntervalMs = 100, environmentQuality = 'HIGH' }: RingSceneProps) {
   const { camera, gl } = useThree();
   const groupRef   = useRef<THREE.Group>(null);
   const debugBoxRef = useRef<THREE.Mesh>(null);
   const occluderRef = useRef<THREE.Mesh>(null);
   const depthTierRef = useRef<DepthOcclusionTier>('geometric-proxy');
-  const { scene }  = useRingModel(undefined, { rendererMode: materialRendererMode, quality: gemstoneQuality, preset: 'silver' });
+  const { scene }  = useRingModel(undefined, { rendererMode: materialRendererMode, quality: gemstoneQuality, modelQuality, preset: 'silver' });
   useJewelryRenderingEnhancer({ enabled: enableWebGPUEnhancements, ringRoot: scene });
 
   const posePipeline = useRef(new UKFPosePipeline());
