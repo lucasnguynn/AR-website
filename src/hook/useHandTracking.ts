@@ -8,17 +8,25 @@
  *
  * KEY ARCHITECTURE DECISIONS:
  *
- * 1. WASM is pre-fetched on the *main thread* and passed as a blob: URL.
+ * 1. WASM is loaded directly from CDN by FilesetResolver on the main thread.
  *    Workers inherit the HTTP-header CSP (not the <meta http-equiv> CSP from
  *    index.html). The production _headers CSP only allows `connect-src 'self'
  *    blob:`. If the worker tried to fetch cdn.jsdelivr.net directly, the request
  *    would be silently blocked, causing MediaPipe init to hang forever.
- *    Fetching WASM on the main thread (where CDN access is granted via the
- *    index.html <meta> CSP in dev, and should be granted in _headers in prod)
- *    and converting to blob: gives the worker a same-origin URL it can load.
+ *    The CDN URL is passed to the worker which calls FilesetResolver from there.
+ *    CDN access is granted in public/_headers via:
+ *      connect-src 'self' blob: https://cdn.jsdelivr.net
+ *      script-src  'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net
  *
- * 2. The model .task file is already pre-fetched as a blob: URL via
- *    createVerifiedAssetBlobUrl() — that pattern is preserved here for WASM too.
+ * 2. The model .task file is pre-fetched as a blob: URL via
+ *    createVerifiedAssetBlobUrl() — that pattern is preserved here.
+ *
+ * 3. resolveWasmBasePath() is now a SYNCHRONOUS function that unconditionally
+ *    returns the CDN URL with a trailing slash. The previous async `fetch` HEAD
+ *    probe was fatally flawed: GitHub Pages returns HTTP 200 with an HTML
+ *    fallback page for any unknown path, so probe.ok was always true even when
+ *    vision_wasm_internal.js did not exist locally — causing the worker to receive
+ *    a local path that 404d on the actual binary.
  */
 
 import { useEffect, useRef, useCallback, useState, type RefObject } from 'react';
@@ -35,34 +43,32 @@ const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
  * CDN base URL for the MediaPipe Tasks-Vision WASM package.
  *
  * TRAILING SLASH IS REQUIRED: FilesetResolver.forVisionTasks() constructs
- * sibling file URLs by appending filenames directly to this base, e.g.:
+ * sibling file URLs by directly concatenating filenames onto this base, e.g.:
  *   base + 'vision_wasm_internal.js'
  *   base + 'vision_wasm_internal.wasm'
- * Without the trailing slash the concatenation produces a malformed path
- * such as `.../wasmvision_wasm_internal.js`, resulting in a 404.
+ * Without the trailing slash the result is a malformed path such as:
+ *   '.../wasmvision_wasm_internal.js'
+ * causing a 404 for every WASM file.
  *
- * NOTE FOR PRODUCTION: Ensure _headers includes:
+ * NOTE FOR PRODUCTION: public/_headers must include:
  *   connect-src 'self' blob: https://cdn.jsdelivr.net
  *   script-src  'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net
  */
 const WASM_CDN_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/';
 
 /**
- * Returns the WASM base path for FilesetResolver.forVisionTasks().
+ * Returns the WASM base URL for FilesetResolver.forVisionTasks().
  *
- * PREVIOUSLY: used a `fetch` HEAD probe to detect whether WASM files exist
- * locally under /public/wasm/. This was fatally flawed for GitHub Pages
- * deployments: GitHub Pages returns HTTP 200 with a fallback HTML page for
- * any missing path, so `probe.ok` was always `true` even when
- * `vision_wasm_internal.js` did not exist. The worker then received a local
- * path and failed with a 404 when it tried to actually load the file.
+ * This is now a plain synchronous function. The previous async HEAD-probe
+ * approach was removed because GitHub Pages returns HTTP 200 for all paths
+ * (serving a fallback HTML page), so probe.ok was never a reliable signal that
+ * the actual WASM JS file existed. The probe always resolved to the local path
+ * which then caused a 404 when FilesetResolver tried to load the real file.
  *
- * FIX: Always return the CDN URL unconditionally. The trailing slash ensures
- * FilesetResolver resolves relative sibling paths correctly. If you later
- * bundle WASM locally (all files under /public/wasm/), replace the body of
- * this function with:
+ * To switch to local WASM in the future (all files under /public/wasm/), replace
+ * the body with:
  *   return `${window.location.origin}${import.meta.env.BASE_URL}wasm/`;
- * and remove cdn.jsdelivr.net from _headers.
+ * and remove cdn.jsdelivr.net from public/_headers.
  */
 function resolveWasmBasePath(): string {
   return WASM_CDN_BASE;
@@ -156,9 +162,6 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     async function createWorker(): Promise<void> {
       const workerUrl = new URL(mediapipeWorkerUrl, window.location.href);
       try {
-        // createVerifiedWorker fetches the worker bundle, verifies SHA-384,
-        // and spawns it from a blob: URL. No { type: 'module' } is passed —
-        // Vite bundles the worker as IIFE (default) so classic-mode loading works.
         worker = await createVerifiedWorker(workerUrl);
       } catch (error) {
         window.dispatchEvent(new CustomEvent('ar:security-violation', {
@@ -173,6 +176,8 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       }
 
       // resolveWasmBasePath() is now synchronous — no await needed.
+      // Returns the CDN URL with trailing slash; the worker passes this
+      // directly to FilesetResolver.forVisionTasks().
       const wasmBasePath = resolveWasmBasePath();
 
       const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
