@@ -5,23 +5,48 @@ type Lifecycle = { start?: () => void | Promise<void>; stop?: () => void | Promi
 
 class LifecycleAdapter implements ARExperienceAdapter {
   private active = false;
+  private starting = false;
   private stopPromise: Promise<void> | null = null;
+
   constructor(
     readonly kind: ARExperienceKind,
     private readonly supported: () => boolean | Promise<boolean>,
     private readonly lifecycle: Lifecycle,
     private readonly values: Omit<ARDiagnostics, 'experience' | 'state'>,
   ) {}
+
   isSupported(): boolean | Promise<boolean> { return this.supported(); }
-  async start(): Promise<void> { if (!this.active) { await this.lifecycle.start?.(); this.active = true; } }
+
+  async start(): Promise<void> {
+    if (this.active || this.starting) return;
+    this.starting = true;
+    try {
+      await this.lifecycle.start?.();
+      this.active = true;
+    } catch (error) {
+      // A lifecycle can allocate camera/worker state before failing. Clean that
+      // partial state before the orchestrator moves to the next adapter.
+      try { await this.lifecycle.stop?.(); } catch { /* preserve the original startup error */ }
+      throw error;
+    } finally {
+      this.starting = false;
+    }
+  }
+
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    if (!this.active) return Promise.resolve();
+    if (!this.active && !this.starting) return Promise.resolve();
     this.active = false;
-    this.stopPromise = Promise.resolve(this.lifecycle.stop?.()).then(() => undefined).finally(() => { this.stopPromise = null; });
+    this.starting = false;
+    this.stopPromise = Promise.resolve(this.lifecycle.stop?.())
+      .then(() => undefined)
+      .finally(() => { this.stopPromise = null; });
     return this.stopPromise;
   }
-  diagnostics(): ARDiagnostics { return { ...this.values, experience: this.kind, state: this.active ? 'active' : 'supported' }; }
+
+  diagnostics(): ARDiagnostics {
+    return { ...this.values, experience: this.kind, state: this.active ? 'active' : this.starting ? 'initializing' : 'supported' };
+  }
 }
 
 export class WebXRAdapter implements ARExperienceAdapter {
