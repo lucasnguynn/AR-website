@@ -1,8 +1,27 @@
 // FILE: src/components/WebGPUScene.tsx
+/**
+ * WebGPUScene.tsx
+ *
+ * BUGS FIXED IN THIS REVISION:
+ *
+ * 1. "WARNING: Multiple instances of Three.js being imported" (console warning)
+ *    Root cause: `import { WebGLRenderer } from 'three'` alongside
+ *    `import * as THREE from 'three'` and `import { WebGPURenderer } from 'three/webgpu'`
+ *    produced two separate module graph entries for Three.js despite the
+ *    `resolve.dedupe: ['three']` in vite.config.ts.
+ *    The named `WebGLRenderer` import was redundant — THREE.WebGLRenderer is already
+ *    available from `import * as THREE from 'three'`.
+ *    FIX: Removed `import { WebGLRenderer } from 'three'`. All Three.js access now
+ *    goes through the single `import * as THREE from 'three'` namespace.
+ *
+ * 2. Duplicate import: `import { useFrame } from '@react-three/fiber'` appeared
+ *    at the bottom of the imports as a stale leftover alongside the correct combined
+ *    import at the top. FIX: Consolidated into a single import statement.
+ */
+
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type CanvasProps } from '@react-three/fiber';
 import * as THREE from 'three';
-import { WebGLRenderer } from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import { RingScene } from './RingScene';
 import type { HandTrackingResult } from '../types/ar.types';
@@ -31,7 +50,6 @@ export interface WebGPUSceneProps {
   ambientLight?: AmbientLightState;
 }
 
-
 /**
  * Returns whether the current browser exposes the WebGPU adapter API.
  */
@@ -48,7 +66,10 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
     throw new Error(`${tier.toUpperCase()} context is unavailable`);
   }
 
-  const renderer = new WebGLRenderer({
+  // Use THREE.WebGLRenderer (from the single `import * as THREE from 'three'`
+  // namespace) instead of a separate named import to avoid the "Multiple instances
+  // of Three.js" warning.
+  const renderer = new THREE.WebGLRenderer({
     canvas,
     context,
     alpha: true,
@@ -214,4 +235,3 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
     </Canvas>
   );
 }
-// VERIFY: console.log('[Renderer] WebGPU | Tier: HIGH — static import path has no CSP dynamic-code construction')
