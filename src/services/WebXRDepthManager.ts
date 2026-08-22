@@ -237,7 +237,6 @@ export class WebXRDepthManager implements DepthPipeline {
     const target = this.buffers[this.writeIndex];
     this.decodeDepth(depth, target);
     this.uploadDepth(this.width, this.height, target, true);
-    this.writeIndex = 1 - this.writeIndex;
     this.xrDepthAvailable = true;
     this.setTier('webxr-depth');
     return true;
@@ -267,7 +266,8 @@ export class WebXRDepthManager implements DepthPipeline {
     this.geometricProxy.visible = false;
     this.xrDepthAvailable = false;
     this.activeTier = 'geometric-proxy';
-    this.depthTexture.dispose();
+    // detach() is reusable between XR sessions. Do not dispose the DataTexture
+    // here; Three.js cannot safely reuse a disposed GPU texture object.
     this.depthTexture.image = { data: new Float32Array([1]), width: 1, height: 1 };
     this.depthTexture.needsUpdate = true;
   }
@@ -348,17 +348,34 @@ export class WebXRDepthManager implements DepthPipeline {
 
   private uploadDepth(width: number, height: number, source: Float32Array, blur: boolean): void {
     this.ensureSize(width, height);
-    const target = this.buffers[this.writeIndex];
-    if (blur) this.gaussianBlur3x3(source, target, width, height);
-    else target.set(source.subarray(0, target.length));
-    this.depthTexture.image = { data: target, width, height };
+
+    // Native WebXR decoding writes into the current back buffer. Blurring that
+    // same array in-place corrupts neighbouring samples as the kernel advances.
+    // If source === current buffer, blur into the opposite buffer and keep the
+    // current one available for the next decode. External monocular buffers are
+    // copied into the current back buffer and then the index is flipped.
+    const writeTarget = this.buffers[this.writeIndex];
+    let published: Float32Array;
+
+    if (blur && source === writeTarget) {
+      const scratch = this.buffers[1 - this.writeIndex];
+      this.gaussianBlur3x3(source, scratch, width, height);
+      published = scratch;
+    } else {
+      if (blur) this.gaussianBlur3x3(source, writeTarget, width, height);
+      else writeTarget.set(source.subarray(0, writeTarget.length));
+      published = writeTarget;
+      this.writeIndex = 1 - this.writeIndex;
+    }
+
+    this.depthTexture.image = { data: published, width, height };
     this.depthTexture.needsUpdate = true;
     const material = this.occlusionProxy.material as THREE.ShaderMaterial;
     material.uniforms.depthMap.value = this.depthTexture;
     material.uniforms.depthResolution.value.set(width, height);
     material.uniforms.nearMeters.value = this.nearMeters;
     material.uniforms.farMeters.value = this.farMeters;
-    material.uniforms.rawValueToMeters.value = this.rawValueToMeters;
+    material.uniforms.rawValueToMeters.value = 1; // texture values are normalized to meters on CPU
     material.uniforms.depthUvTransform.value.copy(this.depthUvTransform);
   }
 
@@ -385,8 +402,12 @@ export class WebXRDepthManager implements DepthPipeline {
   private decodeDepth(depth: XRDepthInformationWithData, target: Float32Array): void {
     const source = ArrayBuffer.isView(depth.data) ? new Uint8Array(depth.data.buffer, depth.data.byteOffset, depth.data.byteLength) : new Uint8Array(depth.data);
     if (source.byteLength === target.length * 4) {
-      const floatDepth = ArrayBuffer.isView(depth.data) ? new Float32Array(depth.data.buffer, depth.data.byteOffset, target.length) : new Float32Array(depth.data);
-      target.set(floatDepth.subarray(0, target.length));
+      const floatDepth = ArrayBuffer.isView(depth.data)
+        ? new Float32Array(depth.data.buffer, depth.data.byteOffset, target.length)
+        : new Float32Array(depth.data);
+      for (let i = 0; i < target.length; i += 1) {
+        target[i] = floatDepth[i] * this.rawValueToMeters;
+      }
       return;
     }
     for (let i = 0, j = 0; i < target.length; i += 1, j += 2) {
