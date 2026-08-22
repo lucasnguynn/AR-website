@@ -8,25 +8,15 @@
  *
  * KEY ARCHITECTURE DECISIONS:
  *
- * 1. WASM is loaded directly from CDN by FilesetResolver on the main thread.
- *    Workers inherit the HTTP-header CSP (not the <meta http-equiv> CSP from
- *    index.html). The production _headers CSP only allows `connect-src 'self'
- *    blob:`. If the worker tried to fetch cdn.jsdelivr.net directly, the request
- *    would be silently blocked, causing MediaPipe init to hang forever.
- *    The CDN URL is passed to the worker which calls FilesetResolver from there.
- *    CDN access is granted in public/_headers via:
- *      connect-src 'self' blob: https://cdn.jsdelivr.net
- *      script-src  'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net
+ * 1. WASM is self-hosted from /public/wasm and copied from the pinned npm
+ *    package before dev/build. This keeps JS and WASM versions aligned and
+ *    removes the runtime CDN dependency.
  *
  * 2. The model .task file is pre-fetched as a blob: URL via
  *    createVerifiedAssetBlobUrl() — that pattern is preserved here.
  *
- * 3. resolveWasmBasePath() is now a SYNCHRONOUS function that unconditionally
- *    returns the CDN URL with a trailing slash. The previous async `fetch` HEAD
- *    probe was fatally flawed: GitHub Pages returns HTTP 200 with an HTML
- *    fallback page for any unknown path, so probe.ok was always true even when
- *    vision_wasm_internal.js did not exist locally — causing the worker to receive
- *    a local path that 404d on the actual binary.
+ * 3. MediaPipe model/WASM URLs come from the centralized AR runtime config so
+ *    SKU/deployment changes cannot silently desynchronize worker assets.
  */
 
 import { useEffect, useRef, useCallback, useState, type RefObject } from 'react';
@@ -36,42 +26,16 @@ import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
 import { createVerifiedAssetBlobUrl, createVerifiedWorker } from '../utils/SecurityUtils';
 import mediapipeWorkerUrl from '../workers/mediapipe.worker.ts?worker&url';
-
-const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
-
-/**
- * CDN base URL for the MediaPipe Tasks-Vision WASM package.
- *
- * TRAILING SLASH IS REQUIRED: FilesetResolver.forVisionTasks() constructs
- * sibling file URLs by directly concatenating filenames onto this base, e.g.:
- *   base + 'vision_wasm_internal.js'
- *   base + 'vision_wasm_internal.wasm'
- * Without the trailing slash the result is a malformed path such as:
- *   '.../wasmvision_wasm_internal.js'
- * causing a 404 for every WASM file.
- *
- * NOTE FOR PRODUCTION: public/_headers must include:
- *   connect-src 'self' blob: https://cdn.jsdelivr.net
- *   script-src  'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net
- */
-const WASM_CDN_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/';
+import { AR_RUNTIME_CONFIG } from '../config/arRuntimeConfig';
 
 /**
- * Returns the WASM base URL for FilesetResolver.forVisionTasks().
- *
- * This is now a plain synchronous function. The previous async HEAD-probe
- * approach was removed because GitHub Pages returns HTTP 200 for all paths
- * (serving a fallback HTML page), so probe.ok was never a reliable signal that
- * the actual WASM JS file existed. The probe always resolved to the local path
- * which then caused a 404 when FilesetResolver tried to load the real file.
- *
- * To switch to local WASM in the future (all files under /public/wasm/), replace
- * the body with:
- *   return `${window.location.origin}${import.meta.env.BASE_URL}wasm/`;
- * and remove cdn.jsdelivr.net from public/_headers.
+ * Resolve the MediaPipe runtime from the same origin as the application.
+ * `npm run sync:mediapipe` copies the exact WASM/loader files from the pinned
+ * @mediapipe/tasks-vision package into public/wasm before dev/build.
  */
 function resolveWasmBasePath(): string {
-  return WASM_CDN_BASE;
+  const url = new URL(AR_RUNTIME_CONFIG.assets.mediapipeWasmRoot, window.location.origin).toString();
+  return url.endsWith('/') ? url : `${url}/`;
 }
 
 export interface UseHandTrackingReturn {
@@ -175,13 +139,10 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         return;
       }
 
-      // resolveWasmBasePath() is now synchronous — no await needed.
-      // Returns the CDN URL with trailing slash; the worker passes this
-      // directly to FilesetResolver.forVisionTasks().
+      // Same-origin WASM runtime copied from the exact package version at build time.
       const wasmBasePath = resolveWasmBasePath();
 
-      const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
-      const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
+      const modelUrl = new URL(AR_RUNTIME_CONFIG.assets.handLandmarker, window.location.origin);
       const modelBlobUrl = await createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream');
       modelBlobUrlRef.current = modelBlobUrl;
 
