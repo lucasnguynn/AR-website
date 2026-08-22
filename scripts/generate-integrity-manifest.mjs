@@ -4,7 +4,7 @@ import { join, relative, resolve, sep } from 'node:path';
 
 const dist = resolve(process.argv[2] ?? 'dist');
 const output = join(dist, 'integrity-manifest.json');
-const eligible = /(?:worker[^/]*\.(?:js|mjs)|\.(?:task|wasm|glb|gltf|bin|onnx|usdz|png|jpe?g))$/i;
+const eligible = /(?:worker[^/]*\.(?:js|mjs)|wasm\/[^/]+\.js|\.(?:task|wasm|glb|gltf|bin|onnx|usdz|png|jpe?g))$/i;
 function walk(dir) { return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]); }
 if (!existsSync(dist)) throw new Error(`Build output does not exist: ${dist}`);
 const assets = Object.fromEntries(walk(dist).filter((file) => eligible.test(relative(dist, file).split(sep).join('/'))).sort().map((file) => {
