@@ -1,68 +1,75 @@
-name: Quality gate
+name: Quality + GitHub Pages
+
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
+concurrency:
+  group: quality-pages-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
+    name: Validate and build
     runs-on: ubuntu-latest
-    env:
-      VITE_ENABLE_MONOCULAR_DEPTH: 'false'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
-      
-      # 1. Chạy bộ Test TRƯỚC KHI tải mô hình (để bài test ngắt an toàn được Pass)
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm test
-      - run: npm run test:integration
-      - run: npm run lint:csp
-      - run: npm run audit:privacy
-      
-      # 2. Tải mô hình AI SAU KHI test xong
-      - name: Download Large ML Models
-        if: env.VITE_ENABLE_MONOCULAR_DEPTH == 'true'
-        run: |
-          mkdir -p public/models/depth
-          MODEL_COMMIT="18a1b01f0c2d63ce2ef42c16b25f3c1d0bd78f1c"
-          MODEL_SHA256="f63825f47d3365e41e67c8a36b65e2e0e6e5f842170a4c6266818158d389fe0d"
-          curl --fail --show-error --silent --location --proto '=https' --max-redirs 3 \
-            -o public/models/depth/depth_anything_v2_small.onnx \
-            "https://huggingface.co/onnx-community/Depth-Anything-V2-Small/resolve/${MODEL_COMMIT}/onnx/model.onnx"
-          echo "${MODEL_SHA256}  public/models/depth/depth_anything_v2_small.onnx" | sha256sum --check --strict
-          
-      # 3. Validate và Build (lúc này mô hình đã sẵn sàng)
-      - run: npm run validate:assets
-      - run: npm run build
-      - run: npm run check:bundle
-      
-      - uses: actions/upload-artifact@v4
-        if: github.ref == 'refs/heads/main'
-        with: { name: production-dist, path: dist }
-      - uses: actions/upload-artifact@v4
-        with: { name: quality-evidence, path: "dist/integrity-manifest.json" }
 
-  # Thay thế Cloudflare bằng GitHub Pages Deploy
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Validate package and lockfile contract
+        run: npm run validate:dependencies
+
+      - name: Run full deterministic quality gate
+        run: npm run quality
+
+      - name: Upload integrity evidence
+        if: always() && hashFiles('dist/integrity-manifest.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-evidence-${{ github.sha }}
+          path: dist/integrity-manifest.json
+          retention-days: 14
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
   deploy:
+    name: Deploy GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: quality
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       pages: write
       id-token: write
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
-      - uses: actions/download-artifact@v4
-        with: { name: production-dist, path: dist }
-      - uses: actions/upload-pages-artifact@v3
-        with: { path: dist }
-      - id: deployment
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy verified artifact
+        id: deployment
         uses: actions/deploy-pages@v4
