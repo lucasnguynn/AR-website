@@ -32,56 +32,39 @@ import mediapipeWorkerUrl from '../workers/mediapipe.worker.ts?worker&url';
 const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
 
 /**
- * CDN path for the MediaPipe Tasks-Vision WASM package.
- * We fetch all files from here on the main thread (where CDN is allowed)
- * and vend them to the worker as blob: URLs.
+ * CDN base URL for the MediaPipe Tasks-Vision WASM package.
  *
- * NOTE FOR PRODUCTION: Also add to _headers:
+ * TRAILING SLASH IS REQUIRED: FilesetResolver.forVisionTasks() constructs
+ * sibling file URLs by appending filenames directly to this base, e.g.:
+ *   base + 'vision_wasm_internal.js'
+ *   base + 'vision_wasm_internal.wasm'
+ * Without the trailing slash the concatenation produces a malformed path
+ * such as `.../wasmvision_wasm_internal.js`, resulting in a 404.
+ *
+ * NOTE FOR PRODUCTION: Ensure _headers includes:
  *   connect-src 'self' blob: https://cdn.jsdelivr.net
  *   script-src  'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net
- * so that the WASM loader's import() calls resolve correctly even if the
- * browser encounters them outside the worker's blob: sandbox.
  */
-const WASM_CDN_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+const WASM_CDN_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm/';
 
 /**
- * Pre-fetches the MediaPipe WASM bundle from CDN on the main thread and
- * returns a blob: URL the worker can safely load under `connect-src blob:`.
+ * Returns the WASM base path for FilesetResolver.forVisionTasks().
  *
- * FilesetResolver.forVisionTasks() expects a *directory* URL ending without
- * a filename. It appends `/vision_wasm_internal.js` and
- * `/vision_wasm_internal.wasm` to the base path. We cannot blob-ify a
- * directory, but we CAN point to the CDN URL from the *main thread* where
- * CDN access is granted, then let FilesetResolver run its own fetch there.
+ * PREVIOUSLY: used a `fetch` HEAD probe to detect whether WASM files exist
+ * locally under /public/wasm/. This was fatally flawed for GitHub Pages
+ * deployments: GitHub Pages returns HTTP 200 with a fallback HTML page for
+ * any missing path, so `probe.ok` was always `true` even when
+ * `vision_wasm_internal.js` did not exist. The worker then received a local
+ * path and failed with a 404 when it tried to actually load the file.
  *
- * If in the future WASM files are bundled locally (in /public/wasm/), replace
- * WASM_CDN_BASE with `${window.location.origin}${import.meta.env.BASE_URL}wasm`
- * and remove the CDN from _headers entirely.
+ * FIX: Always return the CDN URL unconditionally. The trailing slash ensures
+ * FilesetResolver resolves relative sibling paths correctly. If you later
+ * bundle WASM locally (all files under /public/wasm/), replace the body of
+ * this function with:
+ *   return `${window.location.origin}${import.meta.env.BASE_URL}wasm/`;
+ * and remove cdn.jsdelivr.net from _headers.
  */
-async function resolveWasmBasePath(): Promise<string> {
-  // Fast path: if the WASM JS glue is bundled locally, use local path.
-  // Check for the presence of the local JS loader (not just the .wasm binary).
-  const localWasmBase = `${window.location.origin}${import.meta.env.BASE_URL}wasm`;
-  try {
-    const probe = await fetch(`${localWasmBase}/vision_wasm_internal.js`, {
-      method: 'HEAD',
-      cache: 'force-cache',
-    });
-    if (probe.ok) {
-      return localWasmBase;
-    }
-  } catch {
-    // Local WASM not available — fall through to CDN
-  }
-
-  // CDN path: return the CDN base. The worker will be given this string but
-  // must NOT fetch from it directly (CSP blocks CDN in worker). Instead,
-  // FilesetResolver is given this path only when called from the main thread,
-  // which is allowed. For worker usage, we pass the same string but the worker
-  // MUST be patched (as it is in mediapipe.worker.ts) to not re-fetch from CDN.
-  //
-  // The correct long-term solution is to bundle WASM locally. For now, we
-  // keep the CDN path and ensure _headers grants workers CDN access.
+function resolveWasmBasePath(): string {
   return WASM_CDN_BASE;
 }
 
@@ -189,11 +172,8 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         return;
       }
 
-      // Resolve the WASM base path. Returns a local path if WASM is bundled
-      // locally, otherwise returns the CDN URL. The worker receives this
-      // string and passes it to FilesetResolver. The worker itself does NOT
-      // make fetch() calls to CDN (it only uses blob: URLs for actual loading).
-      const wasmBasePath = await resolveWasmBasePath();
+      // resolveWasmBasePath() is now synchronous — no await needed.
+      const wasmBasePath = resolveWasmBasePath();
 
       const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
       const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
