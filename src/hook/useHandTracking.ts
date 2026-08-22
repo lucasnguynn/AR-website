@@ -42,6 +42,7 @@ export interface UseHandTrackingReturn {
   resultRef: RefObject<HandTrackingResult | null>;
   loadingState: LoadingState;
   startTracking: (video: HTMLVideoElement) => void;
+  restartTracking: (video?: HTMLVideoElement) => void;
   setActive: (active: boolean) => void;
   pause: () => void;
   resume: () => void;
@@ -66,6 +67,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   const lastFrameSentAtRef = useRef(0);
   const gestureDetectorRef = useRef(new GestureDetector());
   const [cameraSchedulerEpoch, setCameraSchedulerEpoch] = useState(0);
+  const [workerGeneration, setWorkerGeneration] = useState(0);
 
   const [loadingState, setLoadingState] = useState<LoadingState>({
     mediapipe: 0,
@@ -75,7 +77,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     error: null,
   });
 
-  const destroyWorker = useCallback((worker = workerRef.current) => {
+  const destroyWorker = useCallback((worker = workerRef.current, clearTracking = true) => {
     if (inferenceTimerRef.current !== null) {
       window.clearInterval(inferenceTimerRef.current);
       inferenceTimerRef.current = null;
@@ -87,10 +89,12 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       videoFrameCallbackOwnerRef.current = null;
     }
 
-    activeRef.current = false;
-    isPausedRef.current = true;
-    resultRef.current = null;
-    videoRef.current = null;
+    if (clearTracking) {
+      activeRef.current = false;
+      isPausedRef.current = true;
+      resultRef.current = null;
+      videoRef.current = null;
+    }
     workerReadyRef.current = false;
     inFlightRef.current = false;
     degradedRef.current = false;
@@ -102,24 +106,32 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
 
     if (!worker) return;
 
-    worker.postMessage(protocolMessage({ type: 'DESTROY' }));
-    const killTimer = window.setTimeout(() => worker.terminate(), 300);
-    worker.addEventListener(
-      'message',
-      (event: MessageEvent<unknown>) => {
-        if (validateMediaPipeOutbound(event.data) && event.data.type === 'DESTROYED') {
-          window.clearTimeout(killTimer);
-          worker.terminate();
-        }
-      },
-      { once: true },
-    );
+    const onDestroyed = (event: MessageEvent<unknown>) => {
+      if (!validateMediaPipeOutbound(event.data) || event.data.type !== 'DESTROYED') return;
+      worker.removeEventListener('message', onDestroyed);
+      window.clearTimeout(killTimer);
+      worker.terminate();
+    };
+    const killTimer = window.setTimeout(() => {
+      worker.removeEventListener('message', onDestroyed);
+      worker.terminate();
+    }, 300);
+    worker.addEventListener('message', onDestroyed);
+    try { worker.postMessage(protocolMessage({ type: 'DESTROY' })); }
+    catch {
+      worker.removeEventListener('message', onDestroyed);
+      window.clearTimeout(killTimer);
+      worker.terminate();
+    }
 
     if (workerRef.current === worker) workerRef.current = null;
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      destroyWorker();
+      return;
+    }
     let cancelled = false;
     let worker: Worker | null = null;
 
@@ -208,6 +220,12 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     }
 
     createWorker().catch((error: unknown) => {
+      worker?.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
+      if (modelBlobUrlRef.current) {
+        URL.revokeObjectURL(modelBlobUrlRef.current);
+        modelBlobUrlRef.current = null;
+      }
       setLoadingState((prev) => ({
         ...prev,
         ready: false,
@@ -217,9 +235,9 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
 
     return () => {
       cancelled = true;
-      destroyWorker(worker);
+      destroyWorker(worker, false);
     };
-  }, [destroyWorker, enabled]);
+  }, [destroyWorker, enabled, workerGeneration]);
 
   const processFrame = useCallback(() => {
     if (!activeRef.current || isPausedRef.current || !workerReadyRef.current || inFlightRef.current) return;
@@ -252,6 +270,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     if (videoRef.current?.requestVideoFrameCallback) {
       const onVideoFrame = () => {
         processFrame();
@@ -278,7 +297,7 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         videoFrameCallbackOwnerRef.current = null;
       }
     };
-  }, [processFrame, loadingState.camera, cameraSchedulerEpoch]);
+  }, [enabled, processFrame, loadingState.camera, cameraSchedulerEpoch]);
 
   const startTracking = useCallback((video: HTMLVideoElement) => {
     videoRef.current = video;
@@ -287,6 +306,22 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
     setCameraSchedulerEpoch((epoch) => epoch + 1);
     setLoadingState((prev) => ({ ...prev, camera: true }));
   }, []);
+
+  const restartTracking = useCallback((video?: HTMLVideoElement) => {
+    const nextVideo = video ?? videoRef.current;
+    destroyWorker();
+    resultRef.current = null;
+    metricsRef.current = null;
+    gestureDetectorRef.current = new GestureDetector();
+    setLoadingState({ mediapipe: 0, model: 0, camera: Boolean(nextVideo), ready: false, error: null });
+    if (nextVideo) {
+      videoRef.current = nextVideo;
+      activeRef.current = true;
+      isPausedRef.current = false;
+      setCameraSchedulerEpoch((epoch) => epoch + 1);
+    }
+    setWorkerGeneration((generation) => generation + 1);
+  }, [destroyWorker]);
 
   const setActive = useCallback((active: boolean) => {
     activeRef.current = active;
@@ -308,5 +343,5 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
 
   const getMetrics = useCallback(() => metricsRef.current, []);
 
-  return { resultRef, loadingState, startTracking, setActive, pause, resume, destroy: destroyWorker, getMetrics };
+  return { resultRef, loadingState, startTracking, restartTracking, setActive, pause, resume, destroy: destroyWorker, getMetrics };
 }
