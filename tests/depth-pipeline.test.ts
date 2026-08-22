@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { WebXRDepthManager } from '../src/services/WebXRDepthManager';
+import { WebXRDepthManager, type XRFrameWithDepthData } from '../src/services/WebXRDepthManager';
 import { inferenceFrameSize } from '../src/utils/coordinateMapping';
 import { validateAssets } from '../scripts/validate-assets.mjs';
 
@@ -13,6 +13,33 @@ export async function runDepthPipelineTests(): Promise<void> {
   assert.equal(manager.geometricProxy.geometry, geometry, 'tracking updates reuse geometric GPU resources');
   manager.update({});
   assert.equal(manager.getTier(), 'geometric-proxy', 'an absent camera/model remains usable');
+
+  // WebXR CPU depth is raw in both luminance-alpha and float32 formats. The
+  // manager must publish meters for either format before shader comparisons.
+  const floatFrame = {
+    getDepthInformation: () => ({
+      width: 1,
+      height: 1,
+      rawValueToMeters: 0.5,
+      data: new Float32Array([2]).buffer,
+    }),
+  } as unknown as XRFrameWithDepthData;
+  assert.equal(manager.updateFromWebXR(floatFrame, {} as XRView), true);
+  assert.equal((manager.depthTexture.image.data as Float32Array)[0], 1, 'float32 WebXR depth multiplies rawValueToMeters');
+
+  const uintFrame = {
+    getDepthInformation: () => ({
+      width: 1,
+      height: 1,
+      rawValueToMeters: 0.001,
+      data: new Uint16Array([1000]).buffer,
+    }),
+  } as unknown as XRFrameWithDepthData;
+  assert.equal(manager.updateFromWebXR(uintFrame, {} as XRView), true);
+  assert.equal((manager.depthTexture.image.data as Float32Array)[0], 1, 'luminance-alpha WebXR depth is normalized to meters');
+
+  manager.detach();
+  assert.equal(manager.updateFromWebXR(floatFrame, {} as XRView), true, 'detach keeps reusable depth resources alive for a later XR session');
   manager.dispose();
   assert.equal((geometry as THREE.BufferGeometry).attributes.position.count > 0, true, 'owned geometry existed before deterministic disposal');
 
