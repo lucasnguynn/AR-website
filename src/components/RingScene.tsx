@@ -17,7 +17,6 @@
  */
 
 import React, { Suspense, useRef, useEffect, useMemo } from 'react';
-import { Environment } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { ModelErrorBoundary } from './ModelErrorBoundary';
@@ -71,43 +70,64 @@ function CameraDepthOcclusion({ videoRef, tierRef, intervalMs = 100 }: { videoRe
   const { scene } = useThree();
   const pipeline = useMemo(() => new WebXRDepthManager({ modelUrl: AR_RUNTIME_CONFIG.assets.depthModel }), []);
   const enabled = AR_RUNTIME_CONFIG.features.monocularDepth;
+  const intervalRef = useRef(Math.max(intervalMs, 66));
 
+  useEffect(() => {
+    intervalRef.current = Math.max(intervalMs, 66);
+  }, [intervalMs]);
+
+  // Pipeline ownership is independent from adaptive quality. Disposing it when
+  // intervalMs changes permanently disables the memoized instance.
   useEffect(() => {
     scene.add(pipeline.occlusionProxy);
     void pipeline.start();
-    let callback = 0;
+    return () => {
+      pipeline.occlusionProxy.removeFromParent();
+      pipeline.geometricProxy.removeFromParent();
+      pipeline.dispose();
+    };
+  }, [pipeline, scene]);
+
+  useEffect(() => {
+    if (!enabled) {
+      tierRef.current = 'geometric-proxy';
+      return;
+    }
+
     let cancelled = false;
     let lastCapture = 0;
-    const video = videoRef?.current;
+    let inFlight = false;
+
     const capture = async () => {
+      const video = videoRef?.current;
       const now = performance.now();
-      if (cancelled || now - lastCapture < intervalMs || !video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !pipeline.canAcceptCameraFrame()) return;
+      if (cancelled || inFlight || now - lastCapture < intervalRef.current || !video
+        || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !pipeline.canAcceptCameraFrame()) return;
+
       lastCapture = now;
+      inFlight = true;
       const started = performance.now();
       try {
-        // Transfer the decoded frame directly. Resize and the sole RGBA readback
-        // happen in the worker, off the render thread.
         const bitmap = await createImageBitmap(video);
         if (cancelled) { bitmap.close(); return; }
         pipeline.update({ cameraFrame: bitmap, captureMs: performance.now() - started });
         tierRef.current = pipeline.getTier();
       } catch {
         tierRef.current = 'geometric-proxy';
+      } finally {
+        inFlight = false;
       }
     };
-    const onFrame = () => {
-      void capture();
-      if (!cancelled && video?.requestVideoFrameCallback) callback = video.requestVideoFrameCallback(onFrame);
-    };
-    if (enabled && video?.requestVideoFrameCallback) callback = video.requestVideoFrameCallback(onFrame);
-    else if (enabled) callback = window.setInterval(() => void capture(), Math.max(intervalMs, 100));
+
+    // A bounded timer is intentionally used instead of binding the effect to a
+    // ref's current video node. React refs do not trigger effects when populated.
+    const timer = window.setInterval(() => void capture(), 66);
     return () => {
       cancelled = true;
-      if (video?.cancelVideoFrameCallback && callback) video.cancelVideoFrameCallback(callback);
-      else if (callback) window.clearInterval(callback);
-      pipeline.dispose();
+      window.clearInterval(timer);
     };
-  }, [enabled, intervalMs, pipeline, scene, tierRef, videoRef]);
+  }, [enabled, pipeline, tierRef, videoRef]);
+
   return null;
 }
 
@@ -232,10 +252,10 @@ function RingMesh({ resultRef, videoRef, facingMode = 'user', enableWebGPUEnhanc
   return (
     <>
       <CameraDepthOcclusion videoRef={videoRef} tierRef={depthTierRef} intervalMs={depthIntervalMs} />
-      {environmentQuality !== 'LOW' && <Environment preset="city" background={false} environmentIntensity={0.65 + (ambientLight?.exposure ?? 1) * 0.22} />}
       <ambientLight intensity={0.22 + (ambientLight?.exposure ?? 1) * 0.12} color={ambientLight?.keyColor ?? '#fff7e8'} />
       <hemisphereLight args={[ambientLight?.keyColor ?? '#fff7e8', '#24222a', 0.55]} />
       <rectAreaLight position={[0, 1.4, 1.6]} width={1.6} height={0.9} intensity={1.25 + (ambientLight?.exposure ?? 1) * 0.45} color={ambientLight?.keyColor ?? '#fff7e8'} />
+      {environmentQuality !== 'LOW' && <rectAreaLight position={[-1.2, -0.4, 0.8]} rotation={[0, Math.PI / 3, 0]} width={1.1} height={1.4} intensity={0.7} color="#dce8ff" />}
 
       {/* Ring mesh — hidden until a hand is detected */}
       <mesh ref={occluderRef} visible={false} renderOrder={FINGER_OCCLUDER_RENDER_ORDER} rotation={[Math.PI / 2, 0, 0]}>
