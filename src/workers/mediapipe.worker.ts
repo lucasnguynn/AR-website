@@ -1,11 +1,6 @@
 // FILE: src/workers/mediapipe.worker.ts
 /**
  * mediapipe.worker.ts
- *
- * Low-latency MediaPipe HandLandmarker worker for ring-finger WebAR tracking.
- * The worker keeps a strict lifecycle, accepts only the newest frame under
- * backpressure, and emits a normalized protocol containing all 21 hand landmarks
- * required for sizing, gesture detection, and ring placement.
  */
 
 import {
@@ -181,7 +176,6 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
 
-  // MediaPipe tự động fetch cả 2 file .js và .wasm từ wasmBasePath
   const wasmFileset = await FilesetResolver.forVisionTasks(wasmBasePath, false);
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
@@ -190,7 +184,7 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
   handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
     baseOptions: {
       modelAssetPath: modelUrl,
-      delegate: 'GPU', // Trả về GPU để đảm bảo hiệu suất tốt nhất trên thiết bị di động
+      delegate: 'GPU', 
     },
     runningMode: 'VIDEO',
     numHands: CONFIG.NUM_HANDS,
@@ -199,7 +193,7 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
-  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via public path');
+  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded successfully via CDN');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });
