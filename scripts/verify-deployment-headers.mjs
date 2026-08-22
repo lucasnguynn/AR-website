@@ -8,7 +8,7 @@ export function assertSecurityHeaders(headers) {
   const requiredCsp = ["script-src 'self' 'wasm-unsafe-eval'", "worker-src 'self' blob:", "connect-src 'self' blob:", "object-src 'none'", "frame-ancestors 'self'"];
   for (const directive of requiredCsp) if (!csp.includes(directive)) throw new Error(`CSP is missing: ${directive}`);
   if (/'unsafe-eval'|script-src[^;]*(?:https?:|\*)/.test(csp)) throw new Error('CSP permits unsafe-eval, remote script origins, or wildcard scripts.');
-  if (!permissions.includes('camera=(self)') || !permissions.includes('microphone=()') || !permissions.includes('geolocation=()')) throw new Error('Permissions-Policy does not enforce the camera/microphone/geolocation contract.');
+  if (!permissions.includes('camera=(self)') || !permissions.includes('microphone=()') || !permissions.includes('geolocation=()') || !permissions.includes('xr-spatial-tracking=(self)')) throw new Error('Permissions-Policy does not enforce the camera/microphone/geolocation/WebXR contract.');
   if (headers.get('x-content-type-options')?.toLowerCase() !== 'nosniff') throw new Error('X-Content-Type-Options must be nosniff.');
 }
 
@@ -27,7 +27,7 @@ export async function verifyDeployment(target, compiledManifestPath) {
     const compiled = JSON.parse(await readFile(compiledManifestPath, 'utf8'));
     if (compiled.buildId !== deployed.buildId || JSON.stringify(compiled.assets) !== JSON.stringify(deployed.assets)) throw new Error('Deployed manifest does not match the compiled release manifest.');
   }
-  const critical = Object.entries(deployed.assets).filter(([path]) => /(?:worker[^/]*\.(?:js|mjs)|\.wasm)$/i.test(path));
+  const critical = Object.entries(deployed.assets).filter(([path]) => /(?:worker[^/]*\.(?:js|mjs)|wasm\/[^/]+\.js|\.wasm)$/i.test(path));
   if (!critical.some(([path]) => /worker/i.test(path)) || !critical.some(([path]) => /\.wasm$/i.test(path))) throw new Error('Manifest must cover at least one compiled Worker and WASM asset.');
   for (const [path, expected] of critical) {
     if (path.startsWith('/') || path.includes('..')) throw new Error(`Unsafe manifest path: ${path}`);
