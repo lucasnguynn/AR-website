@@ -3,9 +3,7 @@ import { createVerifiedWorker, fetchVerifiedAsset } from '../utils/SecurityUtils
 import type { DepthOcclusionTier } from './WebXRDepthManager';
 import { protocolMessage, validateDepthOutbound, type DepthOutboundMessage } from '../protocol/workerProtocol';
 
-/**
- * Depth map output for a processed frame.
- */
+/** Depth map output for a processed frame. */
 export interface MonocularDepthResult {
   readonly frameId: number;
   readonly width: number;
@@ -25,9 +23,7 @@ export interface DepthEstimatorDiagnostics {
   readonly provider: 'webgpu' | 'wasm' | 'unavailable';
 }
 
-/**
- * Manages verified worker-backed monocular depth inference.
- */
+/** Manages verified worker-backed monocular depth inference. */
 export class MonocularDepthEstimator {
   private worker: Worker | null = null;
   private frameId = 0;
@@ -47,14 +43,20 @@ export class MonocularDepthEstimator {
 
   async initialize(): Promise<void> {
     if (this.worker) return this.initializing ?? Promise.resolve();
+
     // Verify the immutable model before allocating a worker/GPU resource. A
     // missing or corrupt optional asset therefore fails closed without leaks.
     const { bytes: model } = await fetchVerifiedAsset(this.modelUrl);
-    this.worker = await createVerifiedWorker(new URL('../workers/depth.worker.ts', import.meta.url), { type: 'module' });
+
+    // DEVSECOPS FIX: Gỡ bỏ { type: 'module' } để cho phép Worker chạy ở chế độ Classic
+    this.worker = await createVerifiedWorker(new URL('../workers/depth.worker.ts', import.meta.url));
+
     this.worker.onmessage = (event: MessageEvent<unknown>) => this.receiveMessage(event.data);
+
     this.initializing = new Promise((resolve, reject) => {
       const worker = this.worker;
       if (!worker) throw new Error('Depth worker was not created after integrity verification.');
+
       const previousHandler = worker.onmessage;
       worker.onmessage = (event: MessageEvent<unknown>) => {
         if (validateDepthOutbound(event.data) && event.data.type === 'READY') {
@@ -66,8 +68,10 @@ export class MonocularDepthEstimator {
         }
         previousHandler?.call(worker, event);
       };
+
       worker.postMessage(protocolMessage({ type: 'INIT', payload: { model } }), [model]);
     });
+
     return this.initializing;
   }
 
@@ -78,10 +82,12 @@ export class MonocularDepthEstimator {
       if (image instanceof ImageBitmap) image.close();
       return this.lastResult;
     }
+
     // Reserve downstream capacity before asynchronous integrity/model startup;
     // producers therefore never extract a second expensive frame meanwhile.
     this.inFlight = true;
     this.preferredTier = tier;
+
     void this.initialize().then(() => {
       this.inFlight = false;
       this.queueEstimate(image, tier);
@@ -95,6 +101,7 @@ export class MonocularDepthEstimator {
       if (image instanceof ImageBitmap) image.close();
       console.warn('Monocular depth estimator failed to initialize.', error);
     });
+
     return this.lastResult;
   }
 
@@ -127,6 +134,7 @@ export class MonocularDepthEstimator {
       if (image instanceof ImageBitmap) image.close();
       return;
     }
+
     const frameId = ++this.frameId;
     this.inFlight = true;
     this.submitted += 1;
@@ -151,19 +159,23 @@ export class MonocularDepthEstimator {
       console.warn('Monocular depth estimator failed.', message.payload.message);
       return;
     }
+
     if (!('payload' in message)) return;
+
     this.inFlight = false;
     if (message.type === 'DEGRADED') return;
+
     const result = message.payload;
     this.timings.push(result.averageMs);
     if (this.timings.length > 120) this.timings.shift();
+
     this.consecutiveSuccesses = result.tier === 'degraded-depth' ? this.consecutiveSuccesses + 1 : 0;
     this.preferredTier = result.averageMs > 30 ? 'degraded-depth' : this.preferredTier;
     if (result.averageMs < 15 || this.consecutiveSuccesses >= 10) {
       this.preferredTier = 'monocular-depth';
       this.consecutiveSuccesses = 0;
     }
+
     this.lastResult = { frameId: result.frameId, width: result.width, height: result.height, depth: result.depth, tier: this.preferredTier, averageMs: result.averageMs };
   }
 }
-// VERIFY: console.log('Degraded depth runs at 10 FPS and recovers after 10 successful worker results')
