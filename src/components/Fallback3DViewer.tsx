@@ -3,12 +3,12 @@
  * 
  * Interactive 3D viewer using @react-three/fiber and @react-three/drei.
  * Displays the ring model when AR is unavailable or permission denied.
- * Provides a premium fallback experience with OrbitControls, Environment, and Stage.
+ * Provides a premium same-origin fallback experience with OrbitControls and local lights.
  */
 
 import React, { Suspense, useState, useCallback, useRef, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, ContactShadows, useGLTF } from '@react-three/drei';
+import { OrbitControls, ContactShadows, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { disposeRingScene, useRingModel } from '../hook/useRingModel';
 
@@ -52,10 +52,11 @@ interface ViewerSceneProps {
 const ViewerScene: React.FC<ViewerSceneProps> = ({ ringModelUrl, orbitRef, autoRotate }) => {
   return (
     <>
-      <Environment preset="studio" background={false} blur={0.35} environmentIntensity={1.0} />
       <ambientLight intensity={0.3} />
       <hemisphereLight args={['#fff5df', '#1f2330', 0.65]} />
-      <rectAreaLight position={[0, 1.8, 2.5]} width={2.2} height={1.1} intensity={2.2} />
+      <rectAreaLight position={[0, 1.8, 2.5]} width={2.2} height={1.1} intensity={2.2} color="#fff4df" />
+      <rectAreaLight position={[-1.8, 0.4, 1.0]} rotation={[0, Math.PI / 3, 0]} width={1.4} height={2.0} intensity={1.15} color="#d8e6ff" />
+      <pointLight position={[1.4, -0.6, 1.2]} intensity={0.8} color="#ffffff" />
       <group rotation={[0, -0.25, 0]}>
         <RingModel url={ringModelUrl} />
       </group>
