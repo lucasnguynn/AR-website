@@ -1,26 +1,32 @@
 import { expect, test } from '@playwright/test';
 
-test('modal opens, traps focus, closes, and restores focus', async ({ page }) => {
+test('production shell boots and exposes the AR entry point', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.goto('/');
-  
-  // Chỉ kiểm tra nút Try On có hiển thị thành công (chứng tỏ app boot thành công)
-  const trigger = page.locator('button', { hasText: /Try On/i }).first();
-  await expect(trigger).toBeVisible({ timeout: 15000 });
-  
-  // Bỏ qua việc click mở Modal AR trên CI để tránh sập headless browser do thiếu GPU
+  const trigger = page.getByRole('button', { name: /try on/i }).first();
+  await expect(trigger).toBeVisible({ timeout: 15_000 });
+  expect(pageErrors, `uncaught page errors: ${pageErrors.join(' | ')}`).toEqual([]);
 });
 
-test('mocked WebXR rejection routes to a graceful camera permission recovery', async ({ page }) => {
+test('production shell has accessible document structure before hardware AR starts', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('body')).toBeVisible();
+  await expect(page.locator('main, [role="main"]').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /try on/i }).first()).toBeEnabled();
 });
 
-test('iOS capability route generates a same-site Quick Look USDZ URL', async ({ page }) => {
+test('@stability keeps the non-AR production shell responsive for the requested duration', async ({ page }) => {
+  const durationMs = Math.max(10_000, Number(process.env.STABILITY_DURATION_MS ?? 60_000));
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.goto('/');
-  await expect(page.locator('body')).toBeVisible();
-});
 
-test('@stability survives ten open/close cycles and a continuous session without unbounded JS heap growth', async ({ page }) => {
-  await page.goto('/');
-  await expect(page.locator('body')).toBeVisible();
+  const started = Date.now();
+  while (Date.now() - started < durationMs) {
+    await expect(page.getByRole('button', { name: /try on/i }).first()).toBeVisible();
+    await page.waitForTimeout(Math.min(5_000, Math.max(250, durationMs - (Date.now() - started))));
+  }
+
+  expect(pageErrors, `uncaught page errors during stability window: ${pageErrors.join(' | ')}`).toEqual([]);
 });
