@@ -14,6 +14,15 @@ export interface RingMaterialSemantic {
   readonly source: 'extras' | 'name' | 'pbr-fallback';
 }
 
+export interface RingSemanticSummary {
+  readonly metalMeshes: number;
+  readonly gemstoneMeshes: number;
+  readonly accentMeshes: number;
+  readonly fallbackClassifications: number;
+  readonly gemstoneTypes: readonly GemstoneType[];
+  readonly productionReady: boolean;
+}
+
 const GEM_TYPES: readonly GemstoneType[] = ['diamond', 'sapphire', 'ruby', 'emerald', 'amethyst'];
 const METAL_NAMES = /(?:silver|gold|platinum|metal|band|shank|setting|ring)/i;
 const GEM_NAMES = /(?:diamond|sapphire|ruby|emerald|amethyst|gem|stone|crystal)/i;
@@ -23,19 +32,20 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-/** Central semantic resolver. Exporter extras win, followed by stable model metadata and PBR properties. */
+/** Exporter extras win, then stable names, then conservative PBR fallback. */
 export function classifyRingMaterial(mesh: THREE.Mesh, material: THREE.Material): RingMaterialSemantic {
   const extras = { ...material.userData, ...mesh.userData };
   const explicitRole = stringValue(extras.materialRole)?.toLowerCase();
   const explicitGem = stringValue(extras.gemstoneType)?.toLowerCase();
   const gem = GEM_TYPES.find((type) => type === explicitGem);
-  // The role is authoritative even when an exporter left stale gemstoneType metadata behind.
+
   if (explicitRole === 'gemstone') return { role: 'gemstone', gemstone: gem ?? 'diamond', source: 'extras' };
   if (explicitRole === 'metal') return { role: 'metal', source: 'extras' };
   if (explicitRole === 'accent') return { role: 'accent', source: 'extras' };
   if (gem) return { role: 'gemstone', gemstone: gem, source: 'extras' };
 
-  // Stable, exact exporter names precede fuzzy naming and PBR heuristics.
+  // Backward compatibility for the current single-mesh demo asset. This is not
+  // considered production-ready because it cannot expose a distinct gemstone mesh.
   if (mesh.name === 'model' && material.name === 'model') return { role: 'metal', source: 'name' };
 
   const names = `${mesh.name} ${material.name}`;
@@ -55,6 +65,7 @@ export interface RingMaterialStrategy {
   materialFor(mesh: THREE.Mesh, source: THREE.Material): THREE.Material;
   setPreset(preset: JewelryPreset): void;
   setQuality(quality: GemstoneQuality): void;
+  semanticSummary(): RingSemanticSummary;
   dispose(): void;
 }
 
@@ -65,7 +76,7 @@ export function createRingMaterialStrategy(
 ): RingMaterialStrategy {
   const owned = new Set<THREE.Material>();
   const cache = new Map<string, THREE.Material>();
-  const metalMeshes = new Set<THREE.Mesh>();
+  const semanticByMesh = new Map<THREE.Mesh, RingMaterialSemantic>();
   const gemstoneMeshes = new Map<THREE.Mesh, GemstoneType>();
   const causticTexture = mode === 'webgpu' ? createCausticTexture() : null;
   let preset = initialPreset;
@@ -75,6 +86,7 @@ export function createRingMaterialStrategy(
     const key = semantic.role === 'gemstone' ? `gem:${semantic.gemstone}:${quality}` : semantic.role;
     const cached = cache.get(key);
     if (cached) return cached;
+
     let material: THREE.Material;
     if (semantic.role === 'gemstone') {
       const gem = semantic.gemstone ?? 'diamond';
@@ -84,18 +96,51 @@ export function createRingMaterialStrategy(
     } else if (semantic.role === 'metal') {
       material = createJewelryShaderMaterial({ type: preset, rendererMode: mode });
     } else {
-      material = new THREE.MeshPhysicalMaterial({ name: 'RingAccentWebGL', color: '#d8d6cf', roughness: 0.3, metalness: 0.15, clearcoat: 0.45 });
+      material = new THREE.MeshPhysicalMaterial({
+        name: 'RingAccentWebGL',
+        color: '#d8d6cf',
+        roughness: 0.3,
+        metalness: 0.15,
+        clearcoat: 0.45,
+      });
     }
+
     cache.set(key, material);
     owned.add(material);
     return material;
+  };
+
+  const summary = (): RingSemanticSummary => {
+    let metalMeshes = 0;
+    let gemstoneCount = 0;
+    let accentMeshes = 0;
+    let fallbackClassifications = 0;
+    const gemstoneTypes = new Set<GemstoneType>();
+
+    semanticByMesh.forEach((semantic) => {
+      if (semantic.role === 'metal') metalMeshes += 1;
+      else if (semantic.role === 'gemstone') {
+        gemstoneCount += 1;
+        gemstoneTypes.add(semantic.gemstone ?? 'diamond');
+      } else accentMeshes += 1;
+      if (semantic.source === 'pbr-fallback') fallbackClassifications += 1;
+    });
+
+    return Object.freeze({
+      metalMeshes,
+      gemstoneMeshes: gemstoneCount,
+      accentMeshes,
+      fallbackClassifications,
+      gemstoneTypes: Object.freeze([...gemstoneTypes]),
+      productionReady: metalMeshes > 0 && gemstoneCount > 0 && fallbackClassifications === 0,
+    });
   };
 
   return {
     mode,
     materialFor(mesh, source) {
       const semantic = classifyRingMaterial(mesh, source);
-      if (semantic.role === 'metal') metalMeshes.add(mesh);
+      semanticByMesh.set(mesh, semantic);
       if (semantic.role === 'gemstone') gemstoneMeshes.set(mesh, semantic.gemstone ?? 'diamond');
       mesh.userData.ringMaterialSemantic = semantic;
       return getMaterial(semantic);
@@ -113,9 +158,14 @@ export function createRingMaterialStrategy(
         mesh.material = getMaterial({ role: 'gemstone', gemstone: gem, source: 'extras' });
       });
     },
+    semanticSummary: summary,
     dispose() {
       owned.forEach((material) => material.dispose());
-      owned.clear(); cache.clear(); metalMeshes.clear(); gemstoneMeshes.clear(); causticTexture?.dispose();
+      owned.clear();
+      cache.clear();
+      semanticByMesh.clear();
+      gemstoneMeshes.clear();
+      causticTexture?.dispose();
     },
   };
 }
