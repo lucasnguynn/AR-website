@@ -2,36 +2,10 @@
 /**
  * ARTryOnModal.tsx
  *
- * BUGS FIXED IN THIS REVISION:
- *
- * 1. "Uncaught (in promise) undefined" at onboarding.js:48
- *    Root cause: orchestrator.start() was called in a useEffect with no
- *    synchronization against the `diagnostics` state already set by the
- *    orchestrator's constructor-time `onUnexpectedStop` handler. On fast mounts
- *    the effect fired, called start() which internally called selectAndStart(),
- *    and the `camera-composite` adapter's `start()` threw because
- *    `videoRef.current` was null (the video element had not yet been attached to
- *    the DOM by the time the async start() pipeline reached it). The thrown error
- *    propagated as `undefined` through a `.catch(() => undefined)` swallow in
- *    AROrchestrator, then escaped to the unhandled-promise handler as
- *    "Uncaught (in promise) undefined".
- *    FIX: Added a `videoReady` state gate. The orchestrator.start() call now waits
- *    until the video element ref is confirmed mounted (via a useCallback ref on the
- *    video element) before starting the AR pipeline. A 100 ms debounce handles
- *    the case where React mounts then immediately re-renders the video element.
- *
- * 2. isReady condition was too eager: it evaluated to true as soon as mediapipe
- *    reached 100 and camera was true, even before the ring model Suspense
- *    boundary resolved (isLoading still true). This caused the HUD and controls
- *    to flash briefly on top of the loading overlay.
- *    The condition is unchanged but explicitly documented.
- *
- * 3. StrictMode double-effect on orchestrator.start() caused the orchestrator
- *    to start twice in dev, the second call cancelling the first with generation
- *    mismatch and throwing "AR startup was cancelled." — surfacing as the
- *    "Uncaught (in promise) undefined" warning. The fix in item 1 also resolves
- *    this because the videoReady gate prevents the second start() call from
- *    reaching selectAndStart() before the cleanup from the first effect fires.
+ * Entry point for progressive AR enhancement. Immersive WebXR starts only from
+ * an explicit user gesture; unsupported/denied XR falls through to iOS Quick
+ * Look, camera-composite AR, and finally interactive 3D. Camera frames remain
+ * local to the browser session.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -51,6 +25,8 @@ import { QuickLookViewer } from './QuickLookViewer';
 import { WebXRScene } from './WebXRScene';
 import { Fallback3DViewer } from './Fallback3DViewer';
 import { containModalFocus } from '../utils/modalFocus';
+import { AR_RUNTIME_CONFIG, metricSizingEnabled, ringModelUrlForQuality } from '../config/arRuntimeConfig';
+import { trackAREvent } from '../utils/ARAnalytics';
 
 /** Props for the top-level AR try-on modal. */
 export interface ARTryOnModalProps {
@@ -65,24 +41,22 @@ type CriticalError = {
 
 const TRACKING_TIMEOUT_MS = 12_000;
 const SMART_HUD_DELAY_MS = 2_000;
-const QUICK_LOOK_USDZ_URL = `${import.meta.env.BASE_URL}models/nhan.usdz`;
-const QUICK_LOOK_PREVIEW_URL = `${import.meta.env.BASE_URL}models/nhan-preview.png`;
-const QUICK_LOOK_PRODUCT_NAME = 'Classic Gold Band';
-const QUICK_LOOK_DIAMETER_MM = 18;
+const QUICK_LOOK_USDZ_URL = AR_RUNTIME_CONFIG.assets.usdz;
+const QUICK_LOOK_PREVIEW_URL = AR_RUNTIME_CONFIG.assets.preview;
+const QUICK_LOOK_PRODUCT_NAME = AR_RUNTIME_CONFIG.product.name;
+const QUICK_LOOK_DIAMETER_MM = AR_RUNTIME_CONFIG.product.referenceOuterDiameterMm;
 
 function hasWebGLSupport(): boolean {
   const canvas = document.createElement('canvas');
-  const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+  const gl = canvas.getContext('webgl2');
   if (!gl) return false;
   const loseContext = gl.getExtension('WEBGL_lose_context');
   loseContext?.loseContext();
   return true;
 }
 
-function rendererKind(): 'webgpu' | 'webgl2' | 'webgl1' {
-  if ('gpu' in navigator) return 'webgpu';
-  const canvas = document.createElement('canvas');
-  return canvas.getContext('webgl2') ? 'webgl2' : 'webgl1';
+function rendererKind(): 'webgpu' | 'webgl2' {
+  return Boolean(navigator.gpu) ? 'webgpu' : 'webgl2';
 }
 
 export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
@@ -99,6 +73,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   // which surfaces as "Uncaught (in promise) undefined" from the orchestrator's
   // swallowed catch.
   const [videoReady, setVideoReady] = useState(false);
+  const [experienceRequested, setExperienceRequested] = useState(false);
 
   const { resultRef, loadingState, startTracking, setActive, destroy } = useHandTracking(trackingEnabled);
   const { isLoading, markLoaded } = useLoadingState();
@@ -130,9 +105,10 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
   } = useCamera();
 
   const webxrAdapter = useMemo(() => new WebXRAdapter(), []);
+  useEffect(() => { void webxrAdapter.preflight(); }, [webxrAdapter]);
   const orchestrator = useMemo(() => new AROrchestrator([
     webxrAdapter,
-    createQuickLookAdapter(() => /iPad|iPhone|iPod/.test(navigator.userAgent) && DeviceProfiler.checkQuickLookSupport()),
+    createQuickLookAdapter(() => DeviceProfiler.checkQuickLookSupport()),
     createCameraCompositeAdapter(
       () => typeof navigator.mediaDevices?.getUserMedia === 'function' && hasWebGLSupport(),
       {
@@ -168,8 +144,9 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
       window.clearTimeout(trackingTimeoutRef.current);
       trackingTimeoutRef.current = null;
     }
+    trackAREvent('AR_SESSION_ENDED', diagnostics ? { experience: diagnostics.experience, renderer: diagnostics.renderer, depthTier: diagnostics.depth } : undefined);
     void orchestrator.stop().finally(onClose);
-  }, [onClose, orchestrator]);
+  }, [diagnostics, onClose, orchestrator]);
 
   const retryExperience = useCallback(async () => {
     setCriticalError(null);
@@ -184,21 +161,36 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     }
   }, [cameraHasError, facingMode, recoverCamera, resultRef, startTracking]);
 
-  // Gate: only start the orchestrator once the video element is confirmed mounted
-  // in the DOM. This prevents the camera-composite adapter from throwing
-  // "Camera preview is not mounted." during the async start() pipeline.
-  useEffect(() => {
-    if (!videoReady) return;
-    void orchestrator.start().catch((error: unknown) => setCriticalError({
-      title: 'AR unavailable',
-      message: error instanceof Error ? error.message : 'No AR experience could start.',
-      retryable: false,
-    }));
-    return () => {
-      if (trackingTimeoutRef.current !== null) window.clearTimeout(trackingTimeoutRef.current);
-      void orchestrator.stop();
-    };
-  }, [orchestrator, videoReady]);
+  // WebXR immersive sessions require transient user activation. Starting from an
+  // effect loses that browser gesture. Keep startup behind the explicit button below.
+  const startExperience = useCallback(() => {
+    if (!videoReady || experienceRequested) return;
+    setExperienceRequested(true);
+    trackAREvent('AR_CTA_CLICKED');
+    void orchestrator.start().then((selected) => {
+      trackAREvent('AR_MODE_SELECTED', { experience: selected.experience, renderer: selected.renderer, depthTier: selected.depth });
+      trackAREvent('AR_SESSION_STARTED', { experience: selected.experience, renderer: selected.renderer, depthTier: selected.depth });
+    }).catch((error: unknown) => {
+      setExperienceRequested(false);
+      trackAREvent('AR_FATAL_ERROR', { reasonCode: error instanceof Error ? error.name || 'START_FAILED' : 'START_FAILED' });
+      setCriticalError({
+        title: 'AR unavailable',
+        message: error instanceof Error ? error.message : 'No AR experience could start.',
+        retryable: false,
+      });
+    });
+  }, [experienceRequested, orchestrator, videoReady]);
+
+  useEffect(() => () => {
+    if (trackingTimeoutRef.current !== null) window.clearTimeout(trackingTimeoutRef.current);
+    void orchestrator.stop();
+  }, [orchestrator]);
+
+  // Once the WebXR scene binds its renderer, refresh diagnostics from
+  // `initializing` to `active` without restarting the orchestrator.
+  useEffect(() => webxrAdapter.manager.subscribeState(() => {
+    if (orchestrator.activeKind === 'webxr') setDiagnostics(webxrAdapter.diagnostics());
+  }), [orchestrator, webxrAdapter]);
 
   useEffect(() => {
     if (!cameraHasError || !cameraLastError) return;
@@ -303,7 +295,7 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
     return (
       <FallbackModal title="Interactive 3D preview" onClose={closeAR}>
         <div className="h-72 w-full" aria-label={`Interactive model of ${QUICK_LOOK_PRODUCT_NAME}`}>
-          <Fallback3DViewer ringModelUrl={`${import.meta.env.BASE_URL}models/nhan.glb`} fallbackReason="DEVICE_UNSUPPORTED" />
+          <Fallback3DViewer ringModelUrl={ringModelUrlForQuality('LOW')} fallbackReason="DEVICE_UNSUPPORTED" />
         </div>
         <p className="mt-4 text-center text-sm text-white/65">Camera AR is unavailable. Drag the model to inspect the ring from every angle.</p>
       </FallbackModal>
@@ -362,7 +354,8 @@ export function ARTryOnModal({ onClose }: ARTryOnModalProps) {
         {isReady && <GuidanceOverlay ambientLight={ambientLight} />}
         {isReady && <ARControls confidence={resultRef.current?.hands[0]?.confidence ?? 0} sizeEstimate={sizeEstimate} />}
         {isReady && hudVisible && <SmartHud />}
-        {!isReady && !criticalError && <LoadingOverlay progress={combinedProgress} hasCamera={loadingState.camera} />}
+        {!experienceRequested && !criticalError && <StartExperienceOverlay ready={videoReady} metricValidated={metricSizingEnabled()} onStart={startExperience} />}
+        {experienceRequested && !isReady && !criticalError && <LoadingOverlay progress={combinedProgress} hasCamera={loadingState.camera} />}
         {criticalError && <RecoveryOverlay error={criticalError} onRetry={retryExperience} onClose={closeAR} />}
       </div>
     </div>
@@ -406,6 +399,28 @@ function SmartHud() {
       <div className="rounded-full border border-[#D5FD50]/40 bg-black/55 px-5 py-3">
         <p className="text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">Tracking paused</p>
         <p className="mt-1 text-sm text-white/80">Return your hand to the frame.</p>
+      </div>
+    </div>
+  );
+}
+
+function StartExperienceOverlay({ ready, metricValidated, onStart }: { ready: boolean; metricValidated: boolean; onStart: () => void }) {
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/90 px-6 text-center backdrop-blur-md">
+      <div className="w-full max-w-sm rounded-[2rem] border border-white/10 bg-neutral-950/95 p-6 shadow-2xl">
+        <p className="text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-[#D5FD50]">Private AR try-on</p>
+        <h2 className="mt-3 text-2xl font-light tracking-[-0.04em]">Try the ring in AR</h2>
+        <p className="mt-3 text-sm leading-6 text-white/70">Camera frames stay on this device. Tap once to start the best AR mode supported by your browser.</p>
+        {!metricValidated && <p className="mt-2 text-xs leading-5 text-white/50">Visual placement only — do not use this preview as an exact ring-size measurement.</p>}
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={!ready}
+          className="mt-6 min-h-12 w-full rounded-full bg-[#D5FD50] px-5 font-semibold text-black transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label="Start AR try-on"
+        >
+          {ready ? 'Start AR try-on' : 'Preparing preview…'}
+        </button>
       </div>
     </div>
   );
