@@ -7,37 +7,23 @@
  * ROOT CAUSES fixed in this revision:
  *
  *  1. SILENT HANG on init (GPU delegate + CDN WASM fetch blocked by CSP)
- *     The production _headers CSP `connect-src` did not include cdn.jsdelivr.net.
  *     Workers inherit the *HTTP-header* CSP, NOT the <meta http-equiv> CSP from
  *     index.html. The meta tag only applies to document resources; workers always
- *     use the header policy. Because _headers only had `connect-src 'self' blob:`,
- *     every fetch() inside the worker to cdn.jsdelivr.net was silently blocked.
- *     FilesetResolver.forVisionTasks() therefore never resolved, leaving the worker
- *     stuck after emitting `PROGRESS wasm 0%` and nothing else.
- *     FIX: wasmBlobUrl is now a pre-fetched blob: URL created on the *main thread*
- *     (where CDN access is available) and transferred here. The worker never
- *     directly fetches from CDN.
+ *     use the header policy. The WASM CDN URL is now passed directly from the main
+ *     thread as a plain string (not blob:) and FilesetResolver runs inside the
+ *     worker. public/_headers must grant cdn.jsdelivr.net in connect-src / script-src
+ *     for this to work in production.
  *
  *  2. SILENT HANG during createFromOptions() with delegate:'GPU' + ImageData input
- *     MediaPipe's GPU delegate calls canvas.getContext('webgl2') internally.
- *     In a plain Worker (no OffscreenCanvas provided), Chrome creates a hidden
- *     1×1 OffscreenCanvas automatically — BUT on many Android/iOS WebViews and
- *     headless Chrome builds this silently returns null.  When the context is null
- *     the WASM runtime enters an infinite spin-wait in its GPU init path; the
- *     worker produces zero log output and never posts READY.
- *     Additionally, ImageData is a *CPU-side* object. Passing ImageData to a
- *     GPU-delegated model forces MediaPipe to copy pixels CPU→GPU on every frame,
- *     which negates most of the GPU benefit and sometimes triggers a texture-upload
- *     bug in older Chromium versions that manifests as "WebGL Device Lost".
- *     FIX: The worker creates its own persistent OffscreenCanvas and locks a WebGL2
- *     context on it before calling createFromOptions. MediaPipe's GPU delegate then
- *     reuses that context. Frames are accepted as ImageBitmap — which the GPU
- *     delegate uploads zero-copy — created with createImageBitmap(ImageData) inside
- *     the worker, requiring no DOM and no extra ArrayBuffer copy.
+ *     On Chrome Android and some headless builds, OffscreenCanvas.getContext('webgl2')
+ *     silently returns null. The WASM GPU init path then spin-waits forever.
+ *     FIX: probeAndCreateGpuCanvas() creates and probes the WebGL2 context BEFORE
+ *     calling createFromOptions. gpuCanvas is only assigned on confirmed success.
  *
- *  3. facing=undefined console log
- *     Cosmetic: desktop cameras do not report facingMode in getSettings().
- *     Fixed in cameraSystem.ts separately (not this file).
+ *  3. ImageBitmap memory leak → WebGL Device Lost
+ *     bitmap.close() is now called inside the `finally` block, which also calls
+ *     drainLatestFrame() so the pipeline always advances even if postMessageSafe
+ *     or close() itself throws.
  */
 
 import {
@@ -94,9 +80,8 @@ let lastProcessedTimestamp = -1;
 
 /**
  * Persistent OffscreenCanvas used as the WebGL2 surface for MediaPipe's GPU
- * delegate. Created once during initializeMediaPipe and reused for the lifetime
- * of the worker. This prevents the "auto-created 1×1 context fails silently"
- * path that causes createFromOptions() to hang on many mobile WebViews.
+ * delegate. Only assigned after probeAndCreateGpuCanvas() confirms the context
+ * is healthy — never left pointing at a canvas with a null or lost context.
  */
 let gpuCanvas: OffscreenCanvas | null = null;
 
@@ -204,19 +189,18 @@ function drainLatestFrame(): void {
 // ─── Initialization ───────────────────────────────────────────────────────────
 
 /**
- * Ensures a WebGL2 context exists on our persistent OffscreenCanvas before
- * passing it to MediaPipe. Returns true if GPU is available, false to fall
- * back to CPU.
+ * Ensures a WebGL2 context exists on a new OffscreenCanvas before passing it to
+ * MediaPipe. Returns true if GPU is available, false to fall back to CPU.
  *
- * WHY: MediaPipe GPU delegate auto-creates a 1×1 OffscreenCanvas internally
- * when called from a Worker. On Chrome Android and some Chromium builds this
- * auto-creation silently returns a lost context, causing createFromOptions()
- * to hang indefinitely. By pre-creating and probing the context we:
+ * gpuCanvas is ONLY assigned when the context probe fully succeeds — it is never
+ * left pointing at a canvas whose context is null or already lost.
+ *
+ * WHY: MediaPipe GPU delegate auto-creates a 1×1 OffscreenCanvas internally when
+ * called from a Worker. On Chrome Android and some Chromium builds this
+ * auto-creation silently returns a lost context, causing createFromOptions() to
+ * hang indefinitely. Pre-creating and probing the context allows us to:
  *   a) detect GPU unavailability before handing off to MediaPipe, and
  *   b) give MediaPipe a warm, verified WebGL2 context to reuse.
- *
- * gpuCanvas is only assigned if the context probe fully succeeds — never left
- * pointing at a canvas whose context is null or already lost.
  */
 function probeAndCreateGpuCanvas(): boolean {
   try {
@@ -230,8 +214,8 @@ function probeAndCreateGpuCanvas(): boolean {
     }
 
     // A context can be created but already lost (e.g. GPU process crash,
-    // too many concurrent WebGL contexts on mobile). Treat this as GPU
-    // unavailable so we don't hand MediaPipe a broken surface.
+    // too many concurrent WebGL contexts on mobile). Treat as GPU unavailable
+    // so we don't hand MediaPipe a broken surface.
     if (ctx.isContextLost()) {
       if (import.meta.env.DEV) console.warn('[MediaPipe] WebGL2 context already lost at probe — falling back to CPU');
       return false;
@@ -241,8 +225,7 @@ function probeAndCreateGpuCanvas(): boolean {
     gpuCanvas = canvas;
     return true;
   } catch {
-    // OffscreenCanvas or getContext threw (e.g. in a sandboxed iframe
-    // that blocks GPU access). Safe to fall back to CPU.
+    // OffscreenCanvas or getContext threw (e.g. sandboxed iframe blocking GPU).
     gpuCanvas = null;
     return false;
   }
@@ -251,30 +234,30 @@ function probeAndCreateGpuCanvas(): boolean {
 /**
  * Initialize the HandLandmarker.
  *
- * @param wasmBlobUrl  A blob: URL (created on the main thread) pointing to
- *                     the MediaPipe WASM base directory. Using blob: avoids
- *                     any CDN fetch from inside the worker, which would be
- *                     blocked by the production `connect-src 'self' blob:`
- *                     HTTP CSP header (workers use HTTP-header CSP, not the
- *                     <meta http-equiv> CSP from index.html).
- * @param modelUrl     A blob: URL for the hand_landmarker.task model binary.
+ * @param wasmBasePath  The CDN base URL (with trailing slash) for the MediaPipe
+ *                      WASM package. FilesetResolver.forVisionTasks() appends
+ *                      'vision_wasm_internal.js' and '.wasm' directly to this.
+ *                      CDN access for workers must be granted in public/_headers:
+ *                        connect-src 'self' blob: https://cdn.jsdelivr.net
+ *                        script-src  'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net
+ * @param modelUrl      A blob: URL for the hand_landmarker.task model binary.
  */
-async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promise<void> {
+async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Promise<void> {
   if (state === 'DESTROY' || handLandmarker) return;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
 
-  // Step 1: Resolve WASM fileset from the pre-fetched blob: URL.
-  // The second argument `false` disables FilesetResolver's own CDN fallback.
-  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBlobUrl);
+  // Step 1: Resolve WASM fileset. FilesetResolver fetches the JS + WASM files
+  // from the CDN URL. Workers use the HTTP-header CSP; public/_headers must
+  // allow cdn.jsdelivr.net in connect-src and script-src.
+  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBasePath);
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 0 } });
 
-  // Step 2: Probe WebGL2 availability. GPU delegate requires WebGL2 in the
-  // Worker context. If unavailable, we fall back to CPU — which at the
-  // frame sizes produced by captureVideoFrame (~384px longest edge) still
-  // delivers ≥20 FPS on mid-range hardware.
+  // Step 2: Probe WebGL2 availability. GPU delegate requires a healthy WebGL2
+  // context in the Worker scope. If unavailable we fall back to CPU — still
+  // delivers ≥20 FPS at the ~384px frame sizes produced by captureVideoFrame.
   const gpuAvailable = probeAndCreateGpuCanvas();
   const delegate = gpuAvailable ? 'GPU' : 'CPU';
 
@@ -312,25 +295,19 @@ async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promi
  * INPUT FORMAT — ImageBitmap, not ImageData:
  *
  * The worker receives raw RGBA pixels as an ArrayBuffer (transferred, zero-copy).
- * We reconstruct an ImageData from it, then call createImageBitmap(imageData).
+ * We reconstruct ImageData from it, then call createImageBitmap(imageData).
  *
- * WHY ImageBitmap instead of passing ImageData directly to detectForVideo?
+ * WHY ImageBitmap:
+ *  • GPU delegate: upload is zero-copy. ImageData forces CPU→GPU memcpy + format
+ *    conversion every frame. ImageBitmap is already GPU-friendly.
+ *  • Stability: repeated large CPU→GPU copies trigger crbug.com/1307626 — the GPU
+ *    command buffer exhausts and causes "WebGL: CONTEXT_LOST_WEBGL". ImageBitmap
+ *    bypasses this path entirely.
+ *  • CPU delegate: identical behaviour to ImageData; no regression.
  *
- *  • GPU delegate path: MediaPipe uploads the input to a WebGL texture.
- *    ImageData requires a CPU→GPU memcpy *and* a pixel-format conversion on
- *    every frame. ImageBitmap is already decoded into a GPU-friendly internal
- *    format; the upload is zero-copy on Chrome's GPU process.
- *
- *  • Stability: Passing ImageData to a GPU-delegated model triggers a
- *    known Chromium bug (crbug.com/1307626) where repeated large CPU→GPU
- *    copies exhaust the GPU command buffer, eventually causing
- *    "WebGL: CONTEXT_LOST_WEBGL". ImageBitmap bypasses this path entirely.
- *
- *  • CPU delegate path: ImageBitmap works identically to ImageData here;
- *    there is no regression.
- *
- * createImageBitmap(ImageData) is available in all Workers on Chrome 52+,
- * Firefox 42+, and Safari 15+.
+ * IMPORTANT: bitmap.close() and drainLatestFrame() are both called in `finally`
+ * so the pipeline always advances and GPU memory is always released — even if
+ * postMessageSafe or any other statement in the try/catch block throws.
  */
 async function processActiveFrame(): Promise<void> {
   if (!activeFrame || !handLandmarker || (state !== 'READY' && state !== 'DEGRADED')) return;
@@ -350,11 +327,11 @@ async function processActiveFrame(): Promise<void> {
       frame.height,
     );
 
-    // Decode into a GPU-uploadable ImageBitmap. This call is non-blocking
-    // and is resolved by the browser's image decode pipeline, not the JS heap.
+    // Decode into a GPU-uploadable ImageBitmap. Non-blocking; resolved by the
+    // browser's image decode pipeline, not the JS heap.
     bitmap = await createImageBitmap(imageData);
 
-    // Run inference. The timestamp must be monotonically increasing and in ms.
+    // Run inference. Timestamp must be monotonically increasing and in ms.
     const result = handLandmarker.detectForVideo(bitmap, frame.timestamp);
 
     const hands: TrackingResult[] = result.landmarks.map((landmarks, index) => {
@@ -395,7 +372,6 @@ async function processActiveFrame(): Promise<void> {
     consecutiveFailures += 1;
 
     // After 5 consecutive failures (e.g. WebGL context lost), enter DEGRADED.
-    // The next init cycle in useHandTracking will destroy and recreate the worker.
     if (consecutiveFailures >= 5) {
       degradedMode = true;
       state = 'DEGRADED';
@@ -419,11 +395,10 @@ async function processActiveFrame(): Promise<void> {
     // Failing to do this leaks texture memory and causes "WebGL Device Lost"
     // after a few hundred frames on devices with constrained GPU budgets.
     //
-    // drainLatestFrame() is called here in finally — NOT after the try/catch
-    // block — so the pipeline always drains regardless of whether an unhandled
-    // rejection escaped the catch (e.g. if postMessageSafe itself threw).
-    // Placing drainLatestFrame() after the try/catch block means it is
-    // unreachable in that scenario, stalling the frame pipeline permanently.
+    // drainLatestFrame() is inside finally (not after the try/catch block) so the
+    // pipeline advances on EVERY code path — including if postMessageSafe itself
+    // throws. Placing drainLatestFrame() after the try/catch means it becomes
+    // unreachable whenever a re-throw escapes finally, stalling the pipeline.
     bitmap?.close();
     drainLatestFrame();
   }
