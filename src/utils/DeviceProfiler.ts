@@ -1,26 +1,24 @@
 // FILE: src/utils/DeviceProfiler.ts
-/**
- * Utility to asynchronously test client capabilities and classify devices
- * for optimal AR experience delivery.
- */
 
 /** Performance class assigned from local browser hardware signals. */
 export type DeviceClass = 'HIGH' | 'MEDIUM' | 'LOW' | 'UNSUPPORTED';
-/** Legacy AR capability labels used by the profiler summary. */
-export type ARCapability = 'WEBXR' | 'QUICK_LOOK';
+export type ARCapability = 'WEBXR' | 'QUICK_LOOK' | 'CAMERA_COMPOSITE' | 'INTERACTIVE_3D';
+export type RecommendedQuality = 'HIGH' | 'MEDIUM' | 'LOW';
 
 interface NavigatorWithDeviceMemory extends Navigator {
   readonly deviceMemory?: number;
 }
 
-/** Device capability summary used to choose the best AR route. */
 export interface DeviceProfile {
   deviceClass: DeviceClass;
   hasGetUserMedia: boolean;
   hasWebGL: boolean;
   hasWebGL2: boolean;
+  hasWebGPU: boolean;
   hasWorkerSupport: boolean;
   hasQuickLook: boolean;
+  hasWebXRApi: boolean;
+  immersiveARSupported: boolean | null;
   arCapabilities: ARCapability[];
   logicalCores: number | null;
   deviceMemory: number | null;
@@ -28,18 +26,15 @@ export interface DeviceProfile {
 }
 
 function hasQuickLookAnchorSupport(): boolean {
-  if (typeof document === 'undefined') {
-    return false;
-  }
-
+  if (typeof document === 'undefined') return false;
   const anchor = document.createElement('a');
   return typeof anchor.relList?.supports === 'function' && anchor.relList.supports('ar');
 }
 
-/** Capability profiler for camera, graphics, worker, and AR support. */
+/** Capability profiler for camera, graphics, workers and AR route selection. */
 export class DeviceProfiler {
-  private static async checkGetUserMedia(): Promise<boolean> {
-    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  private static checkGetUserMedia(): boolean {
+    return Boolean(navigator.mediaDevices?.getUserMedia);
   }
 
   private static checkWebGLContext(version: 1 | 2): boolean {
@@ -48,14 +43,8 @@ export class DeviceProfiler {
       const context = version === 1
         ? canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
         : canvas.getContext('webgl2');
-
-      if (!context) {
-        return false;
-      }
-
-      const ext = (context as WebGLRenderingContext).getExtension('WEBGL_lose_context');
-      ext?.loseContext();
-
+      if (!context) return false;
+      (context as WebGLRenderingContext).getExtension('WEBGL_lose_context')?.loseContext();
       return true;
     } catch {
       return false;
@@ -66,9 +55,19 @@ export class DeviceProfiler {
     return typeof Worker !== 'undefined';
   }
 
-  /** Returns whether Apple AR Quick Look anchors are supported by this browser. */
   public static checkQuickLookSupport(): boolean {
     return hasQuickLookAnchorSupport();
+  }
+
+  /** Safe to run before the user clicks; requestSession itself remains in the click chain. */
+  public static async checkImmersiveARSupport(): Promise<boolean | null> {
+    if (!navigator.xr) return false;
+    if (typeof navigator.xr.isSessionSupported !== 'function') return null;
+    try {
+      return await navigator.xr.isSessionSupported('immersive-ar');
+    } catch {
+      return null;
+    }
   }
 
   private static getLogicalCores(): number | null {
@@ -76,8 +75,7 @@ export class DeviceProfiler {
   }
 
   private static getDeviceMemory(): number | null {
-    const memoryNavigator = navigator as NavigatorWithDeviceMemory;
-    return memoryNavigator.deviceMemory ?? null;
+    return (navigator as NavigatorWithDeviceMemory).deviceMemory ?? null;
   }
 
   private static classifyDevice(
@@ -88,59 +86,79 @@ export class DeviceProfiler {
   ): DeviceClass {
     if (!hasWebGL2 && !hasQuickLook) return 'UNSUPPORTED';
 
-    const effectiveCores = logicalCores ?? 0;
+    const cores = logicalCores ?? 0;
     const isAppleDevice = /iPad|iPhone|iPod|Mac/.test(navigator.userAgent);
 
+    // Safari often withholds deviceMemory; do not punish Apple hardware solely for that.
     if (isAppleDevice && deviceMemory === null) {
-      if (effectiveCores >= 6) return 'HIGH';
-      if (effectiveCores >= 4) return 'MEDIUM';
-      if (effectiveCores >= 2 || hasQuickLook) return 'LOW';
+      if (cores >= 6) return 'HIGH';
+      if (cores >= 4) return 'MEDIUM';
+      if (cores >= 2 || hasQuickLook) return 'LOW';
       return 'UNSUPPORTED';
     }
 
-    const effectiveMemory = deviceMemory ?? 0;
-    if (effectiveCores >= 6 && effectiveMemory >= 4) return 'HIGH';
-    if (effectiveCores >= 4 || effectiveMemory >= 2) return 'MEDIUM';
-    if (effectiveCores >= 2 || effectiveMemory >= 1 || hasQuickLook) return 'LOW';
+    const memory = deviceMemory ?? 0;
+    if (cores >= 8 && memory >= 6) return 'HIGH';
+    if (cores >= 4 && memory >= 2) return 'MEDIUM';
+    if (cores >= 2 || memory >= 1 || hasQuickLook) return 'LOW';
     return 'UNSUPPORTED';
   }
 
-  /** Builds a full device profile for adaptive AR capability decisions. */
+  public static recommendedQualityFromSignals(): RecommendedQuality {
+    const cores = this.getLogicalCores() ?? 0;
+    const memory = this.getDeviceMemory();
+    const isAppleDevice = /iPad|iPhone|iPod|Mac/.test(navigator.userAgent);
+    if (isAppleDevice && memory === null) return cores >= 6 ? 'HIGH' : cores >= 4 ? 'MEDIUM' : 'LOW';
+    if (cores >= 8 && (memory ?? 0) >= 6) return 'HIGH';
+    if (cores >= 4 && (memory ?? 0) >= 2) return 'MEDIUM';
+    return 'LOW';
+  }
+
   public static async profile(): Promise<DeviceProfile> {
     const details: string[] = [];
-    const [hasGetUserMedia, hasWebGL, hasWebGL2, hasWorkerSupport, hasQuickLook] = await Promise.all([
-      this.checkGetUserMedia(),
-      Promise.resolve(this.checkWebGLContext(1)),
-      Promise.resolve(this.checkWebGLContext(2)),
-      Promise.resolve(this.checkWorkerSupport()),
-      Promise.resolve(this.checkQuickLookSupport()),
-    ]);
-
+    const [immersiveARSupported] = await Promise.all([this.checkImmersiveARSupport()]);
+    const hasGetUserMedia = this.checkGetUserMedia();
+    const hasWebGL = this.checkWebGLContext(1);
+    const hasWebGL2 = this.checkWebGLContext(2);
+    const hasWebGPU = Boolean(navigator.gpu);
+    const hasWorkerSupport = this.checkWorkerSupport();
+    const hasQuickLook = this.checkQuickLookSupport();
+    const hasWebXRApi = Boolean(navigator.xr);
     const logicalCores = this.getLogicalCores();
     const deviceMemory = this.getDeviceMemory();
-    const arCapabilities: ARCapability[] = [];
+    const arCapabilities: ARCapability[] = ['INTERACTIVE_3D'];
 
-    if (hasWebGL2 && hasGetUserMedia) arCapabilities.push('WEBXR');
-    if (hasQuickLook) arCapabilities.push('QUICK_LOOK');
+    if (hasGetUserMedia && hasWebGL2 && hasWorkerSupport) arCapabilities.unshift('CAMERA_COMPOSITE');
+    if (hasQuickLook) arCapabilities.unshift('QUICK_LOOK');
+    if (hasWebXRApi && immersiveARSupported !== false) arCapabilities.unshift('WEBXR');
 
     if (!hasGetUserMedia) details.push('Camera API (getUserMedia) not supported');
-    if (!hasWebGL) details.push('WebGL not supported');
     if (!hasWebGL2) details.push('WebGL2 not supported');
     if (!hasWorkerSupport) details.push('Web Workers not supported');
-    if (!hasQuickLook) details.push('Apple Quick Look (rel="ar") not supported');
-    if ((logicalCores ?? 0) < 4) details.push(`Low CPU cores: ${logicalCores ?? 'unknown'}`);
-    if ((deviceMemory ?? 0) < 2) details.push(`Low device memory: ${deviceMemory ?? 'unknown'}GB`);
+    if (hasWebXRApi && immersiveARSupported === false) details.push('WebXR API exists but immersive-ar is not supported');
+    if (!hasWebXRApi) details.push('WebXR API unavailable');
+    if (!hasQuickLook) details.push('Apple Quick Look (rel="ar") unavailable');
 
     const deviceClass = this.classifyDevice(logicalCores, deviceMemory, hasWebGL2, hasQuickLook);
-    if (deviceClass === 'UNSUPPORTED' && details.length === 0) details.push('Device does not meet minimum performance requirements');
-
-    return { deviceClass, hasGetUserMedia, hasWebGL, hasWebGL2, hasWorkerSupport, hasQuickLook, arCapabilities, logicalCores, deviceMemory, details };
+    return {
+      deviceClass,
+      hasGetUserMedia,
+      hasWebGL,
+      hasWebGL2,
+      hasWebGPU,
+      hasWorkerSupport,
+      hasQuickLook,
+      hasWebXRApi,
+      immersiveARSupported,
+      arCapabilities,
+      logicalCores,
+      deviceMemory,
+      details,
+    };
   }
 
-  /** Returns whether the supplied profile supports an AR-capable route. */
   public static isARSupported(profile?: DeviceProfile): boolean {
     if (!profile) return false;
-    return profile.deviceClass !== 'UNSUPPORTED' || profile.arCapabilities.includes('QUICK_LOOK');
+    return profile.arCapabilities.some((capability) => capability !== 'INTERACTIVE_3D');
   }
 }
-// VERIFY: console.log('[AR Experience] detection chain prefers WebXR, then Quick Look, then pseudo AR, then static 3D')
