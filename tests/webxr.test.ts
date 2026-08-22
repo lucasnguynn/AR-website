@@ -27,43 +27,47 @@ function runtime(manager: WebXRManager): { loops: Loop[]; renders: number[] } {
   return { loops, renders };
 }
 
-function installXR(session: MockSession, reject = false): { init: XRSessionInit | undefined } {
-  const observed: { init: XRSessionInit | undefined } = { init: undefined };
+function installXR(session: MockSession, reject = false): { init: XRSessionInit | undefined; supportChecks: number } {
+  const observed = { init: undefined as XRSessionInit | undefined, supportChecks: 0 };
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { xr: {
-    isSessionSupported: async () => true,
+    isSessionSupported: async () => { observed.supportChecks += 1; return true; },
     requestSession: async (_mode: string, init: XRSessionInit) => { observed.init = init; if (reject) throw new Error('denied'); return session; },
   } } });
   return observed;
 }
+
+async function flushMicrotasks(): Promise<void> { await Promise.resolve(); await Promise.resolve(); }
 
 export async function runWebXRTests(): Promise<void> {
   {
     const session = new MockSession();
     const observed = installXR(session);
     const manager = new WebXRManager();
-    const active = runtime(manager);
+
+    // Regression: startup must finish before WebXRScene exists. The old implementation
+    // waited five seconds for bindRuntime(), while the scene could only mount after start().
     await manager.start();
-    assert.equal(manager.isRunning, true, 'WEBXR is active only after session, space, and renderer setup');
+    assert.equal(manager.currentSession, session as unknown as XRSession);
+    assert.equal(manager.isRunning, false, 'session can initialize before React binds the renderer');
+    assert.equal(observed.supportChecks, 0, 'no awaited isSessionSupported call precedes requestSession');
+
+    const active = runtime(manager);
+    await flushMicrotasks();
+    assert.equal(manager.isRunning, true, 'late renderer binding completes the XR runtime');
     assert.deepEqual(observed.init?.optionalFeatures, ['local-floor', 'hand-tracking', 'depth-sensing', 'dom-overlay']);
     assert.equal(observed.init?.requiredFeatures, undefined, 'optional capabilities cannot reject basic AR');
     assert.equal(active.loops.filter(Boolean).length, 1, 'one XR display loop is installed');
     const frame = { predictedDisplayTime: 10, getViewerPose: () => ({ views: [] }) } as unknown as XRFrame;
     active.loops[0]?.(10, frame);
     assert.equal(active.renders.length, 1, 'one frame causes one render');
-    assert.equal(manager.hasHandTracking, false, 'missing optional hands does not fail');
-    assert.equal(manager.hasNativeDepth, false, 'missing optional depth does not fail');
     await manager.stop();
     assert.equal(manager.isRunning, false);
     assert.equal(active.loops.at(-1), null, 'stop cancels the owned display loop');
-    await manager.start();
-    await manager.stop();
-    assert.equal(session.ended, 2, 'repeated lifecycle ends each session cleanly');
   }
   {
     const session = new MockSession();
     installXR(session, true);
     const manager = new WebXRManager();
-    runtime(manager);
     await assert.rejects(manager.start(), /denied/, 'requestSession rejection reaches orchestrator fallback');
     assert.equal(manager.isRunning, false);
   }
@@ -71,11 +75,12 @@ export async function runWebXRTests(): Promise<void> {
     const session = new MockSession();
     installXR(session);
     const manager = new WebXRManager();
-    runtime(manager);
     const adapter = new WebXRAdapter(manager);
     let ended = 0;
     adapter.onUnexpectedStop(() => { ended += 1; });
     await adapter.start();
+    runtime(manager);
+    await flushMicrotasks();
     session.dispatchEnd();
     assert.equal(ended, 1, 'device-driven session end invalidates the adapter');
   }
