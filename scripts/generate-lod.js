@@ -1,74 +1,55 @@
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { dedup, flatten, join, prune, resample, simplify, weld } from '@gltf-transform/functions';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { dedup, prune, resample, simplify, weld } from '@gltf-transform/functions';
+import { MeshoptSimplifier } from 'meshoptimizer';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RAW_MODELS_DIR = path.resolve(__dirname, '../assets/models/raw');
-const OUTPUT_MODELS_DIR = path.resolve(__dirname, '../public/models');
+const GENERATED_DIR = path.resolve(__dirname, '../assets/models/generated');
 const LOD_TARGETS = [
-  { suffix: 'high', ratio: 1.0, error: 0.0001 },
-  { suffix: 'medium', ratio: 0.55, error: 0.0015 },
-  { suffix: 'low', ratio: 0.25, error: 0.006 },
+  { suffix: 'high', ratio: 0.38, error: 0.00008 },
+  { suffix: 'medium', ratio: 0.16, error: 0.0007 },
+  { suffix: 'low', ratio: 0.06, error: 0.003 },
 ];
 
-function ensureDirectory(directory) {
-  fs.mkdirSync(directory, { recursive: true });
-}
+fs.mkdirSync(GENERATED_DIR, { recursive: true });
+await MeshoptSimplifier.ready;
+const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
 
-function modelName(file) {
-  return path.basename(file, path.extname(file));
-}
+function modelName(file) { return path.basename(file, path.extname(file)); }
 
-async function writeLod(io, inputPath, outputPath, target) {
+async function buildLod(inputPath, outputPath, target) {
   const document = await io.read(inputPath);
-  const transforms = [dedup(), resample(), prune()];
-
-  if (target.ratio < 1) {
-    transforms.push(weld({ tolerance: 0.0001 }));
-    transforms.push(simplify({ ratio: target.ratio, error: target.error, lockBorder: true }));
-    transforms.push(flatten());
-    transforms.push(join());
-    transforms.push(prune());
-  }
-
-  await document.transform(...transforms);
+  // IMPORTANT: never flatten/join globally here. Metal and Gemstone nodes are a
+  // runtime semantic contract and must remain separate after optimization.
+  await document.transform(
+    dedup(),
+    resample(),
+    weld({ tolerance: 0.00001 }),
+    simplify({ simplifier: MeshoptSimplifier, ratio: target.ratio, error: target.error, lockBorder: true }),
+    prune(),
+  );
   await io.write(outputPath, document);
-
-  const sourceKb = (fs.statSync(inputPath).size / 1024).toFixed(1);
-  const outputKb = (fs.statSync(outputPath).size / 1024).toFixed(1);
-  console.log(`✅ ${path.basename(outputPath)} (${sourceKb} KB → ${outputKb} KB)`);
+  console.log(`LOD ${target.suffix}: ${path.basename(outputPath)} (${(fs.statSync(outputPath).size / 1024).toFixed(0)} KiB)`);
 }
 
-async function main() {
-  ensureDirectory(OUTPUT_MODELS_DIR);
-
-  if (!fs.existsSync(RAW_MODELS_DIR)) {
-    console.warn(`⚠️ Raw model directory not found: ${RAW_MODELS_DIR}`);
-    return;
-  }
-
-  const glbFiles = fs.readdirSync(RAW_MODELS_DIR).filter((file) => file.toLowerCase().endsWith('.glb'));
-  if (glbFiles.length === 0) {
-    console.warn('⚠️ No .glb files found in assets/models/raw; skipping LOD generation.');
-    return;
-  }
-
-  const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
-
-  for (const file of glbFiles) {
-    const inputPath = path.join(RAW_MODELS_DIR, file);
-    for (const target of LOD_TARGETS) {
-      const outputPath = path.join(OUTPUT_MODELS_DIR, `${modelName(file)}-${target.suffix}.glb`);
-      await writeLod(io, inputPath, outputPath, target);
-    }
-  }
-}
-
-main().catch((error) => {
-  console.error('❌ LOD generation failed:', error);
+if (!fs.existsSync(RAW_MODELS_DIR)) {
+  console.error(`Raw model directory not found: ${RAW_MODELS_DIR}`);
   process.exit(1);
-});
+}
+
+const files = fs.readdirSync(RAW_MODELS_DIR).filter((file) => file.toLowerCase().endsWith('.glb'));
+if (!files.length) {
+  console.error('Place the authored semantic GLB in assets/models/raw before running npm run build:assets.');
+  process.exit(1);
+}
+
+for (const file of files) {
+  const input = path.join(RAW_MODELS_DIR, file);
+  for (const target of LOD_TARGETS) {
+    await buildLod(input, path.join(GENERATED_DIR, `${modelName(file)}-${target.suffix}.glb`), target);
+  }
+}
