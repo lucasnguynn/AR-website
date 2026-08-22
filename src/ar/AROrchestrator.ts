@@ -6,7 +6,7 @@ export interface ARDiagnostics {
   filter: 'one-euro' | 'ukf';
   prediction: 'none' | 'lstm' | 'transformer' | 'kinematic';
   depth: 'none' | 'geometric-proxy' | 'monocular-depth' | 'degraded-depth' | 'webxr-depth';
-  renderer: 'webgpu' | 'webgl2' | 'webgl1';
+  renderer: 'webgpu' | 'webgl2' | 'native';
   experience: ARExperienceKind;
   state: ARRuntimeState;
   failure?: string;
@@ -14,7 +14,7 @@ export interface ARDiagnostics {
 
 export interface ARExperienceAdapter {
   readonly kind: ARExperienceKind;
-  isSupported(): Promise<boolean>;
+  isSupported(): boolean | Promise<boolean>;
   start(): Promise<void>;
   stop(): Promise<void>;
   diagnostics(): ARDiagnostics;
@@ -39,7 +39,9 @@ export class AROrchestrator {
         if (this.active !== adapter) return;
         this.active = null;
         const generation = ++this.generation;
-        this.startPromise = this.selectAndStart(generation).finally(() => { this.startPromise = null; });
+        // Do not attempt to re-enter the adapter that just stopped. In particular,
+        // a WebXR session end no longer triggers requestSession() without a new user gesture.
+        this.startPromise = this.selectAndStart(generation, new Set([adapter.kind])).finally(() => { this.startPromise = null; });
         void this.startPromise.catch(() => undefined);
       });
     }
@@ -67,12 +69,18 @@ export class AROrchestrator {
     return this.stopping;
   }
 
-  private async selectAndStart(generation: number): Promise<ARDiagnostics> {
+  private async selectAndStart(generation: number, skipKinds: ReadonlySet<ARExperienceKind> = new Set()): Promise<ARDiagnostics> {
     let lastFailure: string | undefined;
     for (const adapter of this.adapters) {
+      if (skipKinds.has(adapter.kind)) continue;
       if (generation !== this.generation) throw new Error('AR startup was cancelled.');
       let supported = false;
-      try { supported = await adapter.isSupported(); } catch (error) {
+      try {
+        const capability = adapter.isSupported();
+        // Do not introduce an `await` before WebXR requestSession when support can
+        // be established synchronously. Immersive WebXR requires transient user activation.
+        supported = typeof capability === 'boolean' ? capability : await capability;
+      } catch (error) {
         lastFailure = error instanceof Error ? error.message : 'Capability detection failed.';
       }
       if (!supported) continue;
