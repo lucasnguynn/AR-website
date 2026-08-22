@@ -3,34 +3,51 @@ import { Canvas, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { disposeRingScene, useRingModel } from '../hook/useRingModel';
 import type { WebXRManager, XRHandMeasurement } from '../services/WebXRManager';
+import { computeRingWorldScale } from '../config/ringModelMetadata';
 
 function XRRuntimeBridge({ manager }: { manager: WebXRManager }) {
   const { gl, scene, camera } = useThree();
-  useEffect(() => manager.bindRuntime({ renderer: gl as THREE.WebGLRenderer, scene, camera }), [camera, gl, manager, scene]);
+  useEffect(
+    () => manager.bindRuntime({ renderer: gl as THREE.WebGLRenderer, scene, camera }),
+    [camera, gl, manager, scene],
+  );
   return null;
 }
 
 function XRJewelry({ manager }: { manager: WebXRManager }) {
   const group = useRef<THREE.Group>(null);
-  const { scene } = useRingModel();
+  // Immersive WebXR in Three r170 is WebGL-renderer based here. Keep gemstone
+  // quality conservative because tracking stability has priority over shader cost.
+  const { scene } = useRingModel(undefined, { rendererMode: 'webgl', quality: 'MEDIUM', preset: 'silver' });
+
   useEffect(() => {
     const apply = (measurement: XRHandMeasurement | undefined): void => {
-      if (!group.current) return;
-      group.current.visible = Boolean(measurement);
+      const target = group.current;
+      if (!target) return;
+      target.visible = Boolean(measurement);
       if (!measurement) return;
-      group.current.position.fromArray(measurement.position);
-      group.current.quaternion.fromArray(measurement.orientation);
-      // The GLB is authored in display units; anchor its known 15 mm baseline to the measured proximal segment.
-      const scale = 0.015 * THREE.MathUtils.clamp(measurement.scaleMeters / 0.045, 0.65, 1.45);
-      group.current.scale.setScalar(scale);
+
+      target.position.fromArray(measurement.position);
+      target.quaternion.fromArray(measurement.orientation);
+      target.scale.setScalar(computeRingWorldScale(measurement.scaleMeters));
     };
-    const unsubscribe = manager.subscribeFrames((snapshot) => apply(snapshot.hands[0]));
-    return () => { unsubscribe(); disposeRingScene(scene); };
+
+    const unsubscribe = manager.subscribeFrames((snapshot) => {
+      // Prefer a real left/right hand over `none` when browsers provide multiple sources.
+      const hand = snapshot.hands.find((candidate) => candidate.handedness !== 'none') ?? snapshot.hands[0];
+      apply(hand);
+    });
+
+    return () => {
+      unsubscribe();
+      disposeRingScene(scene);
+    };
   }, [manager, scene]);
+
   return <group ref={group} visible={false}><primitive object={scene} dispose={null} /></group>;
 }
 
-/** R3F composition whose loop is deliberately disabled; WebXRManager owns the sole XR display loop. */
+/** R3F composition whose loop is deliberately disabled; WebXRManager owns XR frames. */
 export function WebXRScene({ manager, onClose }: { manager: WebXRManager; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-transparent" role="dialog" aria-modal="true" aria-label="Immersive WebXR ring try-on">
@@ -41,11 +58,17 @@ export function WebXRScene({ manager, onClose }: { manager: WebXRManager; onClos
         onCreated={({ gl }) => { gl.setClearColor(0, 0); }}
       >
         <XRRuntimeBridge manager={manager} />
-        <ambientLight intensity={1.1} />
-        <directionalLight position={[1, 2, 1]} intensity={2} />
+        <ambientLight intensity={1.05} />
+        <directionalLight position={[1, 2, 1]} intensity={1.8} />
         <Suspense fallback={null}><XRJewelry manager={manager} /></Suspense>
       </Canvas>
-      <button onClick={onClose} className="absolute right-4 top-4 z-10 min-h-12 min-w-12 rounded-full border border-white/20 bg-black/50 text-xl text-white" aria-label="End immersive AR">×</button>
+      <button
+        onClick={onClose}
+        className="absolute right-4 top-4 z-10 min-h-12 min-w-12 rounded-full border border-white/20 bg-black/50 text-xl text-white"
+        aria-label="End immersive AR"
+      >
+        ×
+      </button>
     </div>
   );
 }
