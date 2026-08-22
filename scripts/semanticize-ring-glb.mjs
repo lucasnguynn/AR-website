@@ -1,6 +1,8 @@
 import { NodeIO } from '@gltf-transform/core';
+import { KHRDracoMeshCompression } from '@gltf-transform/extensions';
 import path from 'node:path';
 import process from 'node:process';
+import draco3d from 'draco3dgltf';
 
 const [, , inputArg, outputArg] = process.argv;
 if (!inputArg) {
@@ -10,7 +12,11 @@ if (!inputArg) {
 
 const input = path.resolve(inputArg);
 const output = outputArg ? path.resolve(outputArg) : undefined;
-const document = await new NodeIO().read(input);
+const decoder = await draco3d.createDecoderModule();
+const io = new NodeIO()
+  .registerExtensions([KHRDracoMeshCompression])
+  .registerDependencies({ 'draco3d.decoder': decoder });
+const document = await io.read(input);
 const root = document.getRoot();
 const roles = new Set();
 
@@ -44,5 +50,5 @@ if (missing.length) {
   process.exit(1);
 }
 
-if (output) await new NodeIO().write(output, document);
+if (output) await io.write(output, document);
 console.log(`GLB semantic gate passed: ${[...roles].sort().join(', ')}${output ? `; wrote ${output}` : ''}`);
