@@ -13,10 +13,13 @@ import { protocolMessage, validateMediaPipeOutbound } from '../protocol/workerPr
 import { captureVideoFrame } from '../utils/coordinateMapping';
 import { GestureDetector } from '../utils/GestureDetector';
 import { createVerifiedAssetBlobUrl, createVerifiedWorker } from '../utils/SecurityUtils';
+
 import mediapipeWorkerUrl from '../workers/mediapipe.worker.ts?worker&url';
+// DEVSECOPS FIX: Trích xuất trực tiếp file WASM và JS loader từ node_modules qua Vite để chống lỗi 404
+import wasmJsUrl from '@mediapipe/tasks-vision/wasm/vision_wasm_internal.js?url';
+import wasmWasmUrl from '@mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm?url';
 
 const HAND_LANDMARKER_MODEL_PATH = 'models/hand_landmarker.task';
-const MEDIAPIPE_WASM_PATH = 'wasm/vision_wasm_internal.wasm';
 
 export interface UseHandTrackingReturn {
   resultRef: RefObject<HandTrackingResult | null>;
@@ -120,10 +123,10 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
       }
 
       const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
-      const wasmBasePath = new URL('wasm', assetBaseUrl).toString();
       const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
-      const modelBlobUrl = await createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream');
       
+      // Chỉ nạp Model qua blob để xác thực tính toàn vẹn (Integrity Manifest)
+      const modelBlobUrl = await createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream');
       modelBlobUrlRef.current = modelBlobUrl;
 
       if (cancelled) {
@@ -179,7 +182,12 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         }
       });
 
-      worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl: wasmBasePath, modelUrl: modelBlobUrl } }));
+      // DEVSECOPS FIX: Gộp 2 URL của WASM vào 1 string bằng dấu "|" để vượt qua giới hạn Schema của protocolMessage
+      const absoluteWasmJsUrl = new URL(wasmJsUrl, window.location.origin).toString();
+      const absoluteWasmWasmUrl = new URL(wasmWasmUrl, window.location.origin).toString();
+      const combinedWasmUrl = `${absoluteWasmJsUrl}|${absoluteWasmWasmUrl}`;
+
+      worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl: combinedWasmUrl, modelUrl: modelBlobUrl } }));
     }
 
     createWorker().catch((error: unknown) => {
