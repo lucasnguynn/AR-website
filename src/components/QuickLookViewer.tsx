@@ -1,15 +1,7 @@
 // FILE: src/components/QuickLookViewer.tsx
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 
-interface UmamiAnalytics {
-  track(eventName: string, data?: Record<string, string | number | boolean>): void;
-}
-
-declare global {
-  interface Window {
-    umami?: UmamiAnalytics;
-  }
-}
+import { trackAREvent } from '../utils/ARAnalytics';
 
 /** Props for the iOS AR Quick Look launcher. */
 export interface QuickLookViewerProps {
@@ -55,7 +47,7 @@ export function QuickLookViewer({ usdzUrl, previewImageUrl, productName, realWor
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
-    window.umami?.track('ar_quicklook_launched', { product: productName, diameterMm: realWorldDiameterMm });
+    trackAREvent('AR_QUICKLOOK_LAUNCHED', { experience: 'quick-look', reasonCode: `diameter-${realWorldDiameterMm}mm` });
   }, [available, productName, realWorldDiameterMm, usdzUrl]);
 
   return (
