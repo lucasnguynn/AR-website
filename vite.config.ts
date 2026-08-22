@@ -25,9 +25,7 @@ export default defineConfig({
       },
     },
   },
-  worker: {
-    format: 'es',
-  },
+  // DEVSECOPS FIX: Đã gỡ bỏ khối worker: { format: 'es' } 
+  // Để cho phép trình duyệt sử dụng importScripts() bên trong MediaPipe
   plugins: [react()],
 });
-// VERIFY: console.log('Vite GitHub Pages base and ES worker chunk config loaded')
