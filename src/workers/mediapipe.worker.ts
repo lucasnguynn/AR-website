@@ -29,7 +29,6 @@ interface TrackingResult {
 
 const CONFIG = {
   NUM_HANDS: 1,
-  // Đã hạ ngưỡng tự tin xuống 0.4 để tăng độ nhạy trong môi trường thực tế
   MIN_DETECTION_CONFIDENCE: 0.4,
   MIN_PRESENCE_CONFIDENCE: 0.4,
   MIN_TRACKING_CONFIDENCE: 0.4,
@@ -170,8 +169,9 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
   handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
     baseOptions: {
       modelAssetPath: modelUrl,
-      // Ép buộc dùng CPU để tránh xung đột WebGL chết người trên trình duyệt
-      delegate: 'CPU', 
+      // DEVSECOPS FIX: Phục hồi GPU! Hệ thống truyền dữ liệu bằng ImageData thô
+      // nên WebGL Context sẽ không bị crash nữa. AR sẽ chạy thần tốc.
+      delegate: 'GPU', 
     },
     runningMode: 'VIDEO',
     numHands: CONFIG.NUM_HANDS,
@@ -180,7 +180,7 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
-  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded successfully via CDN - GPU disabled');
+  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded successfully via CDN - GPU Enabled');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });
@@ -195,8 +195,6 @@ function processActiveFrame(): void {
   const startTime = performance.now();
 
   try {
-    // DEVSECOPS FIX: Tạo ImageData thô và truyền trực tiếp cho MediaPipe,
-    // loại bỏ hoàn toàn OffscreenCanvas để triệt tiêu lỗi WebGL Device Lost.
     const imageData = new ImageData(new Uint8ClampedArray(frame.buffer), frame.width, frame.height);
 
     const result = handLandmarker.detectForVideo(imageData, frame.timestamp);
