@@ -1,48 +1,93 @@
-# FILE: .github/workflows/asset-pipeline.yml
-name: Asset Pipeline
+name: Semantic Ring Asset Pipeline
 
 on:
   push:
     branches: [main]
     paths:
-      - 'src/assets/models/**/*.glb'
-      - 'public/models/**/*.glb'
-      - 'scripts/glb_to_usdz.py'
-      - 'scripts/generate-integrity-manifest.mjs'
+      - 'assets/models/raw/**/*.glb'
+      - 'scripts/generate-lod.js'
+      - 'scripts/compress-model.js'
+      - 'scripts/semanticize-ring-glb.mjs'
+      - 'scripts/audit-ring-assets.mjs'
       - '.github/workflows/asset-pipeline.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: semantic-ring-assets
+  cancel-in-progress: true
+
 jobs:
-  convert:
+  build-ring-assets:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
-      - run: pip install usd-core Pillow numpy
-      - uses: actions/setup-node@v4
+          fetch-depth: 0
+
+      - name: Detect semantic source model
+        id: source
+        shell: bash
+        run: |
+          if [ -f assets/models/raw/nhan.glb ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "Semantic source found: assets/models/raw/nhan.glb"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No assets/models/raw/nhan.glb yet. Pipeline is ready and will exit without modifying runtime assets."
+          fi
+
+      - name: Setup Node.js
+        if: steps.source.outputs.present == 'true'
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-      - run: npm ci
-      - run: npx --yes @gltf-transform/cli@4.2.1 --version
-      - name: Compress GLB
+          node-version: 20
+          cache: npm
+
+      - name: Install exact dependencies
+        if: steps.source.outputs.present == 'true'
+        run: npm ci
+
+      - name: Build semantic HIGH / MEDIUM / LOW assets
+        if: steps.source.outputs.present == 'true'
+        run: npm run build:assets
+
+      - name: Upload generated asset evidence
+        if: steps.source.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-ring-assets-${{ github.sha }}
+          path: |
+            public/models/nhan-high.glb
+            public/models/nhan-medium.glb
+            public/models/nhan-low.glb
+          retention-days: 14
+
+      - name: Commit validated runtime LODs
+        if: steps.source.outputs.present == 'true' && github.event_name != 'pull_request'
+        shell: bash
         run: |
-          mkdir -p public/models
-          for f in src/assets/models/*.glb public/models/*.glb; do
-            [ -f "$f" ] || continue
-            name=$(basename "$f" .glb)
-            npx --yes @gltf-transform/cli@4.2.1 optimize "$f" "public/models/${name}.glb" \
-              --compress draco --texture-compress ktx2
-          done
-      - name: Convert to USDZ
-        run: for f in public/models/*.glb; do python3 scripts/glb_to_usdz.py "$f"; done
-      - name: Validate generated assets
-        run: node scripts/validate-assets.mjs
-      - name: Commit
-        run: |
-          git config user.email "actions@github.com" && git config user.name "GitHub Actions"
-          git add public/models/
-          git diff --staged --quiet || (git commit -m "ci: assets compressed + USDZ [skip ci]" && git push)
-# VERIFY: echo "Asset Pipeline converts GLB assets to optimized GLB, USDZ, and SRI manifests"
+          set -euo pipefail
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add \
+            public/models/nhan-high.glb \
+            public/models/nhan-medium.glb \
+            public/models/nhan-low.glb
+
+          if git diff --cached --quiet; then
+            echo "Validated LOD assets are unchanged."
+            exit 0
+          fi
+
+          git commit -m "ci: publish validated semantic ring LODs"
+          git push
+
+          # Pushes made with GITHUB_TOKEN do not normally start a new push workflow.
+          # Explicit workflow_dispatch keeps the generated-asset commit behind the same quality/deploy gate.
+          gh workflow run quality.yml --ref main
