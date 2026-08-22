@@ -27,8 +27,9 @@ import { RingScene } from './RingScene';
 import type { HandTrackingResult } from '../types/ar.types';
 import type { AmbientLightState } from '../utils/AmbientLightAdapter';
 import { AdaptiveQualityController, qualitySettings, type QualityTier } from '../rendering/AdaptiveQualityController';
+import { DeviceProfiler } from '../utils/DeviceProfiler';
 
-type RenderTier = 'webgpu' | 'webgl2' | 'webgl1';
+type RenderTier = 'webgpu' | 'webgl2';
 type ThreeRenderer = THREE.WebGLRenderer & { init?: () => Promise<void> };
 type RendererInitResult = { renderer: ThreeRenderer; tier: RenderTier };
 
@@ -57,18 +58,15 @@ export function hasWebGPUSupport(): boolean {
   return typeof navigator !== 'undefined' && Boolean(navigator.gpu);
 }
 
-function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: Extract<RenderTier, 'webgl2' | 'webgl1'>): ThreeRenderer {
-  const context = tier === 'webgl2'
-    ? canvas.getContext('webgl2', { alpha: true, antialias: true, powerPreference: 'high-performance' }) as WebGL2RenderingContext | null
-    : canvas.getContext('webgl', { alpha: true, antialias: true, powerPreference: 'high-performance' }) as WebGLRenderingContext | null;
+function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas): ThreeRenderer {
+  const context = canvas.getContext('webgl2', {
+    alpha: true,
+    antialias: true,
+    powerPreference: 'high-performance',
+  }) as WebGL2RenderingContext | null;
 
-  if (!context) {
-    throw new Error(`${tier.toUpperCase()} context is unavailable`);
-  }
+  if (!context) throw new Error('WEBGL2 context is unavailable');
 
-  // Use THREE.WebGLRenderer (from the single `import * as THREE from 'three'`
-  // namespace) instead of a separate named import to avoid the "Multiple instances
-  // of Three.js" warning.
   const renderer = new THREE.WebGLRenderer({
     canvas,
     context,
@@ -80,10 +78,6 @@ function createWebGLRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, tier: 
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   return renderer;
-}
-
-function getQualityTier(): string {
-  return 'Tier: HIGH';
 }
 
 async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, requestedTier: RenderTier): Promise<RendererInitResult> {
@@ -101,31 +95,20 @@ async function createRenderer(canvas: HTMLCanvasElement | OffscreenCanvas, reque
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.0;
-      console.info(`[Renderer] WebGPU | ${getQualityTier()}`);
+      console.info('[Renderer] WebGPU initialized');
       return { renderer, tier: 'webgpu' };
     } catch (error) {
       console.warn('WebGPU renderer failed; falling back to WebGL2.', error);
     }
   }
 
-  try {
-    const fallbackTier = requestedTier === 'webgl1' ? 'webgl1' : 'webgl2';
-    const renderer = createWebGLRenderer(canvas, fallbackTier);
-    console.info(fallbackTier === 'webgl2' ? '[Renderer] WebGL2 fallback' : '[Renderer] WebGL1 fallback');
-    return { renderer, tier: fallbackTier };
-  } catch (error) {
-    if (requestedTier === 'webgl1') throw error;
-    console.warn('WebGL2 renderer failed; falling back to WebGL1.', error);
-    const renderer = createWebGLRenderer(canvas, 'webgl1');
-    console.info('[Renderer] WebGL1 fallback');
-    return { renderer, tier: 'webgl1' };
-  }
+  const renderer = createWebGLRenderer(canvas);
+  console.info('[Renderer] WebGL2 fallback');
+  return { renderer, tier: 'webgl2' };
 }
 
 function nextRenderTier(tier: RenderTier): RenderTier {
-  if (tier === 'webgpu') return 'webgl2';
-  if (tier === 'webgl2') return 'webgl1';
-  return 'webgl1';
+  return tier === 'webgpu' ? 'webgl2' : 'webgl2';
 }
 
 function AdaptiveToneMapping({ ambientLight }: { ambientLight?: AmbientLightState }) {
@@ -156,11 +139,12 @@ function RendererLossMonitor({ onFailure }: { onFailure: () => void }) {
   return null;
 }
 
-function FrameTimeMonitor({ onQuality }: { onQuality: (quality: QualityTier, statistics: { averageMs: number; p95Ms: number }) => void }) {
-  const controller = useRef(new AdaptiveQualityController());
+function FrameTimeMonitor({ initialQuality, onQuality }: { initialQuality: QualityTier; onQuality: (quality: QualityTier, statistics: { averageMs: number; p95Ms: number }) => void }) {
+  const controller = useRef<AdaptiveQualityController | null>(null);
+  if (!controller.current) controller.current = new AdaptiveQualityController(initialQuality);
 
   useFrame((_, delta) => {
-    const result = controller.current.sample(delta * 1000);
+    const result = controller.current!.sample(delta * 1000);
     if (result.changed) onQuality(result.quality, result.statistics);
   });
 
@@ -172,7 +156,9 @@ function FrameTimeMonitor({ onQuality }: { onQuality: (quality: QualityTier, sta
  */
 export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount, dpr, ambientLight }: WebGPUSceneProps) {
   const [renderTier, setRenderTier] = useState<RenderTier>(() => (hasWebGPUSupport() ? 'webgpu' : 'webgl2'));
-  const [qualityTier, setQualityTier] = useState<QualityTier>('HIGH');
+  const [initialModelQuality] = useState<QualityTier>(() => DeviceProfiler.recommendedQualityFromSignals());
+  const [qualityTier, setQualityTier] = useState<QualityTier>(initialModelQuality);
+  const [rendererEpoch, setRendererEpoch] = useState(0);
   const effectiveQuality = qualitySettings[qualityTier];
   const canvasDpr = dpr ?? effectiveQuality.dpr;
   const glFactory = useMemo<CanvasProps['gl']>(() => (async (canvas) => {
@@ -191,10 +177,14 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
     });
   }, []);
 
-  const handleRendererFailure = useCallback(() => setRenderTier((current) => nextRenderTier(current)), []);
+  const handleRendererFailure = useCallback(() => {
+    if (renderTier === 'webgpu') setRenderTier(nextRenderTier(renderTier));
+    else setRendererEpoch((current) => current + 1);
+  }, [renderTier]);
 
   return (
     <Canvas
+      key={`${renderTier}-${rendererEpoch}`}
       className="absolute inset-0 z-10"
       style={{ background: 'transparent', zIndex: 10, pointerEvents: 'none' }}
       gl={glFactory}
@@ -217,7 +207,7 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
     >
       <AdaptiveToneMapping ambientLight={ambientLight} />
       <RendererLossMonitor onFailure={handleRendererFailure} />
-      <FrameTimeMonitor onQuality={handleQuality} />
+      <FrameTimeMonitor initialQuality={qualityTier} onQuality={handleQuality} />
       <RendererReadyNotifier onMount={onMount} />
       <Suspense fallback={null}>
         <RingScene
@@ -227,6 +217,7 @@ export function WebGPUScene({ resultRef, videoRef, facingMode = 'user', onMount,
           enableWebGPUEnhancements={renderTier === 'webgpu'}
           materialRendererMode={renderTier === 'webgpu' ? 'webgpu' : 'webgl'}
           gemstoneQuality={qualityTier}
+          modelQuality={initialModelQuality}
           depthIntervalMs={effectiveQuality.depthIntervalMs}
           environmentQuality={qualityTier}
           ambientLight={ambientLight}
