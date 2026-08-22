@@ -29,9 +29,10 @@ interface TrackingResult {
 
 const CONFIG = {
   NUM_HANDS: 1,
-  MIN_DETECTION_CONFIDENCE: 0.75,
-  MIN_PRESENCE_CONFIDENCE: 0.75,
-  MIN_TRACKING_CONFIDENCE: 0.8,
+  // DEVSECOPS FIX: Hạ ngưỡng tự tin xuống 40% để AI nhạy bén hơn với môi trường thiếu sáng và camera nhiễu hạt
+  MIN_DETECTION_CONFIDENCE: 0.4,
+  MIN_PRESENCE_CONFIDENCE: 0.4,
+  MIN_TRACKING_CONFIDENCE: 0.4,
 } as const;
 
 const HAND_LANDMARK_INDICES = Array.from({ length: 21 }, (_, index) => index) as HandLandmarkIndex[];
