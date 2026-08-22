@@ -1,10 +1,6 @@
 // FILE: src/hook/useHandTracking.ts
 /**
  * useHandTracking.ts
- *
- * Owns the MediaPipe worker lifecycle and keeps all camera frames local to this
- * browser session. Frames are transferred only to the same-origin Web Worker for
- * on-device inference and are never uploaded by this hook.
  */
 
 import { useEffect, useRef, useCallback, useState, type RefObject } from 'react';
@@ -113,16 +109,15 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         setLoadingState((prev) => ({
           ...prev,
           ready: false,
-          error: error instanceof Error ? error.message : 'MediaPipe worker integrity verification failed. Refusing to start hand tracking.',
+          error: error instanceof Error ? error.message : 'MediaPipe worker integrity verification failed.',
         }));
         return;
       }
 
-      // Lấy URL gốc của dự án (hỗ trợ cả GitHub Pages có sub-path)
       const assetBaseUrl = new URL(import.meta.env.BASE_URL, window.location.origin);
       
-      // Chỉ định thư mục chứa WASM thay vì ép thành Blob URL
-      const wasmBasePath = new URL('wasm', assetBaseUrl).toString();
+      // DEVSECOPS FIX: Sử dụng CDN trực tiếp để chống lỗi 404 do thiếu file WASM trên server local
+      const wasmBasePath = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
       
       const modelUrl = new URL(HAND_LANDMARKER_MODEL_PATH, assetBaseUrl);
       const modelBlobUrl = await createVerifiedAssetBlobUrl(modelUrl, 'application/octet-stream');
@@ -182,7 +177,6 @@ export function useHandTracking(enabled = true): UseHandTrackingReturn {
         }
       });
 
-      // Truyền đúng đường dẫn chuẩn cho worker
       worker.postMessage(protocolMessage({ type: 'INIT', payload: { wasmBlobUrl: wasmBasePath, modelUrl: modelBlobUrl } }));
     }
 
