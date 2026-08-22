@@ -6,13 +6,9 @@
  *
  * ROOT CAUSES fixed in this revision:
  *
- *  1. SILENT HANG on init (GPU delegate + CDN WASM fetch blocked by CSP)
- *     Workers inherit the *HTTP-header* CSP, NOT the <meta http-equiv> CSP from
- *     index.html. The meta tag only applies to document resources; workers always
- *     use the header policy. The WASM CDN URL is now passed directly from the main
- *     thread as a plain string (not blob:) and FilesetResolver runs inside the
- *     worker. public/_headers must grant cdn.jsdelivr.net in connect-src / script-src
- *     for this to work in production.
+ *  1. SILENT HANG on init (GPU delegate + external WASM fetch blocked by CSP)
+ *     The WASM runtime is now self-hosted and version-aligned with the pinned npm
+ *     dependency. FilesetResolver receives a same-origin /wasm/ base path.
  *
  *  2. SILENT HANG during createFromOptions() with delegate:'GPU' + ImageData input
  *     On Chrome Android and some headless builds, OffscreenCanvas.getContext('webgl2')
@@ -234,12 +230,8 @@ function probeAndCreateGpuCanvas(): boolean {
 /**
  * Initialize the HandLandmarker.
  *
- * @param wasmBasePath  The CDN base URL (with trailing slash) for the MediaPipe
- *                      WASM package. FilesetResolver.forVisionTasks() appends
- *                      'vision_wasm_internal.js' and '.wasm' directly to this.
- *                      CDN access for workers must be granted in public/_headers:
- *                        connect-src 'self' blob: https://cdn.jsdelivr.net
- *                        script-src  'self' 'wasm-unsafe-eval' blob: https://cdn.jsdelivr.net
+ * @param wasmBasePath  Same-origin base URL (with trailing slash) for the MediaPipe
+ *                      WASM package copied by scripts/sync-mediapipe-wasm.mjs.
  * @param modelUrl      A blob: URL for the hand_landmarker.task model binary.
  */
 async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Promise<void> {
@@ -247,9 +239,7 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
 
-  // Step 1: Resolve WASM fileset. FilesetResolver fetches the JS + WASM files
-  // from the CDN URL. Workers use the HTTP-header CSP; public/_headers must
-  // allow cdn.jsdelivr.net in connect-src and script-src.
+  // Step 1: Resolve the self-hosted JS + WASM fileset.
   const wasmFileset = await FilesetResolver.forVisionTasks(wasmBasePath);
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
