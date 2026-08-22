@@ -2,30 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!--
-      FIX BUG-1: Removed `./vite.svg` favicon reference — that file does not exist
-      in /public/, causing a 404 on every page load. Replaced with an inline SVG
-      data URI so there is zero network round-trip and zero 404.
-    -->
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💍</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!--
-      DEVSECOPS FIX: Updated Content-Security-Policy to allow:
-      1. 'blob:' in script-src for MediaPipe WebAssembly workers.
-      2. 'unsafe-inline' in script-src for Vite/React injection.
-      3. External domains (raw.githack.com, raw.githubusercontent.com) in connect-src for Drei HDRI lighting.
-      4. 'data:' in connect-src.
+    <!-- 
+      DEVSECOPS FIX: Added https://cdn.jsdelivr.net to script-src and connect-src
+      to allow MediaPipe to fetch WASM core directly from global CDN.
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob:; worker-src 'self' blob:; connect-src 'self' blob: data: https://raw.githack.com https://raw.githubusercontent.com https://*.githubusercontent.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; base-uri 'self'; object-src 'none'; form-action 'none'; upgrade-insecure-requests" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob: https://cdn.jsdelivr.net; worker-src 'self' blob:; connect-src 'self' blob: data: https://raw.githack.com https://raw.githubusercontent.com https://*.githubusercontent.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; base-uri 'self'; object-src 'none'; form-action 'none'; upgrade-insecure-requests" />
     <title>WebAR Jewelry Try-On</title>
   </head>
   <body>
     <div id="root"></div>
-    <!--
-      Static loading screen shown before React hydrates.
-      Removed by main.tsx after React mounts (500ms fade-out).
-      This is intentionally separate from the React loading overlay in ARTryOnModal.
-    -->
     <div id="loading" class="fixed inset-0 flex items-center justify-center bg-black z-50 transition-opacity duration-500">
       <h1 class="text-[#D5FD50] text-2xl font-bold animate-pulse">Loading WebAR Experience...</h1>
     </div>
