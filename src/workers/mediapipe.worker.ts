@@ -176,12 +176,18 @@ function drainLatestFrame(): void {
   processActiveFrame();
 }
 
-async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Promise<void> {
+async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promise<void> {
   if (state === 'DESTROY' || handLandmarker) return;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
 
-  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBasePath, false);
+  // Bóc tách URL được truyền qua từ main thread
+  const [wasmLoaderPath, wasmBinaryPath] = wasmBlobUrl.split('|');
+
+  const wasmFileset = {
+    wasmLoaderPath: wasmLoaderPath || wasmBlobUrl,
+    wasmBinaryPath: wasmBinaryPath || wasmBlobUrl
+  };
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 0 } });
@@ -189,7 +195,8 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
   handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
     baseOptions: {
       modelAssetPath: modelUrl,
-      delegate: 'GPU',
+      // DEVSECOPS FIX: Chuyển delegate sang CPU để chống sập WebGL khi truyền OffscreenCanvas 2D
+      delegate: 'CPU', 
     },
     runningMode: 'VIDEO',
     numHands: CONFIG.NUM_HANDS,
@@ -198,7 +205,7 @@ async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Prom
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
-  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via base path');
+  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via Vite assets — WebGL worker crash bypassed');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });
