@@ -1,27 +1,67 @@
 name: Security governance
+
 on:
+  push:
+    branches: [main]
   pull_request:
-  schedule: [{ cron: "17 4 * * 1" }]
-permissions: { contents: read, security-events: write }
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   dependencies:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
-      # npm audit honors repository-scoped .npmrc policy; high/critical findings block deployment.
-      # Thêm || true để bỏ qua lỗi thoát (exit code 1) khi phát hiện lỗ hổng
-      - run: npm audit --audit-level=high || true
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Validate direct dependency contract
+        run: npm run validate:dependencies
+
+      - name: Audit high and critical dependency vulnerabilities
+        shell: bash
+        run: |
+          set -o pipefail
+          npm audit --audit-level=high --json | tee npm-audit.json
+
       - name: Generate CycloneDX SBOM
+        if: always()
         run: npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.cdx.json
-      - uses: actions/upload-artifact@v4
-        with: { name: sbom, path: sbom.cdx.json }
+
+      - name: Upload dependency security evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-${{ github.sha }}
+          path: |
+            npm-audit.json
+            sbom.cdx.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   secrets:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
-        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan committed history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
