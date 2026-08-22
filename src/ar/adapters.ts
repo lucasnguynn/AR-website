@@ -12,7 +12,7 @@ class LifecycleAdapter implements ARExperienceAdapter {
     private readonly lifecycle: Lifecycle,
     private readonly values: Omit<ARDiagnostics, 'experience' | 'state'>,
   ) {}
-  async isSupported(): Promise<boolean> { return this.supported(); }
+  isSupported(): boolean | Promise<boolean> { return this.supported(); }
   async start(): Promise<void> { if (!this.active) { await this.lifecycle.start?.(); this.active = true; } }
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
@@ -26,8 +26,21 @@ class LifecycleAdapter implements ARExperienceAdapter {
 
 export class WebXRAdapter implements ARExperienceAdapter {
   readonly kind = 'webxr' as const;
+  private immersiveSupported: boolean | null = null;
   constructor(readonly manager = new WebXRManager()) {}
-  async isSupported(): Promise<boolean> { return Boolean(navigator.xr && await navigator.xr.isSessionSupported('immersive-ar')); }
+  /** Run outside the click handler; `isSupported()` remains synchronous at click time. */
+  async preflight(): Promise<boolean> {
+    if (!navigator.xr) { this.immersiveSupported = false; return false; }
+    if (typeof navigator.xr.isSessionSupported !== 'function') { this.immersiveSupported = null; return true; }
+    try {
+      this.immersiveSupported = await navigator.xr.isSessionSupported('immersive-ar');
+      return this.immersiveSupported;
+    } catch {
+      this.immersiveSupported = null;
+      return true;
+    }
+  }
+  isSupported(): boolean { return this.immersiveSupported ?? Boolean(navigator.xr); }
   async start(): Promise<void> { await this.manager.start(); }
   async stop(): Promise<void> { await this.manager.stop(); }
   onUnexpectedStop(listener: () => void): () => void {
@@ -45,17 +58,17 @@ export class WebXRAdapter implements ARExperienceAdapter {
       depth: this.manager.hasNativeDepth ? 'webxr-depth' : 'geometric-proxy',
       renderer: 'webgl2',
       experience: this.kind,
-      state: this.manager.isRunning ? 'active' : 'supported',
+      state: this.manager.isRunning ? 'active' : this.manager.currentSession ? 'initializing' : 'supported',
     };
   }
 }
 
-export function createCameraCompositeAdapter(supported: () => boolean | Promise<boolean>, lifecycle: Required<Lifecycle>, renderer: 'webgpu' | 'webgl2' | 'webgl1'): ARExperienceAdapter {
+export function createCameraCompositeAdapter(supported: () => boolean | Promise<boolean>, lifecycle: Required<Lifecycle>, renderer: 'webgpu' | 'webgl2'): ARExperienceAdapter {
   return new LifecycleAdapter('camera-composite', supported, lifecycle, { tracking: 'mediapipe', filter: 'one-euro', prediction: 'none', depth: 'geometric-proxy', renderer });
 }
 export function createQuickLookAdapter(supported: () => boolean | Promise<boolean>): ARExperienceAdapter {
-  return new LifecycleAdapter('quick-look', supported, {}, { tracking: 'none', filter: 'one-euro', prediction: 'none', depth: 'none', renderer: 'webgl1' });
+  return new LifecycleAdapter('quick-look', supported, {}, { tracking: 'none', filter: 'one-euro', prediction: 'none', depth: 'none', renderer: 'native' });
 }
-export function createInteractive3DAdapter(renderer: 'webgpu' | 'webgl2' | 'webgl1'): ARExperienceAdapter {
+export function createInteractive3DAdapter(renderer: 'webgpu' | 'webgl2'): ARExperienceAdapter {
   return new LifecycleAdapter('interactive-3d', () => true, {}, { tracking: 'none', filter: 'one-euro', prediction: 'none', depth: 'none', renderer });
 }
