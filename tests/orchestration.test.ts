@@ -6,10 +6,19 @@ class FakeAdapter implements ARExperienceAdapter {
   starts = 0;
   stops = 0;
   active = false;
+  private unexpectedStopListener: (() => void) | null = null;
   constructor(readonly kind: ARExperienceKind, private readonly supported: boolean, private readonly failure = false) {}
   async isSupported(): Promise<boolean> { return this.supported; }
   async start(): Promise<void> { this.starts += 1; if (this.failure) throw new Error(`${this.kind} requestSession failed`); this.active = true; }
   async stop(): Promise<void> { if (this.active) this.stops += 1; this.active = false; }
+  onUnexpectedStop(listener: () => void): () => void {
+    this.unexpectedStopListener = listener;
+    return () => { if (this.unexpectedStopListener === listener) this.unexpectedStopListener = null; };
+  }
+  triggerUnexpectedStop(): void {
+    this.active = false;
+    this.unexpectedStopListener?.();
+  }
   diagnostics(): ARDiagnostics { return { tracking: this.kind === 'webxr' ? 'webxr-hand' : this.kind === 'camera-composite' ? 'mediapipe' : 'none', filter: 'one-euro', prediction: 'none', depth: this.kind === 'camera-composite' ? 'geometric-proxy' : 'none', renderer: 'webgl2', experience: this.kind, state: this.active ? 'active' : 'supported' }; }
 }
 
@@ -52,6 +61,16 @@ export async function run(): Promise<void> {
     await Promise.all([orchestrator.stop(), orchestrator.stop()]);
     await orchestrator.stop();
     assert.equal(camera.stops, 1, 'cleanup is idempotent');
+  }
+  {
+    const webxr = new FakeAdapter('webxr', true);
+    const camera = new FakeAdapter('camera-composite', true);
+    const { orchestrator } = await selected([webxr, camera]);
+    webxr.triggerUnexpectedStop();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(webxr.starts, 1, 'unexpected WebXR end never re-enters requestSession without a new user gesture');
+    assert.equal(camera.starts, 1, 'unexpected WebXR end falls through to camera composite');
+    assert.equal(orchestrator.activeKind, 'camera-composite');
   }
   assert.equal(validateMediaPipeInbound({ type: 'DESTROY' }), false, 'unversioned messages are rejected');
   assert.equal(validateMediaPipeInbound({ type: 'DESTROY', protocolVersion: WORKER_PROTOCOL_VERSION + 1 }), false, 'version mismatches are rejected');
