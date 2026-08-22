@@ -176,18 +176,13 @@ function drainLatestFrame(): void {
   processActiveFrame();
 }
 
-async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promise<void> {
+async function initializeMediaPipe(wasmBasePath: string, modelUrl: string): Promise<void> {
   if (state === 'DESTROY' || handLandmarker) return;
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 0 } });
 
-  // Bóc tách URL được truyền qua từ main thread
-  const [wasmLoaderPath, wasmBinaryPath] = wasmBlobUrl.split('|');
-
-  const wasmFileset = {
-    wasmLoaderPath: wasmLoaderPath || wasmBlobUrl,
-    wasmBinaryPath: wasmBinaryPath || wasmBlobUrl
-  };
+  // MediaPipe tự động fetch cả 2 file .js và .wasm từ wasmBasePath
+  const wasmFileset = await FilesetResolver.forVisionTasks(wasmBasePath, false);
 
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'wasm', progress: 100 } });
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 0 } });
@@ -195,8 +190,7 @@ async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promi
   handLandmarker = await HandLandmarker.createFromOptions(wasmFileset, {
     baseOptions: {
       modelAssetPath: modelUrl,
-      // DEVSECOPS FIX: Chuyển delegate sang CPU để chống sập WebGL khi truyền OffscreenCanvas 2D
-      delegate: 'CPU', 
+      delegate: 'GPU', // Trả về GPU để đảm bảo hiệu suất tốt nhất trên thiết bị di động
     },
     runningMode: 'VIDEO',
     numHands: CONFIG.NUM_HANDS,
@@ -205,7 +199,7 @@ async function initializeMediaPipe(wasmBlobUrl: string, modelUrl: string): Promi
     minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
   });
 
-  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via Vite assets — WebGL worker crash bypassed');
+  if (import.meta.env.DEV) console.log('[MediaPipe] WASM loaded via public path');
   postMessageSafe({ type: 'PROGRESS', payload: { phase: 'model', progress: 100 } });
   state = 'READY';
   postMessageSafe({ type: 'READY' });
