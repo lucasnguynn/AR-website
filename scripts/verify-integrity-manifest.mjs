@@ -1,18 +1,22 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { OPTIONAL_PUBLIC_ASSETS, REQUIRED_PUBLIC_ASSETS } from './asset-config.mjs';
+import { loadEnv } from 'vite';
+import { runtimeAssetContract } from './asset-config.mjs';
 
 const dist = resolve(process.argv[2] ?? 'dist');
+const root = process.cwd();
+const mode = process.env.NODE_ENV === 'development' ? 'development' : 'production';
+const env = { ...loadEnv(mode, root, ''), ...process.env };
 const manifest = JSON.parse(await readFile(resolve(dist, 'integrity-manifest.json'), 'utf8'));
 if (manifest.version !== 1 || typeof manifest.buildId !== 'string' || typeof manifest.assets !== 'object') throw new Error('Invalid final integrity manifest schema.');
-const requiredRuntimeAssets = [
-  ...REQUIRED_PUBLIC_ASSETS,
-  ...OPTIONAL_PUBLIC_ASSETS.filter((asset) => process.env[asset.enabledBy] === 'true').map((asset) => asset.path),
-];
+const requiredRuntimeAssets = runtimeAssetContract(env).required;
 const manifestPaths = Object.keys(manifest.assets);
 if (!manifestPaths.some((path) => /^assets\/mediapipe\.worker-[^/]+\.js$/.test(path))) {
   throw new Error('Final build has no compiled, integrity-covered MediaPipe worker.');
+}
+if (!manifestPaths.some((path) => /^wasm\/vision_wasm_.*\.js$/.test(path))) {
+  throw new Error('Final build has no integrity-covered MediaPipe WASM loader JS.');
 }
 for (const relativePath of requiredRuntimeAssets) {
   const file = resolve(dist, relativePath);
