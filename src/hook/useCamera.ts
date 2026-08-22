@@ -21,6 +21,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   CameraSystem,
   getCameraSystem,
+  resetCameraSystem,
   type CameraState,
   type CameraMetadata,
   type CameraError,
@@ -102,6 +103,7 @@ export function useCamera(): UseCameraReturn {
     setCameraState(initialState.status);
     setIsReady(initialState.isReady);
     setHasError(initialState.hasError);
+    setLastError(initialState.error);
     setFacingMode(initialState.facingMode);
     setMetadata(initialState.metadata);
 
@@ -163,9 +165,7 @@ export async function startCameraFromRef(
  * Should be called when the AR modal is closed to ensure clean state.
  */
 export function resetCamera(): void {
-  if (cameraSystemInstance) {
-    cameraSystemInstance.stop();
-    cameraSystemInstance = null;
-  }
+  resetCameraSystem();
+  cameraSystemInstance = null;
 }
 // VERIFY: console.log('[Camera] validated exactly one video track and zero audio tracks')
