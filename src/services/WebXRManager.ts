@@ -44,7 +44,7 @@ type SnapshotListener = (snapshot: WebXRFrameSnapshot) => void;
 type StateListener = () => void;
 
 const SESSION_INIT = (): XRSessionInitWithDepth => ({
-  // Every feature is optional: a basic immersive-ar session must remain usable.
+  // Every advanced feature is optional: a basic immersive-ar session must remain usable.
   optionalFeatures: ['local-floor', 'hand-tracking', 'depth-sensing', 'dom-overlay'],
   depthSensing: {
     usagePreference: ['cpu-optimized'],
@@ -58,7 +58,7 @@ export class WebXRManager {
   private session: XRSession | null = null;
   private referenceSpace: XRReferenceSpace | null = null;
   private binding: WebXRRuntimeBinding | null = null;
-  private bindingWaiters: Array<(binding: WebXRRuntimeBinding) => void> = [];
+  private configuredBinding: WebXRRuntimeBinding | null = null;
   private readonly depthManager = new WebXRDepthManager();
   private readonly frameListeners = new Set<SnapshotListener>();
   private readonly stateListeners = new Set<StateListener>();
@@ -68,14 +68,31 @@ export class WebXRManager {
   private snapshot: WebXRFrameSnapshot = { timestamp: 0, viewerPose: null, hands: [], depthActive: false };
 
   get currentSession(): XRSession | null { return this.session; }
-  get isRunning(): boolean { return this.session !== null && this.referenceSpace !== null && this.binding !== null; }
+  get isRunning(): boolean {
+    return this.session !== null && this.referenceSpace !== null && this.configuredBinding !== null;
+  }
   get hasHandTracking(): boolean { return this.handAvailable; }
   get hasNativeDepth(): boolean { return this.depthAvailable; }
 
+  /**
+   * Binds the React/Three runtime when WebXRScene mounts. Importantly, session
+   * creation does NOT wait for this binding; doing so creates a circular dependency
+   * because WebXRScene itself is selected only after requestSession succeeds.
+   */
   bindRuntime(binding: WebXRRuntimeBinding): () => void {
     this.binding = binding;
-    for (const resolve of this.bindingWaiters.splice(0)) resolve(binding);
-    return () => { if (this.binding === binding) this.binding = null; };
+    const session = this.session;
+    if (session && this.referenceSpace) {
+      void this.configureRuntime(binding, session).catch((error) => {
+        console.error('WebXR runtime configuration failed.', error);
+        if (this.session === session) void this.endSession(session);
+      });
+    }
+    return () => {
+      if (this.configuredBinding === binding) this.releaseRuntime(binding);
+      if (this.binding === binding) this.binding = null;
+      this.notifyState();
+    };
   }
 
   subscribeFrames(listener: SnapshotListener): () => void {
@@ -88,24 +105,23 @@ export class WebXRManager {
     return () => this.stateListeners.delete(listener);
   }
 
+  /**
+   * requestSession is intentionally the first asynchronous WebXR operation.
+   * Browsers gate immersive sessions on transient user activation; do not add an
+   * awaited capability probe (for example isSessionSupported) before this call.
+   */
   async start(): Promise<XRSession> {
     if (this.session) return this.session;
-    if (!navigator.xr || !(await navigator.xr.isSessionSupported('immersive-ar'))) {
-      throw new Error('immersive-ar is not supported on this device.');
-    }
+    if (!navigator.xr) throw new Error('WebXR is not available on this device.');
 
-    // Request while the user activation from the try-on action is still valid.
     const session = await navigator.xr.requestSession('immersive-ar', SESSION_INIT());
     this.session = session;
     session.addEventListener('end', this.handleSessionEnd, { once: true });
+
     try {
-      const binding = this.binding ?? await this.waitForBinding();
-      binding.renderer.xr.enabled = true;
-      await binding.renderer.xr.setSession(session);
       this.referenceSpace = await this.requestBestReferenceSpace(session);
-      // A camera child is not guaranteed to be traversed by Three; scene attachment makes the depth pass real.
-      this.depthManager.attachToScene(binding.scene);
-      binding.renderer.setAnimationLoop(this.onXRFrame);
+      const binding = this.binding;
+      if (binding) await this.configureRuntime(binding, session);
       this.notifyState();
       return session;
     } catch (error) {
@@ -127,19 +143,34 @@ export class WebXRManager {
     catch { return session.requestReferenceSpace('local'); }
   }
 
-  private waitForBinding(): Promise<WebXRRuntimeBinding> {
-    return new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => {
-        this.bindingWaiters = this.bindingWaiters.filter((waiter) => waiter !== complete);
-        reject(new Error('WebXR renderer did not initialize.'));
-      }, 5000);
-      const complete = (binding: WebXRRuntimeBinding): void => { window.clearTimeout(timer); resolve(binding); };
-      this.bindingWaiters.push(complete);
-    });
+  private async configureRuntime(binding: WebXRRuntimeBinding, session: XRSession): Promise<void> {
+    if (this.session !== session || !this.referenceSpace) return;
+    if (this.configuredBinding === binding) return;
+
+    if (this.configuredBinding && this.configuredBinding !== binding) {
+      this.releaseRuntime(this.configuredBinding);
+    }
+
+    binding.renderer.xr.enabled = true;
+    await binding.renderer.xr.setSession(session);
+    if (this.session !== session) return;
+
+    this.depthManager.attachToScene(binding.scene);
+    binding.renderer.setAnimationLoop(this.onXRFrame);
+    this.configuredBinding = binding;
+    this.notifyState();
+  }
+
+  private releaseRuntime(binding: WebXRRuntimeBinding): void {
+    binding.renderer.setAnimationLoop(null);
+    binding.renderer.xr.enabled = false;
+    void binding.renderer.xr.setSession(null);
+    this.depthManager.detach();
+    if (this.configuredBinding === binding) this.configuredBinding = null;
   }
 
   private readonly onXRFrame = (_time: number, frame?: XRFrame): void => {
-    const binding = this.binding;
+    const binding = this.configuredBinding;
     const referenceSpace = this.referenceSpace;
     if (!frame || !binding || !referenceSpace || !this.session) return;
     const xrFrame = frame as XRFrameWithJoints;
@@ -168,18 +199,27 @@ export class WebXRManager {
       const pip = frame.getJointPose(pipSpace, space);
       const index = frame.getJointPose(indexSpace, space);
       if (!mcp || !pip || !index) continue;
-      const origin = new THREE.Vector3(mcp.transform.position.x, mcp.transform.position.y, mcp.transform.position.z);
-      const along = new THREE.Vector3(pip.transform.position.x, pip.transform.position.y, pip.transform.position.z).sub(origin);
-      const across = new THREE.Vector3(index.transform.position.x, index.transform.position.y, index.transform.position.z).sub(origin);
+      const mcpPosition = new THREE.Vector3(mcp.transform.position.x, mcp.transform.position.y, mcp.transform.position.z);
+      const pipPosition = new THREE.Vector3(pip.transform.position.x, pip.transform.position.y, pip.transform.position.z);
+      const indexPosition = new THREE.Vector3(index.transform.position.x, index.transform.position.y, index.transform.position.z);
+      const along = pipPosition.clone().sub(mcpPosition);
+      const across = indexPosition.clone().sub(mcpPosition);
       const scaleMeters = along.length();
-      if (scaleMeters < 0.005) continue;
-      const y = along.normalize();
-      const z = new THREE.Vector3().crossVectors(across, y).normalize();
+      if (scaleMeters < 0.005 || across.lengthSq() < 1e-8) continue;
+
+      const y = along.clone().normalize();
+      const zRaw = new THREE.Vector3().crossVectors(across, y);
+      if (zRaw.lengthSq() < 1e-8) continue;
+      const z = zRaw.normalize();
       const x = new THREE.Vector3().crossVectors(y, z).normalize();
       const quaternion = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+      // Move slightly from the MCP toward the PIP so the ring sits on the proximal
+      // phalanx rather than directly on the knuckle center. Device calibration can
+      // tune this fraction later without changing the renderer.
+      const anchor = mcpPosition.clone().lerp(pipPosition, 0.28);
       measurements.push({
         handedness: source.handedness as XRHandedness,
-        position: [origin.x, origin.y, origin.z],
+        position: [anchor.x, anchor.y, anchor.z],
         orientation: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
         scaleMeters,
         timestamp: frame.predictedDisplayTime,
@@ -199,13 +239,7 @@ export class WebXRManager {
   private readonly handleSessionEnd = (): void => { this.cleanup(); };
 
   private cleanup(): void {
-    const binding = this.binding;
-    binding?.renderer.setAnimationLoop(null);
-    if (binding) {
-      binding.renderer.xr.enabled = false;
-      void binding.renderer.xr.setSession(null);
-    }
-    this.depthManager.detach();
+    if (this.configuredBinding) this.releaseRuntime(this.configuredBinding);
     this.session = null;
     this.referenceSpace = null;
     this.handAvailable = false;
