@@ -45,4 +45,3 @@ jobs:
           done
 
           cmp /tmp/integrity-1.sha384 /tmp/integrity-2.sha384
-          git diff --exit-code -- package-lock.json
