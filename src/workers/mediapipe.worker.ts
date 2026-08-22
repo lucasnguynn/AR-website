@@ -214,23 +214,35 @@ function drainLatestFrame(): void {
  * to hang indefinitely. By pre-creating and probing the context we:
  *   a) detect GPU unavailability before handing off to MediaPipe, and
  *   b) give MediaPipe a warm, verified WebGL2 context to reuse.
+ *
+ * gpuCanvas is only assigned if the context probe fully succeeds — never left
+ * pointing at a canvas whose context is null or already lost.
  */
 function probeAndCreateGpuCanvas(): boolean {
   try {
-    gpuCanvas = new OffscreenCanvas(1, 1);
-    const ctx = gpuCanvas.getContext('webgl2');
+    const canvas = new OffscreenCanvas(1, 1);
+    const ctx = canvas.getContext('webgl2');
+
+    // getContext returns null when WebGL2 is unsupported or hardware-blocked.
     if (!ctx) {
       if (import.meta.env.DEV) console.warn('[MediaPipe] WebGL2 unavailable in Worker — falling back to CPU');
-      gpuCanvas = null;
       return false;
     }
-    // Verify context is not already lost
+
+    // A context can be created but already lost (e.g. GPU process crash,
+    // too many concurrent WebGL contexts on mobile). Treat this as GPU
+    // unavailable so we don't hand MediaPipe a broken surface.
     if (ctx.isContextLost()) {
-      gpuCanvas = null;
+      if (import.meta.env.DEV) console.warn('[MediaPipe] WebGL2 context already lost at probe — falling back to CPU');
       return false;
     }
+
+    // Context is healthy — commit it as the global GPU surface.
+    gpuCanvas = canvas;
     return true;
   } catch {
+    // OffscreenCanvas or getContext threw (e.g. in a sandboxed iframe
+    // that blocks GPU access). Safe to fall back to CPU.
     gpuCanvas = null;
     return false;
   }
@@ -403,13 +415,18 @@ async function processActiveFrame(): Promise<void> {
       },
     });
   } finally {
-    // Always close the ImageBitmap to release GPU memory immediately.
+    // Always close the ImageBitmap to release GPU texture memory immediately.
     // Failing to do this leaks texture memory and causes "WebGL Device Lost"
     // after a few hundred frames on devices with constrained GPU budgets.
+    //
+    // drainLatestFrame() is called here in finally — NOT after the try/catch
+    // block — so the pipeline always drains regardless of whether an unhandled
+    // rejection escaped the catch (e.g. if postMessageSafe itself threw).
+    // Placing drainLatestFrame() after the try/catch block means it is
+    // unreachable in that scenario, stalling the frame pipeline permanently.
     bitmap?.close();
+    drainLatestFrame();
   }
-
-  drainLatestFrame();
 }
 
 // ─── Teardown ─────────────────────────────────────────────────────────────────
