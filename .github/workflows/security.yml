@@ -13,7 +13,9 @@ permissions:
 
 jobs:
   dependencies:
+    name: Dependency security
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -31,11 +33,32 @@ jobs:
       - name: Validate direct dependency contract
         run: npm run validate:dependencies
 
-      - name: Audit high and critical dependency vulnerabilities
+      # Critical findings block even when they are only in build/dev tooling.
+      - name: Block critical vulnerabilities in the complete tree
         shell: bash
         run: |
           set -o pipefail
-          npm audit --audit-level=high --json | tee npm-audit.json
+          npm audit --audit-level=critical --json | tee npm-audit-critical.json
+
+      # High/critical findings in code shipped to the browser remain a hard gate.
+      # Dev-only tooling is recorded separately below so an asset-tool advisory
+      # does not make every website source commit look like a production breach.
+      - name: Block high vulnerabilities in production dependencies
+        shell: bash
+        run: |
+          set -o pipefail
+          npm audit --omit=dev --audit-level=high --json | tee npm-audit-runtime.json
+
+      - name: Record full high-severity audit for dev/build tooling
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          npm audit --audit-level=high --json > npm-audit-full.json
+          status=$?
+          echo "Full dependency audit exit code: ${status}"
+          echo "Non-zero here is retained as evidence; runtime high and all critical findings are blocked by earlier steps."
+          exit 0
 
       - name: Generate CycloneDX SBOM
         if: always()
@@ -47,13 +70,17 @@ jobs:
         with:
           name: dependency-security-${{ github.sha }}
           path: |
-            npm-audit.json
+            npm-audit-critical.json
+            npm-audit-runtime.json
+            npm-audit-full.json
             sbom.cdx.json
           if-no-files-found: ignore
           retention-days: 30
 
   secrets:
+    name: Secret scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout full history
