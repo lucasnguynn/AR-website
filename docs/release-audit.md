@@ -1,42 +1,94 @@
-# Forensic release audit
+# Forensic Release Audit
 
-This audit records production reachability rather than source presence. It must be updated when composition-root routing changes. Browser-only and physical-device behavior remains subject to the hardware release matrix in `quality-gate.md`.
+This document records what is actually reachable in the current deployed composition. Source-code presence alone is not treated as production activation.
 
-## Runtime source graph
+## 1. Composition root
 
-`main.tsx` mounts `App`, which lazy-loads `ARTryOnModal` after explicit user interaction. The modal constructs one `AROrchestrator` with ordered adapters: immersive WebXR, iOS Quick Look, camera composite, then interactive 3D. An adapter is reported active only after its real `start()` completes.
+`main.tsx` mounts `App`. `App` lazy-loads `ARTryOnModal` after user interaction. `ARTryOnModal` owns one `AROrchestrator` whose ordered adapters are:
 
-The camera-composite path starts a local, muted video stream, creates a SHA-384-verified MediaPipe worker and verified model/WASM blob URLs, and publishes only the latest landmark result. `RingScene` projects each new timestamp once, computes anatomical visual-relative scale, ingests it into `UKFPosePipeline`, samples its bounded kinematic prediction in the R3F loop, and applies the pose to the active GLB clone. No metric calibration is claimed.
+1. immersive WebXR when supported,
+2. Apple Quick Look on compatible iOS/iPadOS Safari,
+3. camera-composite AR,
+4. interactive 3D fallback.
 
-The WebXR adapter requests a real `immersive-ar` session. `WebXRScene` binds the Three runtime; the manager owns the XR animation loop, consumes XR hand joints when supplied, and calls `getDepthInformation` for each XR view. Session, binding, and reference space must all exist before diagnostics report active. Missing XR hand/depth features retain the usable geometric proxy.
+An adapter is considered active only after its real start operation completes.
 
-Camera depth is opt-in through `VITE_ENABLE_MONOCULAR_DEPTH=true`. Only then does bounded 518×518 capture feed the verified ONNX worker with backpressure; completed depth textures drive the depth-only occlusion proxy. Missing/invalid model, worker failure, or inference pressure falls back to the allocation-stable geometric finger proxy. With the flag disabled, monocular code is implemented but not loaded.
+## 2. Camera-composite path
 
-The GLB clone is passed through the semantic material strategy. Metal meshes receive the WebGPU TSL node-material implementation on WebGPU and supported physical PBR on WebGL. Meshes classified as gemstones receive the spectral TSL material on WebGPU and physical PBR fallback on WebGL. The shipped GLB's stable metadata classifies its only mesh as metal, so the gemstone implementation is production-reachable only when a configured model actually contains a gemstone semantic. Environment IBL and adaptive lighting are consumed by the active scene. The WebGPU enhancement helper adjusts supported raster/PBR properties; it is not a ray-tracing implementation.
+The camera path requests a single video track with `audio: false`. Camera acquisition uses bounded retries, rejects after final failure, restores the previous facing mode when a camera switch cannot be committed, and stops stale streams that resolve after a session has been cancelled.
 
-Quick Look consumes the shipped USDZ and preview image under `import.meta.env.BASE_URL`. Interactive 3D consumes the shipped GLB under the same deployment base. Final-dist verification requires each enabled URL to be non-empty and represented by exact byte size and SHA-384 in the generated public integrity manifest. That manifest is tamper detection, not authentication or authorization.
+MediaPipe hand tracking is performed in a same-origin worker. The final worker JavaScript, hand landmarker model, and WASM are verified against the build's SHA-384 integrity manifest before use. Camera frames and landmarks are not uploaded by the AR core.
 
-Privacy telemetry is implemented as local, redacted event aggregation but is not imported by the production composition root. Learned LSTM and Transformer predictors and `PredictiveKalmanFusion` are implemented but deliberately disabled because no held-out validation fixture authorizes production activation.
+`RingScene` projects each new hand result once, derives a visual-relative anatomical ring pose, filters/predicts through the production pose pipeline, and updates the active model clone without React state churn per tracking frame.
 
-## Maturity matrix
+## 3. Current graphics backend
 
-| Maturity class | Subsystems |
+The production camera-composite Canvas is **WebGL2**.
+
+The repository still contains WebGPU/TSL material implementation code and hardware detection, but React 18 + R3F v8 does not activate the reviewed WebGPU renderer in this release. WebGPU production activation is deferred until a React19/R3F9 migration and target-device validation.
+
+Remote Drei environment presets are not used by the production scene. Current lighting is same-origin/procedural, avoiding an external HDRI dependency that would conflict with the strict same-origin CSP contract.
+
+## 4. WebXR path
+
+The WebXR adapter starts a real `immersive-ar` session from the user gesture. `WebXRScene` binds the Three renderer after the session exists, while `WebXRManager` owns the XR animation loop.
+
+XR hand joints and native depth are consumed when supplied by the browser/device. Missing hand/depth information retains a usable geometric occlusion fallback. Automated mocks verify lifecycle contracts, but they are not physical evidence for Android WebXR hardware, native depth quality, or multi-view correctness.
+
+## 5. Occlusion tiers
+
+The current release behaves as follows:
+
+```text
+WebXR native depth, when physically available
+        ↓ otherwise
+geometric proxy
+```
+
+Monocular ONNX depth code exists but `VITE_ENABLE_MONOCULAR_DEPTH=false`, so the optional ONNX model is not a release dependency today.
+
+Before enabling monocular depth, the worker must be loaded through Vite's compiled `?worker&url` output, the model must have reviewed provenance/license and exact integrity evidence, and mobile RAM/FPS/thermal behavior must be validated.
+
+## 6. Product model / semantic material path
+
+The current served `public/models/nhan.glb` remains a development fallback. Production assets must come from:
+
+```text
+assets/models/raw/nhan.glb
+```
+
+Every production primitive must carry explicit glTF extras:
+
+- `materialRole="metal"`, or
+- `materialRole="gemstone"` plus a supported `gemstoneType`.
+
+The release semantic gate deliberately does not accept object/material naming heuristics as proof. The generated HIGH/MEDIUM/LOW files are revalidated after Draco compression and must pass byte and triangle budgets.
+
+Until an approved semantic source is uploaded and three validated LODs exist, `.env.production` intentionally continues to point all quality tiers to the development fallback.
+
+## 7. Apple Quick Look
+
+Quick Look uses a declarative `a[rel="ar"]` containing the preview image so the Safari user gesture is preserved. The configured USDZ and preview image are same-origin assets.
+
+The repository's Python GLB-to-USDZ converter is a minimal geometry diagnostic utility, not a full production jewelry material exporter. `public/models/nhan.usdz` must be visually and physically validated on a real Apple device before release.
+
+## 8. Integrity, privacy, and GitHub Pages
+
+The final Vite output creates `dist/integrity-manifest.json`. Verified runtime loaders compare exact asset path, byte length, and SHA-384 before creating security-sensitive workers or consuming verified model bytes.
+
+The checked-in `_headers` files are portable policy documentation. GitHub Pages does not treat them as response-header configuration. The meta CSP remains part of the document, and the post-deploy workflow captures the headers the platform actually returns.
+
+Privacy telemetry and metric sizing remain disabled by production configuration.
+
+## 9. Maturity matrix
+
+| Class | Subsystems |
 | --- | --- |
-| ACTIVE + VERIFIED | Camera-composite routing; MediaPipe local worker; worker/model/WASM integrity; anatomical visual scale; UKF measurement filtering; bounded kinematic prediction; duplicate timestamp rejection; geometric finger occlusion; semantic metal material strategy; environment/IBL; adaptive quality degradation and recovery; Quick Look assets; interactive 3D; final-artifact integrity; camera `audio: false` and teardown contracts |
-| ACTIVE + HARDWARE VERIFICATION REQUIRED | Immersive WebXR session lifecycle; XR hand joints; native XR depth consumption; WebGPU renderer and TSL metal materials; iOS Quick Look launch/physical scale; ten-cycle camera/worker/GPU teardown; mobile thermal and driver behavior |
-| IMPLEMENTED BUT DISABLED EXPERIMENTAL | LSTM predictor; Transformer predictor; `PredictiveKalmanFusion`; opt-in monocular ONNX depth when its separately licensed model is absent from this release; privacy telemetry; gemstone spectral TSL path for models carrying gemstone semantics |
-| FALLBACK ONLY | WebGL physical PBR materials; geometric depth proxy when native/monocular depth is unavailable; interactive 3D when camera/XR/Quick Look are unavailable |
-| MISSING / BLOCKED | Physical-device evidence for the hardware-required rows; deploy-origin HTTP security-header evidence on GitHub Pages; metric ring calibration/true-size claim; ONNX depth asset and provenance for opt-in monocular depth |
+| **ACTIVE + AUTOMATED CONTRACTS** | Camera lifecycle, camera-composite routing, MediaPipe local verified worker/model/WASM, WebGL2 renderer, pose filtering/prediction, geometric occlusion, adaptive quality, Quick Look launcher structure, final-build integrity checks, GitHub Pages deployment gates |
+| **ACTIVE + HARDWARE EVIDENCE REQUIRED** | Android/iOS camera lifecycle, immersive WebXR, XR hand joints, native XR depth, iOS Quick Look scale/appearance, ten-cycle resource teardown, ten-minute thermal/stability behavior |
+| **IMPLEMENTED BUT DISABLED** | Monocular ONNX depth, privacy telemetry, metric sizing, WebGPU production renderer |
+| **BLOCKED BY ASSET** | Production semantic Metal + Gemstone ring, generated HIGH/MEDIUM/LOW runtime LODs, production-reachable gemstone material routing |
 
-## Security and performance findings
+## 10. Release decision
 
-- Camera constraints disable audio. Camera frames and landmarks have no upload path; inference is same-origin worker-local and no biometric result is persisted.
-- Worker creation fails closed when the final manifest entry, byte count, or SHA-384 differs. No browser signing secret exists.
-- Static scans reject `eval`/`new Function` and remote CV upload patterns. GitHub Pages is not claimed to apply `_headers`; only a post-deploy response check can establish header enforcement.
-- Hand capture is bounded and single-flight. Monocular capture is bounded to 518×518 and checks downstream capacity before extraction. Tracking timestamps prevent repeated ingestion.
-- R3F owns one camera-composite loop; the XR manager owns one XR display loop. Reusable proxy geometry is transformed, not recreated per frame. Optional ONNX runtime is worker-lazy.
-- Modal teardown stops the selected adapter, camera tracks, callbacks/timers, verified workers, blob URLs, depth resources, pose state, cloned geometry/materials, and R3F renderer resources. Automated lifecycle contracts do not replace the required ten-cycle physical camera-indicator/GPU-memory observation.
-
-## Acceptance decision
-
-**PARTIAL — not production-ready.** Local deterministic gates can establish build, integrity, routing, fallback, and simulated lifecycle contracts. Release acceptance remains blocked on physical-device evidence, deployment response-header evidence, and (if monocular depth is enabled) a licensed ONNX asset with provenance. The current release safely leaves monocular depth disabled and does not claim metric sizing.
+**PARTIAL / BETA.** Do not promote to a true-size or final production jewelry release until the semantic source asset, generated runtime LODs, Quick Look product USDZ, and physical-device matrix have all passed.
