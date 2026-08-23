@@ -1,0 +1,82 @@
+name: Optimize Current Ring GLB
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: optimize-current-ring
+  cancel-in-progress: true
+
+jobs:
+  optimize:
+    name: Build lightweight ring tiers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Optimize current runtime GLB
+        run: node scripts/optimize-current-ring.mjs
+
+      - name: Show optimization report
+        run: cat public/models/nhan-optimization-report.json
+
+      - name: Upload optimized GLBs
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimized-current-ring-${{ github.sha }}
+          path: |
+            public/models/nhan-high.glb
+            public/models/nhan-medium.glb
+            public/models/nhan-low.glb
+            public/models/nhan-optimization-report.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit optimized GLBs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+
+          git add \
+            public/models/nhan-high.glb \
+            public/models/nhan-medium.glb \
+            public/models/nhan-low.glb \
+            public/models/nhan-optimization-report.json
+
+          if git diff --cached --quiet; then
+            echo "Optimized ring files are unchanged."
+            exit 0
+          fi
+
+          git commit -m "ci: optimize current ring GLB for WebAR"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+          # Pushes made with GITHUB_TOKEN generally do not start another push
+          # workflow, so run the canonical quality/deploy gate explicitly.
+          gh workflow run quality.yml --ref main
+
