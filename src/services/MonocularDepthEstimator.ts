@@ -164,15 +164,23 @@ export class MonocularDepthEstimator {
       };
 
       worker.onmessage = (event: MessageEvent<unknown>) => {
-        if (validateDepthOutbound(event.data)) {
-          if (event.data.type === 'READY') {
-            this.provider = event.data.payload.provider;
+        // Copy `event.data` to a local immutable binding before narrowing it.
+        // TypeScript intentionally does not preserve property narrowing through
+        // nested callbacks such as settle(() => ...), because event.data is a
+        // property access and could theoretically change.
+        const message = event.data;
+
+        if (validateDepthOutbound(message)) {
+          if (message.type === 'READY') {
+            this.provider = message.payload.provider;
             settle(resolve);
-          } else if (event.data.type === 'ERROR' && event.data.payload.frameId === undefined) {
-            settle(() => reject(new Error(event.data.payload.message)));
+          } else if (message.type === 'ERROR' && message.payload.frameId === undefined) {
+            const errorMessage = message.payload.message;
+            settle(() => reject(new Error(errorMessage)));
           }
         }
-        this.receiveMessage(event.data);
+
+        this.receiveMessage(message);
       };
 
       worker.postMessage(protocolMessage({ type: 'INIT', payload: { model } }), [model]);
