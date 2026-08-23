@@ -1,31 +1,33 @@
-# V5 Device Validation Results
+# Device Validation Results
 
-No physical-device evidence was available in this environment. Browser capability mocks validate routing and recovery only; they are not hardware evidence.
+No physical-device evidence is committed for the current release candidate yet. Automated browser tests validate routing and lifecycle contracts only; they are not substitutes for hardware evidence.
 
-| gate | required observation | result | evidence to capture |
+| Gate | Required observation | Current result | Evidence to attach |
 | --- | --- | --- | --- |
-| Android WebGPU: camera + TSL metal | local camera starts; metal renders through the WebGPU path | **NOT TESTED - HARDWARE REQUIRED** | device/build ID, browser version, renderer diagnostics, screen recording |
-| Android WebGPU: TSL gem | authored gemstone mesh uses the TSL optical material | **NOT TESTED - HARDWARE REQUIRED** | gemstone asset ID, diagnostics, controlled-light recording |
-| Android WebGPU: occlusion | hand/ring occlusion is visually correct and depth tier is reported | **NOT TESTED - HARDWARE REQUIRED** | depth tier, recording across near/far poses, console log |
-| Android WebGL fallback | WebGPU-disabled device retains camera composite and physical-material fallback | **NOT TESTED - HARDWARE REQUIRED** | renderer diagnostics, recording, error log |
-| Android WebXR native depth | immersive-ar session consumes native depth and cleans up on exit | **NOT TESTED - HARDWARE REQUIRED** | device/build ID, WebXR flags, depth diagnostics, session log |
-| Android WebXR hand tracking | tracked hand drives output and session resources clean up | **NOT TESTED - HARDWARE REQUIRED** | joint-source diagnostics, recording, session log |
-| iOS Safari Quick Look | tapping View in AR opens the shipped USDZ at fixed scale | **NOT TESTED - HARDWARE REQUIRED** | iPhone/iOS/Safari versions, deployed URL, screen recording |
-| 10 open/close sessions | camera, workers, animation frames, and render resources return to baseline | **NOT TESTED - HARDWARE REQUIRED** | timestamped session log and memory samples after every close |
-| 10-minute continuous run | no crash, runaway memory, thermal warning, or unacceptable throttling | **NOT TESTED - HARDWARE REQUIRED** | start/end memory, FPS samples, OS thermal warning/temperature-tool log |
+| Android camera + WebGL2 | Camera starts, hand tracks, ring renders and remains stable | **NOT TESTED — HARDWARE REQUIRED** | Device/OS/Chrome, commit SHA, screen recording, console diagnostics |
+| Android camera retry/switch | Permission/device failures recover or fail cleanly; no stale camera track remains | **NOT TESTED — HARDWARE REQUIRED** | Camera indicator video, logs across retry/switch |
+| Android occlusion fallback | Geometric finger occlusion remains visually usable | **NOT TESTED — HARDWARE REQUIRED** | Near/far hand-pose recording |
+| Android WebXR session | Immersive session starts from CTA and exits cleanly | **NOT TESTED — HARDWARE REQUIRED** | Device/browser support, session log, recording |
+| Android WebXR hand tracking | XR joints actually drive the ring when exposed | **NOT TESTED — HARDWARE REQUIRED** | Joint-source diagnostics + recording |
+| Android WebXR native depth | Real depth is consumed and fallback remains safe when unavailable | **NOT TESTED — HARDWARE REQUIRED** | Depth-tier diagnostics + recording |
+| XR multi-view | Any device returning multiple XR views uses correct per-view assumptions | **NOT TESTED — HARDWARE REQUIRED** | View count and depth diagnostics |
+| iOS/iPadOS Quick Look | Approved USDZ launches with correct orientation/usable physical scale | **NOT TESTED — HARDWARE REQUIRED** | iPhone/iPad model, OS/Safari, screen recording |
+| Ten open/close cycles | Camera/XR/workers/render resources return to baseline | **NOT TESTED — HARDWARE REQUIRED** | Ten-cycle log, camera indicator, memory samples |
+| Ten-minute session | No crash, runaway memory, severe throttling, or thermal warning | **NOT TESTED — HARDWARE REQUIRED** | FPS/memory by minute, battery/thermal notes |
+| WebGPU renderer migration | React19/R3F9 WebGPU Canvas and TSL path render correctly | **DEFERRED — NOT ACTIVE IN CURRENT PRODUCTION** | Future migration build/device evidence |
+| Monocular depth | Licensed ONNX asset and provider path pass memory/FPS/thermal tests | **DISABLED** | Future model provenance + benchmark sheet |
+| Metric sizing | Physical gauge measurements pass across target devices | **DISABLED** | Calibration matrix |
 
 ## Scripted procedure
 
-1. Use an immutable release-candidate deployment over HTTPS; record its commit SHA, device model/OS, browser version, battery state, and ambient conditions.
-2. Run each graphics/XR row once with remote console logging enabled. Record the runtime diagnostics shown by the application; do not infer native depth or hand tracking from API presence.
-3. Open and fully close Try On ten times. After each close, confirm the camera indicator stops and record the browser/OS memory value. Fail on a retained camera, active XR session, uncaught error, or sustained growth above the agreed device baseline.
-4. Start a fresh session and operate it continuously for ten minutes. Sample FPS/memory once per minute and record any OS thermal warning or externally measured temperature. Browsers expose no portable thermal API, so thermal PASS requires physical-device observation.
-5. Attach unedited logs and recordings to the release record. Enter PASS only when output consumption, fallback, and cleanup are observed—not merely when capability detection succeeds.
+1. Deploy one immutable release-candidate commit over HTTPS.
+2. Record commit SHA, asset version, device model, OS, browser version, battery level, and ambient conditions.
+3. Run each applicable graphics/XR/Quick Look row once with console diagnostics captured where possible.
+4. Perform ten full Try On open/close cycles and record camera/XR teardown after each cycle.
+5. Start a fresh ten-minute session; record FPS/memory once per minute and any thermal/battery anomalies.
+6. Attach unedited logs and recordings to the release record.
+7. Mark PASS only when the behavior is observed on hardware. API presence or a mocked test is not enough.
 
-## Automated evidence boundary
+## Current verdict
 
-`tests/e2e/release-validation.spec.ts` covers modal behavior, focus containment/restoration, mocked WebXR-negative routing, permission denial, Quick Look URL construction, ten lifecycle repetitions, and a configurable ten-minute browser survival/heap bound. It makes no WebGPU, native-depth, hand-tracking, temperature, or physical-device claim.
-
-## Final verdict
-
-**BETA** — automated release validation exists, but every required physical hardware gate remains untested.
+**BETA — automated contracts improved; physical hardware release matrix remains open.**
