@@ -23,6 +23,11 @@ concurrency:
 jobs:
   build-ring-assets:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Required by `gh workflow run` after the generated-asset commit.
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout repository
@@ -39,7 +44,8 @@ jobs:
             echo "Semantic source found: assets/models/raw/nhan.glb"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "No assets/models/raw/nhan.glb yet. Pipeline is ready and will exit without modifying runtime assets."
+            echo "No assets/models/raw/nhan.glb yet."
+            echo "Pipeline is ready and exits without changing runtime assets."
           fi
 
       - name: Setup Node.js
@@ -53,7 +59,11 @@ jobs:
         if: steps.source.outputs.present == 'true'
         run: npm ci
 
-      - name: Build semantic HIGH / MEDIUM / LOW assets
+      - name: Validate semantic source
+        if: steps.source.outputs.present == 'true'
+        run: npm run validate:source-model
+
+      - name: Generate and validate HIGH / MEDIUM / LOW
         if: steps.source.outputs.present == 'true'
         run: npm run build:assets
 
@@ -66,15 +76,18 @@ jobs:
             public/models/nhan-high.glb
             public/models/nhan-medium.glb
             public/models/nhan-low.glb
+          if-no-files-found: error
           retention-days: 14
 
       - name: Commit validated runtime LODs
-        if: steps.source.outputs.present == 'true' && github.event_name != 'pull_request'
+        if: steps.source.outputs.present == 'true'
         shell: bash
         run: |
           set -euo pipefail
+
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
+
           git add \
             public/models/nhan-high.glb \
             public/models/nhan-medium.glb \
@@ -86,8 +99,12 @@ jobs:
           fi
 
           git commit -m "ci: publish validated semantic ring LODs"
-          git push
 
-          # Pushes made with GITHUB_TOKEN do not normally start a new push workflow.
-          # Explicit workflow_dispatch keeps the generated-asset commit behind the same quality/deploy gate.
+          # Rebase if another web edit landed while the asset job was running.
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+          # A GITHUB_TOKEN-authenticated push normally does not trigger another
+          # push workflow. Dispatch the canonical quality/deploy gate explicitly.
           gh workflow run quality.yml --ref main
+
