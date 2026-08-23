@@ -1,0 +1,50 @@
+{
+  "source": "public/models/nhan.glb",
+  "policy": "legacy-current-ring-conservative-lod",
+  "compression": "EXT_meshopt_compression",
+  "generatedAt": "2026-08-23T13:30:12.121Z",
+  "tiers": [
+    {
+      "tier": "HIGH",
+      "file": "public/models/nhan-high.glb",
+      "sourceTriangles": 120000,
+      "requestedMaxTriangles": 90000,
+      "outputTriangles": 88650,
+      "targetMet": true,
+      "selectedError": 0.00008,
+      "lockBorder": true,
+      "attempts": 1,
+      "inputBytes": 6304008,
+      "outputBytes": 1494156,
+      "reductionPercent": 76.3
+    },
+    {
+      "tier": "MEDIUM",
+      "file": "public/models/nhan-medium.glb",
+      "sourceTriangles": 120000,
+      "requestedMaxTriangles": 60000,
+      "outputTriangles": 59100,
+      "targetMet": true,
+      "selectedError": 0.0002,
+      "lockBorder": true,
+      "attempts": 1,
+      "inputBytes": 6304008,
+      "outputBytes": 1195584,
+      "reductionPercent": 81
+    },
+    {
+      "tier": "LOW",
+      "file": "public/models/nhan-low.glb",
+      "sourceTriangles": 120000,
+      "requestedMaxTriangles": 30000,
+      "outputTriangles": 29550,
+      "targetMet": true,
+      "selectedError": 0.001,
+      "lockBorder": true,
+      "attempts": 2,
+      "inputBytes": 6304008,
+      "outputBytes": 792060,
+      "reductionPercent": 87.4
+    }
+  ]
+}
