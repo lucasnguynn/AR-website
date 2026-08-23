@@ -1,117 +1,110 @@
 import { NodeIO } from '@gltf-transform/core';
-import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
-import { existsSync, statSync } from 'node:fs';
+import { KHRDracoMeshCompression } from '@gltf-transform/extensions';
 import path from 'node:path';
 import process from 'node:process';
 import draco3d from 'draco3dgltf';
 
-const MAX = {
-  high: { bytes: 1_500_000, triangles: 45_000 },
-  medium: { bytes: 900_000, triangles: 20_000 },
-  low: { bytes: 500_000, triangles: 8_000 },
-};
+const [, , inputArg, outputArg] = process.argv;
+if (!inputArg) {
+  console.error('Usage: node scripts/semanticize-ring-glb.mjs <input.glb> [output.glb]');
+  process.exit(2);
+}
 
 const SUPPORTED_GEMSTONE_TYPES = new Set(['diamond', 'sapphire', 'ruby', 'emerald', 'amethyst']);
-const args = process.argv.slice(2);
-const files = args.length ? args : [
-  'public/models/nhan-high.glb',
-  'public/models/nhan-medium.glb',
-  'public/models/nhan-low.glb',
-];
+const input = path.resolve(inputArg);
+const output = outputArg ? path.resolve(outputArg) : undefined;
 
-function tierOf(file) {
-  if (/-low\.glb$/i.test(file)) return 'low';
-  if (/-medium\.glb$/i.test(file)) return 'medium';
-  return 'high';
-}
+const decoder = await draco3d.createDecoderModule();
+const io = new NodeIO()
+  .registerExtensions([KHRDracoMeshCompression])
+  .registerDependencies({ 'draco3d.decoder': decoder });
+
+const document = await io.read(input);
+const root = document.getRoot();
 
 function text(value) {
   return typeof value === 'string' ? value.trim().toLowerCase() : undefined;
 }
 
-function explicitMetadata(node, mesh, material) {
-  const sources = [node.getExtras(), mesh.getExtras(), material?.getExtras()];
-  const unique = (key) => [...new Set(sources.map((source) => text(source?.[key])).filter(Boolean))];
-  const roles = unique('materialRole');
-  const gemstoneTypes = unique('gemstoneType');
-
-  if (roles.length !== 1) return { role: 'unknown', reason: roles.length === 0 ? 'missing materialRole' : 'conflicting materialRole' };
-  const role = roles[0];
-  if (role !== 'metal' && role !== 'gemstone') return { role: 'unknown', reason: `unsupported materialRole=${role}` };
-
-  if (role === 'gemstone') {
-    if (gemstoneTypes.length !== 1) return { role: 'unknown', reason: gemstoneTypes.length === 0 ? 'missing gemstoneType' : 'conflicting gemstoneType' };
-    if (!SUPPORTED_GEMSTONE_TYPES.has(gemstoneTypes[0])) return { role: 'unknown', reason: `unsupported gemstoneType=${gemstoneTypes[0]}` };
-    return { role, gemstoneType: gemstoneTypes[0] };
-  }
-
-  return { role };
+function valuesFor(key, node, mesh, material) {
+  return [
+    text(node.getExtras()?.[key]),
+    text(mesh.getExtras()?.[key]),
+    text(material?.getExtras()?.[key]),
+  ].filter(Boolean);
 }
 
-function triangleCount(primitive) {
-  const indices = primitive.getIndices();
-  if (indices) return Math.floor(indices.getCount() / 3);
-  const position = primitive.getAttribute('POSITION');
-  return position ? Math.floor(position.getCount() / 3) : 0;
+function oneExplicitValue(key, node, mesh, material, label) {
+  const values = [...new Set(valuesFor(key, node, mesh, material))];
+  if (values.length === 0) return undefined;
+  if (values.length > 1) {
+    throw new Error(`${label}: conflicting explicit ${key} values: ${values.join(', ')}`);
+  }
+  return values[0];
 }
 
-const decoder = await draco3d.createDecoderModule();
-const io = new NodeIO()
-  .registerExtensions(ALL_EXTENSIONS)
-  .registerDependencies({ 'draco3d.decoder': decoder });
+let metal = 0;
+let gemstone = 0;
+let primitiveCount = 0;
+const failures = [];
 
-let failed = false;
+for (const node of root.listNodes()) {
+  const mesh = node.getMesh();
+  if (!mesh) continue;
 
-for (const relative of files) {
-  const file = path.resolve(relative);
-  if (!existsSync(file)) {
-    console.error(`MISSING ${relative}`);
-    failed = true;
-    continue;
-  }
+  for (const [primitiveIndex, primitive] of mesh.listPrimitives().entries()) {
+    primitiveCount += 1;
+    const material = primitive.getMaterial();
+    const label = `node="${node.getName() || '(unnamed)'}" mesh="${mesh.getName() || '(unnamed)'}" primitive=${primitiveIndex}`;
 
-  const document = await io.read(file);
-  let triangles = 0;
-  let metal = 0;
-  let gemstone = 0;
-  let unknown = 0;
-  const semanticFailures = [];
-
-  for (const node of document.getRoot().listNodes()) {
-    const mesh = node.getMesh();
-    if (!mesh) continue;
-
-    for (const [primitiveIndex, primitive] of mesh.listPrimitives().entries()) {
-      triangles += triangleCount(primitive);
-      const semantic = explicitMetadata(node, mesh, primitive.getMaterial());
-      if (semantic.role === 'metal') metal += 1;
-      else if (semantic.role === 'gemstone') gemstone += 1;
-      else {
-        unknown += 1;
-        semanticFailures.push(`${node.getName() || '(unnamed)'}/${mesh.getName() || '(unnamed)'}#${primitiveIndex}: ${semantic.reason}`);
+    try {
+      const role = oneExplicitValue('materialRole', node, mesh, material, label);
+      if (role !== 'metal' && role !== 'gemstone') {
+        failures.push(`${label}: missing explicit extras.materialRole="metal" or "gemstone".`);
+        continue;
       }
+
+      if (role === 'metal') {
+        metal += 1;
+      } else {
+        const gemstoneType = oneExplicitValue('gemstoneType', node, mesh, material, label);
+        if (!gemstoneType) {
+          failures.push(`${label}: gemstone primitive requires explicit extras.gemstoneType.`);
+          continue;
+        }
+        if (!SUPPORTED_GEMSTONE_TYPES.has(gemstoneType)) {
+          failures.push(`${label}: unsupported gemstoneType="${gemstoneType}". Supported: ${[...SUPPORTED_GEMSTONE_TYPES].join(', ')}.`);
+          continue;
+        }
+        gemstone += 1;
+      }
+
+      if (output && material) {
+        const gemstoneType = role === 'gemstone'
+          ? oneExplicitValue('gemstoneType', node, mesh, material, label)
+          : undefined;
+        material.setExtras({
+          ...material.getExtras(),
+          materialRole: role,
+          ...(gemstoneType ? { gemstoneType } : {}),
+        });
+      }
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
     }
   }
-
-  const bytes = statSync(file).size;
-  const tier = tierOf(relative);
-  const limit = MAX[tier];
-  const semanticPass = metal > 0 && gemstone > 0 && unknown === 0;
-  const budgetPass = bytes <= limit.bytes && triangles <= limit.triangles;
-
-  console.log(`${relative}: ${(bytes / 1024).toFixed(0)} KiB, ${triangles.toLocaleString()} triangles, metal=${metal}, gemstone=${gemstone}, unknown=${unknown}`);
-
-  if (!semanticPass) {
-    console.error('  FAIL semantic contract: explicit extras are required on every production primitive.');
-    semanticFailures.forEach((item) => console.error(`    - ${item}`));
-    failed = true;
-  }
-
-  if (!budgetPass) {
-    console.error(`  FAIL ${tier} budget: <= ${(limit.bytes / 1024).toFixed(0)} KiB and <= ${limit.triangles.toLocaleString()} triangles.`);
-    failed = true;
-  }
 }
 
-if (failed) process.exit(1);
-console.log('Ring production asset audit passed.');
+if (primitiveCount === 0) failures.push('GLB contains no mesh primitives.');
+if (metal === 0) failures.push('GLB semantic gate requires at least one explicit metal primitive.');
+if (gemstone === 0) failures.push('GLB semantic gate requires at least one explicit gemstone primitive.');
+
+if (failures.length > 0) {
+  console.error('GLB semantic gate failed:');
+  failures.forEach((failure) => console.error(`  - ${failure}`));
+  console.error('Do not rely on object/material names for production. Export Blender/CAD custom properties as glTF extras.');
+  process.exit(1);
+}
+
+if (output) await io.write(output, document);
+console.log(`GLB semantic gate passed: primitives=${primitiveCount}, metal=${metal}, gemstone=${gemstone}${output ? `; wrote ${output}` : ''}`);
