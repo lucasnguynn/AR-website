@@ -60,13 +60,13 @@ const TEST_IMPORT_META_ENV = Object.freeze({
 
   VITE_PRODUCT_SKU: 'RING-DEMO-001',
   VITE_PRODUCT_NAME: 'Classic Ring',
-  VITE_ASSET_VERSION: '1',
+  VITE_ASSET_VERSION: '2',
 
   VITE_RING_OUTER_DIAMETER_MM: '18',
 
-  VITE_RING_MODEL_HIGH: 'models/nhan.glb',
-  VITE_RING_MODEL_MEDIUM: 'models/nhan.glb',
-  VITE_RING_MODEL_LOW: 'models/nhan.glb',
+  VITE_RING_MODEL_HIGH: 'models/nhan-high.glb',
+  VITE_RING_MODEL_MEDIUM: 'models/nhan-medium.glb',
+  VITE_RING_MODEL_LOW: 'models/nhan-low.glb',
 
   VITE_RING_USDZ: 'models/nhan.usdz',
   VITE_RING_PREVIEW: 'models/nhan-preview.png',
