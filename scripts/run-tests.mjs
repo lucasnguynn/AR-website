@@ -1,22 +1,15 @@
 // FILE: scripts/run-tests.mjs
-// Node test harness for TypeScript suites.
+// Node/esbuild test harness for TypeScript suites.
 //
-// Production Vite-specific imports such as:
-//   ?worker&url
-//   ?url
-// and Vite's loadEnv() are handled by the real Vite production pipeline.
+// Production behavior is still validated separately by:
+//   - npm run validate:assets
+//   - npm run build
 //
-// Unit/integration tests are bundled with esbuild directly. The test harness
-// therefore replaces browser-only Vite URL modules and the Vite loadEnv module
-// boundary with deterministic Node-test stubs.
-//
-// IMPORTANT:
-// This does NOT weaken production validation.
-// GitHub Actions runs the real:
-//   npm run validate:assets
-// and later:
-//   npm run build
-// with Vite itself.
+// This harness only provides the minimum Vite compatibility required for
+// Node-based unit/integration tests:
+//   1. ?worker&url and ?url import stubs
+//   2. a deterministic import.meta.env object
+//   3. a minimal `vite` module stub for loadEnv()
 
 if (typeof globalThis.self === 'undefined') {
   globalThis.self = globalThis;
@@ -48,6 +41,45 @@ import { join } from 'node:path';
 const directory = await mkdtemp(
   join(tmpdir(), 'ar-tests-'),
 );
+
+/**
+ * Deterministic Vite env exposed ONLY inside esbuild-generated Node test files.
+ *
+ * These values intentionally mirror the safe production defaults while keeping
+ * optional production features disabled.
+ *
+ * Do not inject process.env wholesale here:
+ * GitHub Actions may contain unrelated environment variables or secrets.
+ */
+const TEST_IMPORT_META_ENV = Object.freeze({
+  BASE_URL: '/AR-website/',
+  MODE: 'test',
+  DEV: false,
+  PROD: false,
+  SSR: true,
+
+  VITE_PRODUCT_SKU: 'RING-DEMO-001',
+  VITE_PRODUCT_NAME: 'Classic Ring',
+  VITE_ASSET_VERSION: '1',
+
+  VITE_RING_OUTER_DIAMETER_MM: '18',
+
+  VITE_RING_MODEL_HIGH: 'models/nhan.glb',
+  VITE_RING_MODEL_MEDIUM: 'models/nhan.glb',
+  VITE_RING_MODEL_LOW: 'models/nhan.glb',
+
+  VITE_RING_USDZ: 'models/nhan.usdz',
+  VITE_RING_PREVIEW: 'models/nhan-preview.png',
+
+  VITE_ENABLE_MONOCULAR_DEPTH: 'false',
+  VITE_DEPTH_MODEL: 'models/depth/depth_anything_v2_small.onnx',
+
+  VITE_ENABLE_METRIC_SIZING: 'false',
+  VITE_METRIC_CALIBRATION_VALIDATED: 'false',
+
+  VITE_ENABLE_PRIVACY_TELEMETRY: 'false',
+  VITE_TELEMETRY_ENDPOINT: '/telemetry/ar',
+});
 
 const suites = {
   unit: [
@@ -116,15 +148,8 @@ if (!(selection in suites)) {
 /**
  * Test-only compatibility layer for Vite module semantics.
  *
- * esbuild by itself does not understand:
- *
- *   import workerUrl from './worker.ts?worker&url';
- *   import wasmUrl from 'package/file.wasm?url';
- *
- * Unit tests also do not need to bundle the full Vite implementation merely
- * because a Node-side validation helper imports `loadEnv` from `vite`.
- *
- * The real Vite behavior is validated separately by the production build.
+ * The real Vite behavior is NOT replaced in production. GitHub Actions later
+ * runs Vite itself through `npm run build`.
  */
 const testCompatibilityPlugin = {
   name: 'ar-test-vite-compatibility',
@@ -132,11 +157,16 @@ const testCompatibilityPlugin = {
   setup(buildContext) {
     /**
      * -----------------------------------------------------------
-     * 1. Stub Vite URL imports.
+     * Vite URL imports
      * -----------------------------------------------------------
      *
-     * Prevent esbuild from traversing workers, WASM binaries, HDR assets, etc.
-     * during Node unit tests.
+     * Examples:
+     *
+     *   import workerUrl from './worker.ts?worker&url';
+     *   import wasmUrl from 'package/file.wasm?url';
+     *
+     * Unit tests do not execute/fetch these browser resources, so stop esbuild
+     * from traversing into workers/WASM and expose an inert URL string.
      */
     buildContext.onResolve(
       {
@@ -167,20 +197,16 @@ const testCompatibilityPlugin = {
 
     /**
      * -----------------------------------------------------------
-     * 2. Stub the Vite package boundary for Node tests.
+     * Minimal Vite package boundary
      * -----------------------------------------------------------
      *
-     * `scripts/validate-assets.mjs` imports:
+     * Node-side asset validation imports `loadEnv` from `vite`.
      *
-     *   import { loadEnv } from 'vite';
+     * Bundling the entire Vite package with standalone esbuild pulls Vite
+     * optional internals such as lightningcss into a unit-test bundle.
      *
-     * Bundling the entire Vite package causes esbuild to inspect optional Vite
-     * dependencies such as lightningcss. Unit tests do not need those modules.
-     *
-     * Tests that require feature flags pass an explicit env object to
-     * validateAssets(), so returning an empty loaded env here is deterministic.
-     *
-     * Production still uses Vite's real loadEnv().
+     * Tests pass explicit env objects where feature behavior matters, so an
+     * empty loadEnv result is deterministic and sufficient here.
      */
     buildContext.onResolve(
       {
@@ -238,6 +264,18 @@ async function runTestFile(
     target: 'node20',
 
     sourcemap: 'inline',
+
+    /**
+     * Vite normally replaces import.meta.env during transformation.
+     *
+     * Since these tests use esbuild directly, perform the equivalent
+     * deterministic replacement here.
+     */
+    define: {
+      'import.meta.env': JSON.stringify(
+        TEST_IMPORT_META_ENV,
+      ),
+    },
 
     plugins: [
       testCompatibilityPlugin,
