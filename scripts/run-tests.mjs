@@ -33,6 +33,7 @@ const suites = {
     ['tests/depth-pipeline.test.ts', 'runDepthPipelineTests'], 
     ['tests/integrity.test.ts', 'runIntegrityTests'], 
     ['tests/material-strategy.test.ts', 'runMaterialStrategyTests'],
+    ['tests/asset-contracts.test.ts', 'runAssetContractTests'],
     ['tests/pose-pipeline.test.ts', 'runPosePipelineTests'],
     ['tests/performance-accessibility.test.ts', 'runPerformanceAccessibilityTests'],
     ['tests/coordinate-tracking.test.ts', 'runCoordinateTrackingTests'],
