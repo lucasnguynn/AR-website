@@ -1,9 +1,16 @@
 # Production ring source contract
 
-Place the **authoring-quality semantic GLB** here as `nhan.glb` before the asset pipeline is enabled for a real product asset.
-Do not place authoring-source GLBs under `src/` or `public/`.
+Upload the approved authoring-quality semantic source as:
 
-Required node contract:
+```text
+assets/models/raw/nhan.glb
+```
+
+Do not place authoring-source GLBs under `src/` or `public/`, and do not copy the current single-mesh development fallback from `public/models/nhan.glb` into this folder.
+
+## Required explicit glTF extras
+
+Every production primitive must resolve to exactly one explicit role:
 
 ```text
 RingRoot
@@ -11,24 +18,42 @@ RingRoot
 │   └── extras.materialRole = "metal"
 └── Gemstone
     ├── extras.materialRole = "gemstone"
-    └── extras.gemstoneType = "sapphire" | "ruby" | "diamond" | ...
+    └── extras.gemstoneType = "sapphire"
 ```
 
-Authoring rules:
-- Keep metal and gemstone as separate nodes/primitives.
+Current supported gemstone types:
+
+```text
+diamond
+sapphire
+ruby
+emerald
+amethyst
+```
+
+Production validation does **not** accept object/material names as semantic proof.
+
+## Authoring rules
+
+- Keep metal and gemstone as separate objects/primitives.
+- Export custom properties/extras.
 - Apply transforms before export.
-- Use a documented real-world scale; runtime calibration metadata lives in `src/config/ringModelMetadata.ts`.
+- Keep a documented scale and orientation.
 - Do not merge/join Metal and Gemstone during optimization.
-- Prefer no baked camera/light nodes in the product GLB.
-- Do not claim true-size until the physical calibration gate has passed.
+- Prefer no baked camera/light nodes.
+- Prefer an uncompressed authoring GLB; release compression is created by CI.
+- Do not enable metric sizing until physical calibration passes.
 
-GitHub-only workflow:
-1. Upload the authored file as `assets/models/raw/nhan.glb`.
-2. `Semantic Ring Asset Pipeline` validates semantics and generates HIGH/MEDIUM/LOW LODs.
-3. Only validated LODs are committed to `public/models/`.
-4. After all three LOD files exist and the asset workflow is green, update `.env.production` to point to them.
+See `docs/ASSET_AUTHORING_GUIDE.md` for Blender export, USDZ, preview-image, LOD, and device-QA instructions.
 
-Expected generated runtime files:
-- `public/models/nhan-high.glb`
-- `public/models/nhan-medium.glb`
-- `public/models/nhan-low.glb`
+## GitHub-only workflow
+
+1. Upload `assets/models/raw/nhan.glb`.
+2. `Semantic Ring Asset Pipeline` validates explicit semantics.
+3. CI generates and compresses:
+   - `public/models/nhan-high.glb`
+   - `public/models/nhan-medium.glb`
+   - `public/models/nhan-low.glb`
+4. CI revalidates semantics, triangle budgets, and byte budgets.
+5. Only validated runtime LODs are committed.
+6. After all three files exist and workflows are green, update `.env.production` to use them.
