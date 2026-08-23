@@ -17,6 +17,7 @@ jobs:
   quality:
     name: Validate and build
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -31,11 +32,38 @@ jobs:
       - name: Install exact dependencies
         run: npm ci
 
+      - name: Sync pinned MediaPipe runtime assets
+        run: npm run sync:mediapipe
+
       - name: Validate package and lockfile contract
         run: npm run validate:dependencies
 
-      - name: Run full deterministic quality gate
-        run: npm run quality
+      - name: Validate runtime asset contract
+        run: npm run validate:assets
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: CSP static contract
+        run: npm run lint:csp
+
+      - name: Privacy boundary audit
+        run: npm run audit:privacy
+
+      - name: Production build + integrity verification
+        run: npm run build
+
+      - name: Bundle budget
+        run: npm run check:bundle
 
       - name: Upload integrity evidence
         if: always() && hashFiles('dist/integrity-manifest.json') != ''
