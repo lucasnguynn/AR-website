@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { WebXRDepthManager, type XRFrameWithDepthData } from '../src/services/WebXRDepthManager';
 import { inferenceFrameSize } from '../src/utils/coordinateMapping';
 import { validateAssets } from '../scripts/validate-assets.mjs';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 export async function runDepthPipelineTests(): Promise<void> {
   const manager = new WebXRDepthManager();
@@ -45,6 +47,11 @@ export async function runDepthPipelineTests(): Promise<void> {
 
   assert.deepEqual(inferenceFrameSize(1920, 1080), { width: 384, height: 216 }, 'camera preprocessing preserves aspect ratio and caps readback');
   assert.deepEqual(inferenceFrameSize(320, 240), { width: 320, height: 240 }, 'small camera frames are not enlarged');
+
+
+  const estimatorSource = await readFile(join(process.cwd(), 'src/services/MonocularDepthEstimator.ts'), 'utf8');
+  assert.match(estimatorSource, /depth\.worker\.ts\?worker&url/, 'depth estimator uses Vite compiled worker URL');
+  assert.doesNotMatch(estimatorSource, /new URL\(['"]\.\.\/workers\/depth\.worker\.ts/, 'depth estimator never verifies raw TypeScript as worker JavaScript');
 
   const assets = validateAssets({ root: process.cwd(), env: {} });
   assert.equal(assets.optional.some((entry: string) => entry.includes('depth_anything_v2_small.onnx')), true, 'missing ONNX remains explicit and optional when the feature flag is disabled');
